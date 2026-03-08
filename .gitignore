@@ -18,6 +18,7 @@ Thumbs.db
 *~
 .vscode/
 .idea/
+.claude/
 
 .ipynb_checkpoints/
 *.pyc
