@@ -5,7 +5,20 @@ app = marimo.App()
 
 
 @app.cell
+def _(mo):
+    mo.md(
+        r"""
+        # Generate Embeddings
+
+        End-to-end workflow for running image and patch embedding experiments against a LanceDB database.
+        Choose a model family, configure your data paths, then either run inline or generate a PBS/HPC job command.
+        """
+    )
+
+
+@app.cell
 def _():
+    import marimo as mo
     import lancedb
     import matplotlib.pyplot as plt
     import numpy as np
@@ -28,6 +41,7 @@ def _():
         lancedb,
         list_models,
         load_config,
+        mo,
         np,
         plt,
         print_table_sizes,
@@ -37,20 +51,59 @@ def _():
 
 
 @app.cell
+def _(mo):
+    mo.md("## Available Models")
+
+
+@app.cell
 def _(list_models):
     list_models()
     return
 
 
 @app.cell
-def _(Path):
-    PROJECT_ROOT = Path.cwd().parent.parent
+def _(mo):
+    mo.md(
+        r"""
+        ## Configuration
+
+        Update the **Project data root** field to point to your LanceDB data directory.
+        Changing it here reactively updates all downstream path variables.
+        """
+    )
+
+
+@app.cell
+def _(mo):
+    project_root_input = mo.ui.text(
+        value="/Users/ncheruku/Documents/Work/sample_data",
+        label="Project data root",
+        full_width=True,
+    )
+    return (project_root_input,)
+
+
+@app.cell
+def _(Path, project_root_input):
+    PROJECT_ROOT = Path(project_root_input.value)
 
     SOURCE_URI = PROJECT_ROOT / "data" / "lancedb" / "shared_source"
     IMG_RAW_TBL_NAME = "era5_sample_images"
     DB_URI = PROJECT_ROOT / "data" / "lancedb" / "experiments" / "era5"
     AUTHOR = "Cherukuru. N. W"
     return AUTHOR, DB_URI, IMG_RAW_TBL_NAME, PROJECT_ROOT, SOURCE_URI
+
+
+@app.cell
+def _(mo):
+    mo.md(
+        r"""
+        ## Model Selection
+
+        Change `PROJECT_NAME` to switch between model families (`dinov3` or `openclip`).
+        Defaults are loaded from `helpers/model_registry.json`.
+        """
+    )
 
 
 @app.cell
@@ -72,6 +125,18 @@ def _(get_model_info):
 
 
 @app.cell
+def _(mo):
+    mo.md(
+        r"""
+        ## Setup Experiment
+
+        Creates a config entry in LanceDB that tracks metadata (author, paths, model, timestamps)
+        and returns the table names for image and patch embeddings.
+        """
+    )
+
+
+@app.cell
 def _(
     AUTHOR,
     DB_URI,
@@ -86,6 +151,19 @@ def _(
         DB_URI, project_root=PROJECT_ROOT,
     )
     return (experiment,)
+
+
+@app.cell
+def _(mo):
+    mo.md(
+        r"""
+        ## Run
+
+        **Case 1** — run inline; blocks until complete, streaming logs to stdout.
+        **Case 2** — print a ready-to-paste shell command for PBS/HPC job submission.
+        Comment out whichever case you don't need.
+        """
+    )
 
 
 @app.cell
@@ -136,6 +214,18 @@ def _(
 
 
 @app.cell
+def _(mo):
+    mo.md(
+        r"""
+        ## Inspect Results
+
+        Load the config record and check table sizes on disk.
+        Works for both Case 1 (inline) and Case 2 (after the job finishes).
+        """
+    )
+
+
+@app.cell
 def _(DB_URI, experiment, load_config):
     # Inspect config after run completes (works for both Case 1 and Case 2)
     config = load_config(DB_URI, experiment["config_name"])
@@ -152,6 +242,17 @@ def _(DB_URI, experiment, print_table_sizes):
         experiment["patch_emb_name"],
     )
     return
+
+
+@app.cell
+def _(mo):
+    mo.md(
+        r"""
+        ## Explore Embeddings
+
+        Open the result tables and visualise a sample image embedding (histogram + attention map).
+        """
+    )
 
 
 @app.cell
@@ -246,6 +347,17 @@ def _(patch_tbl):
 
 
 @app.cell
+def _(mo):
+    mo.md(
+        r"""
+        ## GPU / PyTorch Check
+
+        Confirm that CUDA is available before running GPU-accelerated indexing below.
+        """
+    )
+
+
+@app.cell
 def _():
     import torch
 
@@ -257,8 +369,20 @@ def _():
 
 
 @app.cell
+def _(mo):
+    mo.md(
+        r"""
+        ## Create Vector Index
+
+        Builds an IVF-PQ ANN index on patch embeddings for fast approximate nearest-neighbour search.
+        Adjust `num_partitions` and `num_sub_vectors` to trade recall for speed.
+        """
+    )
+
+
+@app.cell
 def _(patch_tbl):
-    patch_tbl.create_index(metric="cosine", index_type="IVF_PQ", num_partitions=128, num_sub_vectors=96, accelerator="cuda", vector_column_name="embedding")
+    patch_tbl.create_index(metric="cosine", index_type="IVF_PQ", num_partitions=128, num_sub_vectors=64, accelerator="mps", vector_column_name="embedding")
     return
 
 
