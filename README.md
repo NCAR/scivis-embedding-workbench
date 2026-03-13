@@ -1,4 +1,4 @@
-# bams-ai-data-exploration
+# SciVis Embeddings Workbench
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/NCAR/bams-ai-data-exploration/blob/main/notebooks/02-generate-embeddings/generate_dinov3_embeddings.ipynb)
 [![Tests](https://github.com/NCAR/bams-ai-data-exploration/actions/workflows/tests.yml/badge.svg)](https://github.com/NCAR/bams-ai-data-exploration/actions/workflows/tests.yml)
