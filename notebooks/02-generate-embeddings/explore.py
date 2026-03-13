@@ -12,12 +12,6 @@ def _():
     return lancedb, mo
 
 
-@app.cell
-def _(mo):
-    FILENAME = mo.ui.text(value="20161009_rgb.jpeg", label="Image filename")
-    FILENAME
-
-
 @app.function
 def get_metadata_value(table, key_name, value_column="value"):
     """
@@ -28,59 +22,144 @@ def get_metadata_value(table, key_name, value_column="value"):
         key_name: The string key to look for (e.g., 'tbl_img_emb').
         value_column: The name of the column containing the data.
     """
-    # Filter for the key and select only the necessary column
     result = table.search().where(f"key='{key_name}'").select([value_column]).to_pandas()
-
     if not result.empty:
         return result[value_column].iloc[0]
     return None
 
 
+@app.function
+def list_experiments(db_path: str) -> list:
+    """Scan a LanceDB directory for experiment names by finding *_config.lance dirs."""
+    from pathlib import Path
+    p = Path(db_path)
+    if not p.exists() or not p.is_dir():
+        return []
+    experiments = []
+    for d in sorted(p.iterdir()):
+        if d.is_dir() and d.name.endswith("_config.lance"):
+            experiments.append(d.name[: -len("_config.lance")])
+    return experiments
+
+
+@app.function
+def load_config_dict(db, config_table_name: str) -> dict:
+    """Load a config table into a Python dict keyed by the 'key' column."""
+    tbl = db.open_table(config_table_name)
+    df = tbl.to_pandas()
+    return dict(zip(df["key"], df["value"]))
+
+
+@app.function
+def get_table_name(config: dict, *keys) -> str:
+    """Try multiple config keys in order, return value of the first match."""
+    for key in keys:
+        if key in config and config[key]:
+            return config[key]
+    return None
+
+
 @app.cell
-def _(lancedb):
-    # Path where your config DB lives
-    embedding_db_path = "/glade/work/ncheruku/research/bams-ai-data-exploration/data/lancedb/experiments/era5"
-    source_img_path = "/glade/work/ncheruku/research/bams-ai-data-exploration/data/lancedb/shared_source"
-    # Name of your config table
-    project_name = "dinov3"
-    src_img_tbl_name = "era5_sample_images"
+def _(mo):
+    embedding_db_path = mo.ui.text(
+        value="/Users/ncheruku/Documents/Work/sample_data/data/lancedb/experiments/era5",
+        label="Experiments DB path",
+        full_width=True,
+    )
+    source_db_path = mo.ui.text(
+        value="/Users/ncheruku/Documents/Work/sample_data/data/lancedb/shared_source",
+        label="Source DB path",
+        full_width=True,
+    )
+    return embedding_db_path, source_db_path
 
-    # Connect and open table
-    db = lancedb.connect(embedding_db_path)
-    source_db = lancedb.connect(source_img_path)
-    config_tbl = db.open_table(project_name + "_config")
-    img_emb_tbl = db.open_table(get_metadata_value(config_tbl, "img_emb_table_current"))
-    patch_emb_tbl = db.open_table(get_metadata_value(config_tbl, "patch_emb_table_current"))
-    src_img_tbl = source_db.open_table(src_img_tbl_name)
 
-    # patch_emb_tbl.count_rows()
-    return config_tbl, img_emb_tbl, patch_emb_tbl, src_img_tbl
+@app.cell
+def _(embedding_db_path, mo):
+    _experiments = list_experiments(embedding_db_path.value)
+
+    if not _experiments:
+        experiment_selector = mo.ui.dropdown(options=[], label="Experiment")
+        mo.stop(True, mo.callout(
+            mo.md(f"No experiments found at `{embedding_db_path.value}`"),
+            kind="warn",
+        ))
+    else:
+        experiment_selector = mo.ui.dropdown(
+            options=_experiments,
+            value=_experiments[0],
+            label="Experiment",
+        )
+
+    experiment_selector
+    return (experiment_selector,)
+
+
+@app.cell
+def _(embedding_db_path, experiment_selector, lancedb, mo, source_db_path):
+    mo.stop(experiment_selector.value is None, mo.callout(
+        mo.md("Select an experiment above."), kind="info"
+    ))
+
+    _exp = experiment_selector.value
+    db = lancedb.connect(embedding_db_path.value)
+    source_db = lancedb.connect(source_db_path.value)
+
+    config = load_config_dict(db, f"{_exp}_config")
+    config_tbl = db.open_table(f"{_exp}_config")
+
+    # Support both naming conventions (setup_experiment keys and legacy keys)
+    _img_emb_name = get_table_name(config, "tbl_img_emb", "img_emb_table_current")
+    _patch_emb_name = get_table_name(config, "tbl_patch_emb", "patch_emb_table_current")
+    _src_tbl_name = config.get("source", "era5_sample_images")
+
+    img_emb_tbl = db.open_table(_img_emb_name)
+    patch_emb_tbl = db.open_table(_patch_emb_name)
+    src_img_tbl = source_db.open_table(_src_tbl_name)
+    return config, patch_emb_tbl, src_img_tbl
+
+
+@app.cell
+def _(config, mo):
+    import pandas as pd
+
+    _df = pd.DataFrame(list(config.items()), columns=["Key", "Value"])
+    mo.vstack([
+        mo.md("### Experiment Config"),
+        mo.ui.table(_df, selection=None),
+    ])
+    return
 
 
 @app.cell
 def _(src_img_tbl):
     src_img_tbl.schema
-
-    # patch_emb_tbl= db.open_table(get_metadata_value(config_tbl, "patch_emb_table_current"))
     return
 
 
 @app.cell
-def _(patch_emb_tbl):
-    patch_emb_tbl.schema
+def _():
+    # patch_emb_tbl.schema
     return
 
 
 @app.cell
-def _(img_emb_tbl):
-    img_emb_tbl.schema
+def _():
+    # img_emb_tbl.schema
     return
 
 
 @app.cell
-def _(config_tbl):
-    config_tbl.schema
+def _():
+    # config_tbl.schema
     return
+
+
+@app.cell
+def _(mo):
+    FILENAME = mo.ui.text(value="20161009_rgb.jpeg", label="Image filename")
+    FILENAME
+    return (FILENAME,)
 
 
 @app.cell
@@ -125,6 +204,7 @@ def _(FILENAME, src_img_tbl):
         d = ImageDraw.Draw(overlay)
         d.rectangle(_box, fill=fill, outline=outline, width=outline_width)
         return Image.alpha_composite(img, overlay)
+
     img = fetch_image_by_filename(src_img_tbl, FILENAME.value)
     print('image size:', img.size)
     if img.size != (IMG_SIZE, IMG_SIZE):
