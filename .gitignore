@@ -3,6 +3,7 @@ data/
 
 # ---- Jupyter / Python notebooks ----
 .ipynb_checkpoints/
+__marimo__/
 */.ipynb_checkpoints/
 profile_default/
 .ipython/
