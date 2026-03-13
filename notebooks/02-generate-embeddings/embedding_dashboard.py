@@ -14,7 +14,7 @@ def _():
     import matplotlib.pyplot as plt
     from PIL import Image, ImageDraw
 
-    return Image, ImageDraw, io, lancedb, math, mo, pd, plt
+    return lancedb, mo, pd, plt
 
 
 @app.function
@@ -108,6 +108,76 @@ def highlight_patch(img, box, fill=(255, 0, 0, 0), outline=(255, 0, 0, 220), out
     return Image.alpha_composite(img, overlay)
 
 
+@app.function
+def make_extent_map(lat_min, lat_max, lon_min, lon_max, num_patch_tokens, patch_size=16, theme="light", experiment=""):
+    """Cartopy map cropped to spatial extent with patch grid line overlay."""
+    import matplotlib.pyplot as plt
+    import cartopy.crs as ccrs
+    import cartopy.feature as cfeature
+    import math
+
+    is_dark = theme == "dark"
+    colors = (
+        {"land": "#3a3a3a", "ocean": "#1e3a5f", "coast": "#aaaaaa",
+         "grid": "#666666", "text": "#e0e0e0", "bg": "#1a1a1a"}
+        if is_dark else
+        {"land": "#d4d4d4", "ocean": "#a8c8e8", "coast": "#555555",
+         "grid": "#888888", "text": "#222222", "bg": "#ffffff"}
+    )
+
+    proj = ccrs.PlateCarree()
+    fig, ax = plt.subplots(figsize=(8, 5), subplot_kw={"projection": proj})
+    fig.patch.set_facecolor(colors["bg"])
+    ax.set_facecolor(colors["bg"])
+
+    # Crop exactly to extent — no padding
+    ax.set_extent([lon_min, lon_max, lat_min, lat_max], crs=proj)
+
+    # Geographic features
+    ax.add_feature(cfeature.OCEAN.with_scale("110m"), facecolor=colors["ocean"], zorder=0)
+    ax.add_feature(cfeature.LAND.with_scale("110m"),  facecolor=colors["land"],  zorder=1)
+    ax.add_feature(cfeature.COASTLINE.with_scale("110m"),
+                   edgecolor=colors["coast"], linewidth=0.8, zorder=2)
+
+    # Lat/lon axis labels — no grid lines
+    gl = ax.gridlines(crs=proj, draw_labels=True, linewidth=0)
+    gl.top_labels = False
+    gl.right_labels = False
+    gl.xlabel_style = {"color": colors["text"], "fontsize": 8}
+    gl.ylabel_style = {"color": colors["text"], "fontsize": 8}
+
+    # Patch grid lines only — no fill
+    n_side = int(math.sqrt(num_patch_tokens))
+    img_size = n_side * patch_size
+    lat_step = (lat_max - lat_min) / n_side
+    lon_step = (lon_max - lon_min) / n_side
+    for i in range(1, n_side):
+        ax.plot([lon_min, lon_max], [lat_min + i * lat_step] * 2,
+                transform=proj, color=colors["grid"], linewidth=0.4, zorder=3)
+    for j in range(1, n_side):
+        ax.plot([lon_min + j * lon_step] * 2, [lat_min, lat_max],
+                transform=proj, color=colors["grid"], linewidth=0.4, zorder=3)
+
+    _title = f"{img_size}×{img_size}px  |  {n_side}×{n_side} patch grid ({num_patch_tokens} patches)"
+    if experiment:
+        _title = f"{experiment}  —  {_title}"
+    ax.set_title(_title, color=colors["text"], fontsize=10)
+    fig.tight_layout()
+    return fig
+
+
+@app.cell
+def _(mo):
+    map_theme = mo.ui.radio(
+        options=["system", "light", "dark"],
+        value=mo.app_meta().theme,
+        label="Map theme",
+        inline=True,
+    )
+    map_theme
+    return (map_theme,)
+
+
 @app.cell
 def _(mo):
     embedding_db_path = mo.ui.text(
@@ -167,7 +237,17 @@ def _(embedding_db_path, experiment_selector, lancedb, mo):
 
 
 @app.cell
-def _(config, img_emb_tbl, mo, patch_emb_tbl, pd, src_img_tbl):
+def _(
+    config,
+    experiment_selector,
+    img_emb_tbl,
+    map_theme,
+    mo,
+    patch_emb_tbl,
+    pd,
+    plt,
+    src_img_tbl,
+):
     import json
 
     def scroll(tbl, height="240px"):
@@ -198,7 +278,7 @@ def _(config, img_emb_tbl, mo, patch_emb_tbl, pd, src_img_tbl):
         "Metadata": scroll(mo.ui.table(pd.DataFrame(flatten(_dataset_info)), selection=None))
         if _dataset_info
         else mo.md("*(no schema metadata)*"),
-        "Columns": scroll(mo.ui.table(schema_df(src_img_tbl), selection=None)),
+        "Variables": scroll(mo.ui.table(schema_df(src_img_tbl), selection=None)),
     })
 
     # Index info helper
@@ -212,7 +292,7 @@ def _(config, img_emb_tbl, mo, patch_emb_tbl, pd, src_img_tbl):
             row = {
                 "Name": idx.name,
                 "Type": getattr(idx, "index_type", getattr(idx, "type", "?")),
-                "Columns": ", ".join(idx.columns),
+                "Variables": ", ".join(idx.columns),
             }
             if stats is not None:
                 row["Indexed rows"] = getattr(stats, "num_indexed_rows", "—")
@@ -240,143 +320,25 @@ def _(config, img_emb_tbl, mo, patch_emb_tbl, pd, src_img_tbl):
         ]),
     })
 
-    mo.ui.tabs({"Source": _src_tab, "Experiment": _exp_tab})
-    return
-
-
-@app.cell
-def _(mo, src_img_tbl):
-    _filenames = (
-        src_img_tbl.search()
-        .select(["filename"])
-        .limit(10_000)
-        .to_pandas()["filename"]
-        .sort_values()
-        .tolist()
-    )
-    selected_filename = mo.ui.dropdown(
-        options=_filenames,
-        value=_filenames[0] if _filenames else None,
-        label="Image",
-    )
-    selected_filename
-    return (selected_filename,)
-
-
-@app.cell
-def _(mo):
-    patch_index_slider = mo.ui.slider(
-        start=0,
-        stop=255,
-        value=135,
-        label="Patch index",
-        show_value=True,
-    )
-    patch_index_slider
-    return (patch_index_slider,)
-
-
-@app.cell
-def _(mo, patch_index_slider, selected_filename, src_img_tbl):
-    mo.stop(selected_filename.value is None, mo.callout(
-        mo.md("Select an image above."), kind="info"
-    ))
-
-    _PATCH_SIZE = 16
-    _IMG_SIZE = 256
-
-    _img = fetch_image_by_filename(src_img_tbl, selected_filename.value)
-    _patch_index = patch_index_slider.value
-    _box = patch_box_from_index(_patch_index, _IMG_SIZE, _IMG_SIZE, _PATCH_SIZE)
-    _img_vis = overlay_grid(_img, _PATCH_SIZE)
-    img_highlighted = highlight_patch(_img_vis, _box)
-
-    patch_index = _patch_index
-    img_highlighted
-    return (patch_index,)
-
-
-@app.cell
-def _(mo, patch_emb_tbl, patch_index, selected_filename, src_img_tbl):
-    mo.stop(selected_filename.value is None)
-
-    _image_id = (
-        src_img_tbl.search()
-        .where(f"filename = '{selected_filename.value}'")
-        .select(["id"])
-        .limit(1)
-        .to_pandas()
-        .iloc[0]["id"]
-    )
-
-    _q = (
-        patch_emb_tbl.search()
-        .where(f"image_id = '{_image_id}' AND patch_index = {patch_index}")
-        .select(["patch_id", "image_id", "patch_index", "embedding"])
-        .limit(1)
-        .to_pandas()
-        .iloc[0]
-    )
-
-    top_df = (
-        patch_emb_tbl.search(_q["embedding"])
-        .metric("cosine")
-        .select(["patch_id", "image_id", "patch_index"])
-        .limit(100)
-        .to_pandas()
-    )
-
-    top_df
-    return (top_df,)
-
-
-@app.cell
-def _(Image, ImageDraw, io, math, mo, pd, plt, src_img_tbl, top_df):
-    mo.stop(top_df is None or top_df.empty)
-
-    _PATCH, _BASE = 16, 256
-    _u = top_df.groupby("image_id")["patch_index"].apply(list).head(30)
-    _thumbs, _rows = [], []
-
-    for _img_id, _pidxs in _u.items():
-        _r = (
-            src_img_tbl.search()
-            .where(f"id = '{_img_id}'")
-            .select(["image_blob", "dt"])
-            .limit(1)
-            .to_pandas()
-            .iloc[0]
+    # Map tab — spatial extent + patch grid
+    _ext = _dataset_info.get("spatial_extent", {})
+    if _ext and "num_patch_tokens" in config:
+        _map_fig = make_extent_map(
+            lat_min=float(_ext["lat_min"]), lat_max=float(_ext["lat_max"]),
+            lon_min=float(_ext["lon_min"]), lon_max=float(_ext["lon_max"]),
+            num_patch_tokens=int(config["num_patch_tokens"]),
+            patch_size=int(config.get("patch_size", 16)),
+            theme=map_theme.value,
+            experiment=experiment_selector.value,
         )
-        _im = Image.open(io.BytesIO(_r["image_blob"])).convert("RGB")
-        _tw, _th = _im.size
-        _sx, _sy = _tw / _BASE, _th / _BASE
-        _grid_w = _BASE // _PATCH
-        _d = ImageDraw.Draw(_im)
-        for _pidx in map(int, _pidxs):
-            _rr, _cc = _pidx // _grid_w, _pidx % _grid_w
-            _x0, _y0 = _cc * _PATCH, _rr * _PATCH
-            _box = (int(_x0 * _sx), int(_y0 * _sy), int((_x0 + _PATCH) * _sx), int((_y0 + _PATCH) * _sy))
-            _d.rectangle(_box, outline=(0, 0, 0), width=max(2, int(round(min(_sx, _sy)))))
-        _thumbs.append(_im)
-        _rows.append({"image_id": _img_id, "dt": _r["dt"], "n_patches": len(_pidxs), "patch_indices": _pidxs})
+        _map_tab = mo.as_html(_map_fig)
+        plt.close(_map_fig)
+    else:
+        _map_tab = mo.callout(
+            mo.md("Spatial extent or `num_patch_tokens` not available."), kind="warn"
+        )
 
-    _dates_df = pd.DataFrame(_rows)
-    _n = len(_thumbs)
-    _cols = min(6, _n)
-    _rows_n = math.ceil(_n / _cols)
-
-    _fig, _axes = plt.subplots(_rows_n, _cols, figsize=(_cols * 2.2, _rows_n * 2.2))
-    _axes_flat = _axes.flat if _n > 1 else [_axes]
-    for _i, (_im, _ax) in enumerate(zip(_thumbs, _axes_flat)):
-        _ax.imshow(_im)
-        _ax.set_title(f"{_dates_df.loc[_i, 'n_patches']} | {str(_dates_df.loc[_i, 'dt'])[:19]}", fontsize=8)
-        _ax.axis("off")
-    for _ax in list(_axes_flat)[_n:]:
-        _ax.axis("off")
-    plt.tight_layout()
-    plt.gca()
-
-    mo.vstack([mo.pyplot(_fig), mo.ui.table(_dates_df, selection=None)])
+    mo.ui.tabs({"Source": _src_tab, "Experiment": _exp_tab, "Map": _map_tab})
     return
 
 
