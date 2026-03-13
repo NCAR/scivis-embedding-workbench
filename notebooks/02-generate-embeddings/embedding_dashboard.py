@@ -8,11 +8,8 @@ app = marimo.App()
 def _():
     import marimo as mo
     import lancedb
-    import io
-    import math
     import pandas as pd
     import matplotlib.pyplot as plt
-    from PIL import Image, ImageDraw
 
     return lancedb, mo, pd, plt
 

@@ -106,14 +106,14 @@ def _(embedding_db_path, experiment_selector, lancedb, mo, source_db_path):
     source_db = lancedb.connect(source_db_path.value)
 
     config = load_config_dict(db, f"{_exp}_config")
-    config_tbl = db.open_table(f"{_exp}_config")
+    db.open_table(f"{_exp}_config")
 
     # Support both naming conventions (setup_experiment keys and legacy keys)
     _img_emb_name = get_table_name(config, "tbl_img_emb", "img_emb_table_current")
     _patch_emb_name = get_table_name(config, "tbl_patch_emb", "patch_emb_table_current")
     _src_tbl_name = config.get("source", "era5_sample_images")
 
-    img_emb_tbl = db.open_table(_img_emb_name)
+    db.open_table(_img_emb_name)
     patch_emb_tbl = db.open_table(_patch_emb_name)
     src_img_tbl = source_db.open_table(_src_tbl_name)
     return config, patch_emb_tbl, src_img_tbl
