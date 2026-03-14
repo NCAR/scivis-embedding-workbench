@@ -26,6 +26,9 @@ dependencies = [
     "marimo>=0.13.0",
     "rich>=13.0.0",
     "cartopy>=0.25.0",
+    "mcp>=1.26.0",
+    "scikit-learn>=1.8.0",
+    "plotly>=6.6.0",
 ]
 
 [dependency-groups]
