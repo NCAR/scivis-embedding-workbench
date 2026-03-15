@@ -510,6 +510,27 @@ def fetch_metadata_for_ids(src_img_tbl, image_ids):
 
 
 @app.function
+def apply_brush_filter(data_cols, brush_extents):
+    """Return row indices passing all brush_extents filters (AND logic)."""
+    import numpy as np
+    if not brush_extents:
+        return None  # no brush active → show all
+    n_rows = len(next(iter(data_cols.values())))
+    mask = np.ones(n_rows, dtype=bool)
+    for axis_name, info in brush_extents.items():
+        if axis_name not in data_cols:
+            continue
+        vals = np.asarray(data_cols[axis_name], dtype=float)
+        lo = min(info["range"])
+        hi = max(info["range"])
+        axis_mask = (vals >= lo) & (vals <= hi)
+        if info.get("include_infnans", False):
+            axis_mask |= ~np.isfinite(vals)
+        mask &= axis_mask
+    return np.where(mask)[0].tolist()
+
+
+@app.function
 def fetch_thumbnails_batch(src_img_tbl, image_ids: list, max_images: int = 50):
     """Batch-fetch thumbnail blobs, filenames, and timestamps by image id."""
     if not image_ids or src_img_tbl is None:
@@ -577,7 +598,7 @@ def _(get_pca, mo):
     return (pc_axes_input,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(get_pca, mo, np):
 
 
@@ -639,14 +660,12 @@ def _(
         for _sel in extra_axes_select.value:
             if _sel.startswith("dt:") and "dt" in _meta.columns:
                 _part = _sel.split(":")[1]
-                _dt_series = _meta["dt"].dropna()
-                if len(_dt_series) > 0 and hasattr(_dt_series.dt, _part):
-                    # Extract from the clean series, then reindex to full length
-                    _clean_vals = getattr(_dt_series.dt, _part).astype(float)
-                    _vals = _clean_vals.reindex(_meta.index)
-                    # Fill NaN rows (from missing metadata) with median
-                    _median = _clean_vals.median()
-                    _vals = _vals.fillna(_median)
+                if hasattr(_meta["dt"].dt, _part):
+                    _vals = getattr(_meta["dt"].dt, _part).astype(float)
+                    _n_nan = int(_vals.isna().sum())
+                    if _n_nan > 0:
+                        print(f"[parcoord] WARNING: {_sel} has {_n_nan} NaN values "
+                              f"out of {len(_vals)} rows (missing metadata)")
                     _extra_cols[_sel] = _vals.values
             elif _sel in _meta.columns:
                 _extra_cols[_sel] = _meta[_sel].astype(float).values
@@ -669,29 +688,40 @@ def _(
         _sentinels = pl.DataFrame([_sentinel_lo, _sentinel_hi])
 
     # Combine: extra columns first, then PCs
-    _all_cols = {**_extra_cols, **_pc_values}
-    _df = pl.DataFrame(_all_cols)
+    parcoord_data_cols = {**_extra_cols, **_pc_values}
+    _df = pl.DataFrame(parcoord_data_cols)
     if _sentinels is not None:
         _df = pl.concat([_df, _sentinels], how="diagonal_relaxed")
     parcoord_widget = mo.ui.anywidget(ParallelCoordinates(_df, height=350))
     parcoord_widget
-    return (parcoord_widget,)
+    return parcoord_data_cols, parcoord_widget
 
 
-@app.cell
-def _(get_pca, map_theme, mo, parcoord_widget, src_img_tbl):
+@app.cell(hide_code=True)
+def _(
+    get_pca,
+    map_theme,
+    mo,
+    parcoord_data_cols,
+    parcoord_widget,
+    src_img_tbl,
+):
     _r = get_pca()
     mo.stop(_r is None or src_img_tbl is None)
 
-    # Read filtered_uids (synced traitlet) — filtered_indices is computed/non-synced
+    # Use brush_extents (synced) to filter — filtered_uids is bugged in wigglystuff
     _val = parcoord_widget.value
-    _uids = _val.get("filtered_uids", []) if isinstance(_val, dict) else []
+    _brush = _val.get("brush_extents", {}) if isinstance(_val, dict) else {}
     _ids = _r["image_ids"]
     _n_real = len(_ids)
-    if _uids:
-        _filtered = sorted(int(uid) for uid in _uids if int(uid) < _n_real)
-    else:
+
+    _filtered = apply_brush_filter(parcoord_data_cols, _brush)
+    if _filtered is None:
         _filtered = list(range(_n_real))
+    else:
+        # Exclude sentinel row indices
+        _filtered = [i for i in _filtered if i < _n_real]
+
     _selected_ids = [str(_ids[i]) for i in _filtered]
     _max_display = 50
     _thumbs = fetch_thumbnails_batch(src_img_tbl, _selected_ids, _max_display)
@@ -699,56 +729,6 @@ def _(get_pca, map_theme, mo, parcoord_widget, src_img_tbl):
         _thumbs, len(_filtered), _max_display, theme=map_theme.value,
     )
     mo.vstack([mo.md(f"**{_count_msg}**"), mo.Html(_gallery_html)])
-    return
-
-
-@app.cell
-def _(src_img_tbl):
-    src_df = src_img_tbl.to_pandas()
-    return
-
-
-@app.cell
-def _(plt, src_img_tbl):
-    df = src_img_tbl.to_lance().scanner(columns=["id", "dt"]).to_table().to_pandas()
-
-    print(f"Total rows: {len(df)}")
-    print(f"Unique IDs: {df['id'].nunique()}")
-    print(f"Null dt: {df['dt'].isna().sum()}")
-    print(f"Date range: {df['dt'].min()} → {df['dt'].max()}")
-
-    fig, ax = plt.subplots(figsize=(12, 3))
-    ax.plot(df["dt"].sort_values().values, range(len(df)), ".")
-    ax.set_xlabel("Date")
-    ax.set_ylabel("Row index")
-    ax.set_title(f"Source image dt values ({len(df)} rows)")
-    fig.tight_layout()
-    fig
-
-    return
-
-
-@app.cell
-def _(img_emb_tbl, src_img_tbl):
-    _emb_df = img_emb_tbl.to_pandas()
-    _src_df = src_img_tbl.to_lance().scanner(columns=["id"]).to_table().to_pandas()
-
-    _emb_ids = set(_emb_df["image_id"])
-    _src_ids = set(_src_df["id"])
-
-    print(f"Embedding rows: {len(_emb_df)}")
-    print(f"Unique embedding image_ids: {len(_emb_ids)}")
-    print(f"Source rows: {len(_src_df)}")
-    print(f"Unique source ids: {len(_src_ids)}")
-    print(f"In embeddings but NOT in source: {len(_emb_ids - _src_ids)}")
-    print(f"In source but NOT in embeddings: {len(_src_ids - _emb_ids)}")
-
-    _missing = list(_emb_ids - _src_ids)[:5]
-    _present = list(_emb_ids & _src_ids)[:5]
-    print(f"\nSample missing IDs: {_missing}")
-    print(f"Sample matching IDs: {_present}")
-    print(f"\nMissing ID types: {[type(x) for x in _missing[:3]]}")
-    print(f"Source ID types: {[type(x) for x in list(_src_ids)[:3]]}")
     return
 
 
