@@ -486,19 +486,25 @@ def _(get_pca, map_theme, mo, n_components):
 def fetch_metadata_for_ids(src_img_tbl, image_ids):
     """Batch-fetch non-blob columns from src_img_tbl for given image ids."""
     import pandas as pd
+    import pyarrow.compute as pc
 
     if not len(image_ids) or src_img_tbl is None:
         return pd.DataFrame()
-    escaped = ", ".join(f"'{i}'" for i in image_ids)
+    # Normalize to plain Python str to avoid numpy.str_ vs str mismatch
+    image_ids = [str(i) for i in image_ids]
     blob_cols = {"image_blob", "thumb_blob"}
     keep_cols = [f.name for f in src_img_tbl.schema if f.name not in blob_cols]
-    df = (
-        src_img_tbl.search()
-        .where(f"id IN ({escaped})")
-        .select(keep_cols)
-        .limit(len(image_ids))
-        .to_pandas()
+    # Use Lance scanner with pyarrow filter instead of .search().where()
+    # (.search() is the ANN vector API and may silently drop rows)
+    scanner = src_img_tbl.to_lance().scanner(
+        columns=keep_cols,
+        filter=pc.field("id").isin(image_ids),
     )
+    df = scanner.to_table().to_pandas()
+    if len(df) < len(image_ids):
+        _missing = set(image_ids) - set(df["id"])
+        print(f"[fetch_metadata] WARNING: {len(_missing)} of {len(image_ids)} "
+              f"image IDs not found in source table")
     df = df.set_index("id").reindex(image_ids).reset_index()
     return df
 
@@ -593,7 +599,7 @@ def _(get_pca, mo, np):
         value=["dt:month"],
         label="Extra axes",
     )
-    normalize_toggle = mo.ui.switch(value=False, label="Normalize PC axes")
+    normalize_toggle = mo.ui.switch(value=False, label="Equal PC axis range")
     mo.hstack([extra_axes_select, normalize_toggle], justify="start")
     return extra_axes_select, normalize_toggle
 
@@ -635,24 +641,38 @@ def _(
                 _part = _sel.split(":")[1]
                 _dt_series = _meta["dt"].dropna()
                 if len(_dt_series) > 0 and hasattr(_dt_series.dt, _part):
-                    _vals = getattr(_meta["dt"].dt, _part)
-                    _extra_cols[_sel] = _vals.astype(float).values
+                    # Extract from the clean series, then reindex to full length
+                    _clean_vals = getattr(_dt_series.dt, _part).astype(float)
+                    _vals = _clean_vals.reindex(_meta.index)
+                    # Fill NaN rows (from missing metadata) with median
+                    _median = _clean_vals.median()
+                    _vals = _vals.fillna(_median)
+                    _extra_cols[_sel] = _vals.values
             elif _sel in _meta.columns:
                 _extra_cols[_sel] = _meta[_sel].astype(float).values
 
-    # Build PC columns, optionally normalized
+    # Build PC columns
     _scores = _r["scores"]
     _pc_values = {f"PC{i + 1}": _scores[:, i] for i in _indices}
+
+    # Sentinel rows to equalize PC axis ranges (values stay untouched)
+    _sentinels = None
     if normalize_toggle.value:
         _all_vals = np.column_stack([_scores[:, i] for i in _indices])
-        _gmin = _all_vals.min()
-        _gmax = _all_vals.max()
-        _range = _gmax - _gmin if _gmax != _gmin else 1.0
-        _pc_values = {k: (v - _gmin) / _range for k, v in _pc_values.items()}
+        _gmin = float(_all_vals.min())
+        _gmax = float(_all_vals.max())
+        _sentinel_lo = {k: _gmin for k in _pc_values}
+        _sentinel_hi = {k: _gmax for k in _pc_values}
+        for k, v in _extra_cols.items():
+            _sentinel_lo[k] = float(np.nanmin(v))
+            _sentinel_hi[k] = float(np.nanmax(v))
+        _sentinels = pl.DataFrame([_sentinel_lo, _sentinel_hi])
 
     # Combine: extra columns first, then PCs
     _all_cols = {**_extra_cols, **_pc_values}
     _df = pl.DataFrame(_all_cols)
+    if _sentinels is not None:
+        _df = pl.concat([_df, _sentinels], how="diagonal_relaxed")
     parcoord_widget = mo.ui.anywidget(ParallelCoordinates(_df, height=350))
     parcoord_widget
     return (parcoord_widget,)
@@ -667,10 +687,11 @@ def _(get_pca, map_theme, mo, parcoord_widget, src_img_tbl):
     _val = parcoord_widget.value
     _uids = _val.get("filtered_uids", []) if isinstance(_val, dict) else []
     _ids = _r["image_ids"]
+    _n_real = len(_ids)
     if _uids:
-        _filtered = sorted(int(uid) for uid in _uids)
+        _filtered = sorted(int(uid) for uid in _uids if int(uid) < _n_real)
     else:
-        _filtered = list(range(len(_ids)))
+        _filtered = list(range(_n_real))
     _selected_ids = [str(_ids[i]) for i in _filtered]
     _max_display = 50
     _thumbs = fetch_thumbnails_batch(src_img_tbl, _selected_ids, _max_display)
@@ -678,6 +699,56 @@ def _(get_pca, map_theme, mo, parcoord_widget, src_img_tbl):
         _thumbs, len(_filtered), _max_display, theme=map_theme.value,
     )
     mo.vstack([mo.md(f"**{_count_msg}**"), mo.Html(_gallery_html)])
+    return
+
+
+@app.cell
+def _(src_img_tbl):
+    src_df = src_img_tbl.to_pandas()
+    return
+
+
+@app.cell
+def _(plt, src_img_tbl):
+    df = src_img_tbl.to_lance().scanner(columns=["id", "dt"]).to_table().to_pandas()
+
+    print(f"Total rows: {len(df)}")
+    print(f"Unique IDs: {df['id'].nunique()}")
+    print(f"Null dt: {df['dt'].isna().sum()}")
+    print(f"Date range: {df['dt'].min()} → {df['dt'].max()}")
+
+    fig, ax = plt.subplots(figsize=(12, 3))
+    ax.plot(df["dt"].sort_values().values, range(len(df)), ".")
+    ax.set_xlabel("Date")
+    ax.set_ylabel("Row index")
+    ax.set_title(f"Source image dt values ({len(df)} rows)")
+    fig.tight_layout()
+    fig
+
+    return
+
+
+@app.cell
+def _(img_emb_tbl, src_img_tbl):
+    _emb_df = img_emb_tbl.to_pandas()
+    _src_df = src_img_tbl.to_lance().scanner(columns=["id"]).to_table().to_pandas()
+
+    _emb_ids = set(_emb_df["image_id"])
+    _src_ids = set(_src_df["id"])
+
+    print(f"Embedding rows: {len(_emb_df)}")
+    print(f"Unique embedding image_ids: {len(_emb_ids)}")
+    print(f"Source rows: {len(_src_df)}")
+    print(f"Unique source ids: {len(_src_ids)}")
+    print(f"In embeddings but NOT in source: {len(_emb_ids - _src_ids)}")
+    print(f"In source but NOT in embeddings: {len(_src_ids - _emb_ids)}")
+
+    _missing = list(_emb_ids - _src_ids)[:5]
+    _present = list(_emb_ids & _src_ids)[:5]
+    print(f"\nSample missing IDs: {_missing}")
+    print(f"Sample matching IDs: {_present}")
+    print(f"\nMissing ID types: {[type(x) for x in _missing[:3]]}")
+    print(f"Source ID types: {[type(x) for x in list(_src_ids)[:3]]}")
     return
 
 

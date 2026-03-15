@@ -78,7 +78,7 @@ def _(mo):
 
 @app.cell
 def _(Path, lancedb):
-    PROJECT_ROOT = Path.cwd().parent.parent
+    PROJECT_ROOT = Path("/Users/ncheruku/Documents/Work/sample_data")
 
     IMG_RAW_TBL_NAME = "era5_sample_images"
 

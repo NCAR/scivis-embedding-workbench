@@ -6,14 +6,13 @@ app = marimo.App()
 
 @app.cell
 def _(mo):
-    mo.md(
-        r"""
-        # Generate Embeddings
+    mo.md(r"""
+    # Generate Embeddings
 
-        End-to-end workflow for running image and patch embedding experiments against a LanceDB database.
-        Choose a model family, configure your data paths, then either run inline or generate a PBS/HPC job command.
-        """
-    )
+    End-to-end workflow for running image and patch embedding experiments against a LanceDB database.
+    Choose a model family, configure your data paths, then either run inline or generate a PBS/HPC job command.
+    """)
+    return
 
 
 @app.cell
@@ -52,7 +51,10 @@ def _():
 
 @app.cell
 def _(mo):
-    mo.md("## Available Models")
+    mo.md("""
+    ## Available Models
+    """)
+    return
 
 
 @app.cell
@@ -63,14 +65,13 @@ def _(list_models):
 
 @app.cell
 def _(mo):
-    mo.md(
-        r"""
-        ## Configuration
+    mo.md(r"""
+    ## Configuration
 
-        Update the **Project data root** field to point to your LanceDB data directory.
-        Changing it here reactively updates all downstream path variables.
-        """
-    )
+    Update the **Project data root** field to point to your LanceDB data directory.
+    Changing it here reactively updates all downstream path variables.
+    """)
+    return
 
 
 @app.cell
@@ -96,14 +97,13 @@ def _(Path, project_root_input):
 
 @app.cell
 def _(mo):
-    mo.md(
-        r"""
-        ## Model Selection
+    mo.md(r"""
+    ## Model Selection
 
-        Change `PROJECT_NAME` to switch between model families (`dinov3` or `openclip`).
-        Defaults are loaded from `helpers/model_registry.json`.
-        """
-    )
+    Change `PROJECT_NAME` to switch between model families (`dinov3` or `openclip`).
+    Defaults are loaded from `helpers/model_registry.json`.
+    """)
+    return
 
 
 @app.cell
@@ -126,14 +126,13 @@ def _(get_model_info):
 
 @app.cell
 def _(mo):
-    mo.md(
-        r"""
-        ## Setup Experiment
+    mo.md(r"""
+    ## Setup Experiment
 
-        Creates a config entry in LanceDB that tracks metadata (author, paths, model, timestamps)
-        and returns the table names for image and patch embeddings.
-        """
-    )
+    Creates a config entry in LanceDB that tracks metadata (author, paths, model, timestamps)
+    and returns the table names for image and patch embeddings.
+    """)
+    return
 
 
 @app.cell
@@ -155,15 +154,14 @@ def _(
 
 @app.cell
 def _(mo):
-    mo.md(
-        r"""
-        ## Run
+    mo.md(r"""
+    ## Run
 
-        **Case 1** — run inline; blocks until complete, streaming logs to stdout.
-        **Case 2** — print a ready-to-paste shell command for PBS/HPC job submission.
-        Comment out whichever case you don't need.
-        """
-    )
+    **Case 1** — run inline; blocks until complete, streaming logs to stdout.
+    **Case 2** — print a ready-to-paste shell command for PBS/HPC job submission.
+    Comment out whichever case you don't need.
+    """)
+    return
 
 
 @app.cell
@@ -215,14 +213,13 @@ def _(
 
 @app.cell
 def _(mo):
-    mo.md(
-        r"""
-        ## Inspect Results
+    mo.md(r"""
+    ## Inspect Results
 
-        Load the config record and check table sizes on disk.
-        Works for both Case 1 (inline) and Case 2 (after the job finishes).
-        """
-    )
+    Load the config record and check table sizes on disk.
+    Works for both Case 1 (inline) and Case 2 (after the job finishes).
+    """)
+    return
 
 
 @app.cell
@@ -246,13 +243,12 @@ def _(DB_URI, experiment, print_table_sizes):
 
 @app.cell
 def _(mo):
-    mo.md(
-        r"""
-        ## Explore Embeddings
+    mo.md(r"""
+    ## Explore Embeddings
 
-        Open the result tables and visualise a sample image embedding (histogram + attention map).
-        """
-    )
+    Open the result tables and visualise a sample image embedding (histogram + attention map).
+    """)
+    return
 
 
 @app.cell
@@ -348,13 +344,12 @@ def _(patch_tbl):
 
 @app.cell
 def _(mo):
-    mo.md(
-        r"""
-        ## GPU / PyTorch Check
+    mo.md(r"""
+    ## GPU / PyTorch Check
 
-        Confirm that CUDA is available before running GPU-accelerated indexing below.
-        """
-    )
+    Confirm that CUDA is available before running GPU-accelerated indexing below.
+    """)
+    return
 
 
 @app.cell
@@ -370,14 +365,13 @@ def _():
 
 @app.cell
 def _(mo):
-    mo.md(
-        r"""
-        ## Create Vector Index
+    mo.md(r"""
+    ## Create Vector Index
 
-        Builds an IVF-PQ ANN index on patch embeddings for fast approximate nearest-neighbour search.
-        Adjust `num_partitions` and `num_sub_vectors` to trade recall for speed.
-        """
-    )
+    Builds an IVF-PQ ANN index on patch embeddings for fast approximate nearest-neighbour search.
+    Adjust `num_partitions` and `num_sub_vectors` to trade recall for speed.
+    """)
+    return
 
 
 @app.cell
