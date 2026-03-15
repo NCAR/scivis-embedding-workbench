@@ -29,6 +29,8 @@ dependencies = [
     "mcp>=1.26.0",
     "scikit-learn>=1.8.0",
     "plotly>=6.6.0",
+    "wigglystuff>=0.2.37",
+    "polars>=1.39.0",
 ]
 
 [dependency-groups]

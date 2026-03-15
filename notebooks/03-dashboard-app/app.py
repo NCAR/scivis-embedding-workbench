@@ -7,11 +7,14 @@ app = marimo.App(layout_file="layouts/app.grid.json")
 @app.cell
 def _():
     import marimo as mo
+    import numpy as np
     import lancedb
     import pandas as pd
+    import polars as pl
     import matplotlib.pyplot as plt
+    from wigglystuff import ParallelCoordinates
 
-    return lancedb, mo, pd, plt
+    return ParallelCoordinates, lancedb, mo, np, pd, pl, plt
 
 
 @app.function
@@ -104,22 +107,25 @@ def load_embedding_matrix(img_emb_tbl, n_vectors: int):
     import numpy as np
     df = img_emb_tbl.to_pandas()
     X = np.asarray(df["embedding"].to_list(), dtype=np.float32)
+    image_ids = df["image_id"].to_numpy()
     if n_vectors < len(X):
         rng = np.random.default_rng(42)
-        X = X[rng.choice(len(X), n_vectors, replace=False)]
-    return X, len(df)
+        idx = rng.choice(len(X), n_vectors, replace=False)
+        X = X[idx]
+        image_ids = image_ids[idx]
+    return X, image_ids, len(df)
 
 
 @app.function
 def run_pca_best(X, n_components: int):
-    """Run PCA with best available backend. Returns (evr, backend_label)."""
+    """Run PCA with best available backend. Returns (evr, scores, backend_label)."""
     import numpy as np
     n_components = min(n_components, X.shape[0], X.shape[1])
     try:
         from cuml.decomposition import PCA
         pca = PCA(n_components=n_components, output_type="numpy")
-        pca.fit(X)
-        return np.array(pca.explained_variance_ratio_), "cuML (CUDA)"
+        scores = pca.fit_transform(X)
+        return np.array(pca.explained_variance_ratio_), scores, "cuML (CUDA)"
     except ImportError:
         pass
     try:
@@ -128,16 +134,17 @@ def run_pca_best(X, n_components: int):
             raise RuntimeError("MPS not available")
         Xt = torch.tensor(X, device="mps")
         Xc = Xt - Xt.mean(dim=0)
-        _, S, _ = torch.pca_lowrank(Xc, q=n_components)
+        U, S, _ = torch.pca_lowrank(Xc, q=n_components)
         total_var = Xc.var(dim=0, unbiased=True).sum().item()
         evr = (S.cpu().numpy() ** 2 / (X.shape[0] - 1)) / total_var
-        return evr, "PyTorch (MPS / Apple Silicon)"
+        scores = (U * S).cpu().numpy()
+        return evr, scores, "PyTorch (MPS / Apple Silicon)"
     except (ImportError, RuntimeError):
         pass
     from sklearn.decomposition import PCA
     pca = PCA(n_components=n_components, svd_solver="randomized", random_state=0)
-    pca.fit(X)
-    return pca.explained_variance_ratio_, "sklearn (CPU)"
+    scores = pca.fit_transform(X)
+    return pca.explained_variance_ratio_, scores, "sklearn (CPU)"
 
 
 @app.function
@@ -429,6 +436,7 @@ def _(
     n_vectors,
     run_pca,
     set_pca,
+    src_img_tbl,
 ):
     _exp = experiment_selector.value if experiment_selector.value else None
     _current = get_pca()
@@ -439,10 +447,13 @@ def _(
     elif img_emb_tbl is None:
         mo.callout(mo.md("No experiment loaded — enter a DB path above."), kind="warn")
     else:
-        _X, _n_total = load_embedding_matrix(img_emb_tbl, n_vectors.value)
-        _evr, _backend = run_pca_best(_X, _X.shape[1])
+        _X, _image_ids, _n_total = load_embedding_matrix(img_emb_tbl, n_vectors.value)
+        _evr, _scores, _backend = run_pca_best(_X, _X.shape[1])
+        _meta_df = fetch_metadata_for_ids(src_img_tbl, list(_image_ids))
         set_pca({
-            "evr": _evr, "backend": _backend,
+            "evr": _evr, "scores": _scores, "image_ids": _image_ids,
+            "metadata": _meta_df,
+            "backend": _backend,
             "n_total": _n_total, "emb_dim": _X.shape[1], "n_used": len(_X),
             "experiment": _exp,
         })
@@ -468,6 +479,210 @@ def _(get_pca, map_theme, mo, n_components):
         _r["n_total"], _r["emb_dim"], _r["n_used"], _r["backend"], map_theme.value,
     )
     mo.as_html(_fig)
+    return
+
+
+@app.function
+def fetch_metadata_for_ids(src_img_tbl, image_ids):
+    """Batch-fetch non-blob columns from src_img_tbl for given image ids."""
+    import pandas as pd
+
+    if not len(image_ids) or src_img_tbl is None:
+        return pd.DataFrame()
+    escaped = ", ".join(f"'{i}'" for i in image_ids)
+    blob_cols = {"image_blob", "thumb_blob"}
+    keep_cols = [f.name for f in src_img_tbl.schema if f.name not in blob_cols]
+    df = (
+        src_img_tbl.search()
+        .where(f"id IN ({escaped})")
+        .select(keep_cols)
+        .limit(len(image_ids))
+        .to_pandas()
+    )
+    df = df.set_index("id").reindex(image_ids).reset_index()
+    return df
+
+
+@app.function
+def fetch_thumbnails_batch(src_img_tbl, image_ids: list, max_images: int = 50):
+    """Batch-fetch thumbnail blobs, filenames, and timestamps by image id."""
+    if not image_ids or src_img_tbl is None:
+        return []
+    image_ids = image_ids[:max_images]
+    escaped = ", ".join(f"'{i}'" for i in image_ids)
+    df = (
+        src_img_tbl.search()
+        .where(f"id IN ({escaped})")
+        .select(["id", "filename", "thumb_blob", "dt"])
+        .limit(max_images)
+        .to_pandas()
+    )
+    return list(zip(df["filename"], df["thumb_blob"], df["dt"]))
+
+
+@app.function
+def render_thumbnail_gallery(thumbs, n_filtered, max_display, theme="light"):
+    """Build HTML for a theme-aware thumbnail gallery with datetime labels."""
+    import base64
+
+    is_dark = theme == "dark"
+    bg = "rgba(30,30,30,0.85)" if is_dark else "#ffffff"
+    text = "#e0e0e0" if is_dark else "#222222"
+    border = "#444444" if is_dark else "#cccccc"
+
+    imgs = []
+    for fname, blob, dt in thumbs:
+        b64 = base64.b64encode(blob).decode()
+        dt_str = dt.strftime("%Y-%m-%d %H:%M") if hasattr(dt, "strftime") else str(dt)
+        imgs.append(
+            f'<div style="display:inline-block;margin:3px;text-align:center">'
+            f'<img src="data:image/jpeg;base64,{b64}" '
+            f'style="width:64px;height:64px;border:1px solid {border};'
+            f'border-radius:4px" title="{fname}"/>'
+            f'<div style="font-size:9px;color:{text};max-width:64px;'
+            f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
+            f'{dt_str}</div></div>'
+        )
+
+    count_msg = f"Showing {len(thumbs)} of {n_filtered} selected"
+    if n_filtered > max_display:
+        count_msg += f" (capped at {max_display})"
+
+    gallery_html = (
+        f'<div style="display:flex;flex-wrap:wrap;gap:4px;'
+        f'max-height:300px;overflow-y:auto;background:{bg};'
+        f'border-radius:8px;padding:8px;border:1px solid {border}">'
+        + "".join(imgs)
+        + "</div>"
+    )
+    return count_msg, gallery_html
+
+
+@app.cell
+def _(get_pca, mo):
+    _r = get_pca()
+    mo.stop(_r is None)
+    _default = ",".join(str(i + 1) for i in range(min(6, len(_r["evr"]))))
+    pc_axes_input = mo.ui.text(
+        value=_default,
+        label="PCs to display (comma-separated)",
+    )
+    pc_axes_input
+    return (pc_axes_input,)
+
+
+@app.cell
+def _(get_pca, mo, np):
+
+
+    _r = get_pca()
+    mo.stop(_r is None)
+
+    # Build options: datetime components + any numeric source columns
+    _dt_options = ["dt:year", "dt:month", "dt:day", "dt:hour", "dt:minute", "dt:second"]
+    _extra_options = list(_dt_options)
+    _meta = _r.get("metadata")
+    if _meta is not None and len(_meta) > 0:
+        _skip = {"id", "filename", "dt"}
+        for _col in _meta.columns:
+            if _col not in _skip and np.issubdtype(_meta[_col].dtype, np.number):
+                _extra_options.append(_col)
+
+    extra_axes_select = mo.ui.multiselect(
+        options=_extra_options,
+        value=["dt:month"],
+        label="Extra axes",
+    )
+    normalize_toggle = mo.ui.switch(value=False, label="Normalize PC axes")
+    mo.hstack([extra_axes_select, normalize_toggle], justify="start")
+    return extra_axes_select, normalize_toggle
+
+
+@app.cell(hide_code=True)
+def _(
+    ParallelCoordinates,
+    extra_axes_select,
+    get_pca,
+    mo,
+    normalize_toggle,
+    np,
+    pc_axes_input,
+    pl,
+):
+
+
+    _r = get_pca()
+    mo.stop(_r is None)
+
+    # Parse PC indices
+    _max_pc = _r["scores"].shape[1]
+    _indices = []
+    for _tok in pc_axes_input.value.split(","):
+        _tok = _tok.strip()
+        if _tok.isdigit() and 1 <= int(_tok) <= _max_pc:
+            _indices.append(int(_tok) - 1)
+    mo.stop(
+        len(_indices) == 0,
+        mo.callout(mo.md("Enter valid PC numbers."), kind="warn"),
+    )
+
+    # Build extra columns from metadata
+    _meta = _r.get("metadata")
+    _extra_cols = {}
+    if _meta is not None and len(_meta) > 0:
+        for _sel in extra_axes_select.value:
+            if _sel.startswith("dt:") and "dt" in _meta.columns:
+                _part = _sel.split(":")[1]
+                _dt_series = _meta["dt"].dropna()
+                if len(_dt_series) > 0 and hasattr(_dt_series.dt, _part):
+                    _vals = getattr(_meta["dt"].dt, _part)
+                    _extra_cols[_sel] = _vals.astype(float).values
+            elif _sel in _meta.columns:
+                _extra_cols[_sel] = _meta[_sel].astype(float).values
+
+    # Build PC columns, optionally normalized
+    _scores = _r["scores"]
+    _pc_values = {f"PC{i + 1}": _scores[:, i] for i in _indices}
+    if normalize_toggle.value:
+        _all_vals = np.column_stack([_scores[:, i] for i in _indices])
+        _gmin = _all_vals.min()
+        _gmax = _all_vals.max()
+        _range = _gmax - _gmin if _gmax != _gmin else 1.0
+        _pc_values = {k: (v - _gmin) / _range for k, v in _pc_values.items()}
+
+    # Combine: extra columns first, then PCs
+    _all_cols = {**_extra_cols, **_pc_values}
+    _df = pl.DataFrame(_all_cols)
+    parcoord_widget = mo.ui.anywidget(ParallelCoordinates(_df, height=350))
+    parcoord_widget
+    return (parcoord_widget,)
+
+
+@app.cell
+def _(get_pca, map_theme, mo, parcoord_widget, src_img_tbl):
+    _r = get_pca()
+    mo.stop(_r is None or src_img_tbl is None)
+
+    # Read filtered_uids (synced traitlet) — filtered_indices is computed/non-synced
+    _val = parcoord_widget.value
+    _uids = _val.get("filtered_uids", []) if isinstance(_val, dict) else []
+    _ids = _r["image_ids"]
+    if _uids:
+        _filtered = sorted(int(uid) for uid in _uids)
+    else:
+        _filtered = list(range(len(_ids)))
+    _selected_ids = [str(_ids[i]) for i in _filtered]
+    _max_display = 50
+    _thumbs = fetch_thumbnails_batch(src_img_tbl, _selected_ids, _max_display)
+    _count_msg, _gallery_html = render_thumbnail_gallery(
+        _thumbs, len(_filtered), _max_display, theme=map_theme.value,
+    )
+    mo.vstack([mo.md(f"**{_count_msg}**"), mo.Html(_gallery_html)])
+    return
+
+
+@app.cell
+def _():
     return
 
 
