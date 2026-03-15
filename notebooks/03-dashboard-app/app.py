@@ -185,26 +185,6 @@ def make_scree_plot(evr, n_total: int, emb_dim: int, n_used: int, backend: str, 
         hovertemplate="PC %{x}<br>Cumulative: %{y:.1f}%<extra></extra>",
     ))
 
-    _lx = int(components[-1])
-    _lper = float(per_comp[-1])
-    _lcum = float(cum[-1])
-    _ann_bg = "rgba(30,30,30,0.85)" if is_dark else "rgba(255,255,255,0.88)"
-    _ann_fg = "#e0e0e0" if is_dark else "#222222"
-    fig.add_annotation(
-        x=_lx, y=_lcum, yref="y2",
-        text=f"PC {_lx}<br>{_lper:.2f}% var<br>{_lcum:.1f}% cum",
-        showarrow=True, arrowhead=2, arrowwidth=1.5,
-        arrowcolor=line_color,
-        ax=-50, ay=-36,
-        font=dict(size=10, color=_ann_fg),
-        bgcolor=_ann_bg,
-        bordercolor=line_color,
-        borderwidth=1,
-        borderpad=4,
-        xanchor="right",
-        yanchor="bottom",
-    )
-
     fig.update_layout(
         template=plotly_template,
         title=dict(
@@ -407,8 +387,8 @@ def _(
 @app.cell
 def _(explore_tab, mo, overview_tab):
     mo.ui.tabs({
-        "🏠 Overview": overview_tab,
-        "🔍 Explore": explore_tab,
+        "Overview": overview_tab,
+        "Explore": explore_tab,
     })
     return
 
@@ -421,7 +401,7 @@ def _(mo):
 
 @app.cell
 def _(mo):
-    n_vectors = mo.ui.slider(2, 5000, value=1000, step=100, label="Max vectors")
+    n_vectors = mo.ui.number(value=5000, start=2, label="Max vectors")
     run_pca = mo.ui.run_button(label="Run PCA")
     mo.hstack([n_vectors, run_pca], justify="start")
     return n_vectors, run_pca
@@ -461,21 +441,11 @@ def _(
 
 
 @app.cell
-def _(get_pca, mo):
+def _(get_pca, map_theme, mo):
     _r = get_pca()
     mo.stop(_r is None)
-    n_components = mo.ui.slider(
-        1, len(_r["evr"]), value=len(_r["evr"]), step=1, label="Components to show",
-    )
-    n_components
-    return (n_components,)
-
-
-@app.cell
-def _(get_pca, map_theme, mo, n_components):
-    _r = get_pca()
     _fig = make_scree_plot(
-        _r["evr"][:n_components.value],
+        _r["evr"],
         _r["n_total"], _r["emb_dim"], _r["n_used"], _r["backend"], map_theme.value,
     )
     mo.as_html(_fig)
@@ -531,8 +501,38 @@ def apply_brush_filter(data_cols, brush_extents):
 
 
 @app.function
-def fetch_thumbnails_batch(src_img_tbl, image_ids: list, max_images: int = 50):
-    """Batch-fetch thumbnail blobs, filenames, and timestamps by image id."""
+def get_thumb_dimensions(src_img_tbl, base_size=192):
+    """Extract spatial extent from table metadata and compute thumb dimensions."""
+    import json
+    raw_meta = src_img_tbl.schema.metadata or {}
+    ds_info = json.loads(raw_meta.get(b"dataset_info", "{}")) if raw_meta else {}
+    ext = ds_info.get("spatial_extent", {})
+    if ext:
+        return compute_thumb_dimensions(ext, base_size)
+    return base_size, base_size
+
+
+@app.function
+def compute_thumb_dimensions(spatial_extent, base_size=192):
+    """Compute (width_px, height_px) preserving geographic aspect ratio."""
+    import math
+    lat_range = abs(spatial_extent["lat_max"] - spatial_extent["lat_min"])
+    lon_range = abs(spatial_extent["lon_max"] - spatial_extent["lon_min"])
+    mean_lat = (spatial_extent["lat_min"] + spatial_extent["lat_max"]) / 2
+    # Cosine correction: 1° longitude shrinks toward poles
+    effective_lon = lon_range * math.cos(math.radians(mean_lat))
+    if lat_range == 0 or effective_lon == 0:
+        return base_size, base_size
+    aspect = effective_lon / lat_range
+    if aspect >= 1:
+        return base_size, round(base_size / aspect)
+    else:
+        return round(base_size * aspect), base_size
+
+
+@app.function
+def fetch_thumbnails_batch(src_img_tbl, image_ids: list, max_images: int = 20):
+    """Batch-fetch image blobs, filenames, and timestamps by image id."""
     if not image_ids or src_img_tbl is None:
         return []
     image_ids = image_ids[:max_images]
@@ -540,15 +540,16 @@ def fetch_thumbnails_batch(src_img_tbl, image_ids: list, max_images: int = 50):
     df = (
         src_img_tbl.search()
         .where(f"id IN ({escaped})")
-        .select(["id", "filename", "thumb_blob", "dt"])
+        .select(["id", "filename", "image_blob", "dt"])
         .limit(max_images)
         .to_pandas()
     )
-    return list(zip(df["filename"], df["thumb_blob"], df["dt"]))
+    return list(zip(df["filename"], df["image_blob"], df["dt"]))
 
 
 @app.function
-def render_thumbnail_gallery(thumbs, n_filtered, max_display, theme="light"):
+def render_thumbnail_gallery(thumbs, n_filtered, max_display, theme="light",
+                             thumb_w=192, thumb_h=192):
     """Build HTML for a theme-aware thumbnail gallery with datetime labels."""
     import base64
 
@@ -564,9 +565,9 @@ def render_thumbnail_gallery(thumbs, n_filtered, max_display, theme="light"):
         imgs.append(
             f'<div style="display:inline-block;margin:3px;text-align:center">'
             f'<img src="data:image/jpeg;base64,{b64}" '
-            f'style="width:64px;height:64px;border:1px solid {border};'
+            f'style="width:{thumb_w}px;height:{thumb_h}px;border:1px solid {border};'
             f'border-radius:4px" title="{fname}"/>'
-            f'<div style="font-size:9px;color:{text};max-width:64px;'
+            f'<div style="font-size:11px;color:{text};max-width:{thumb_w}px;'
             f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
             f'{dt_str}</div></div>'
         )
@@ -723,10 +724,15 @@ def _(
         _filtered = [i for i in _filtered if i < _n_real]
 
     _selected_ids = [str(_ids[i]) for i in _filtered]
-    _max_display = 50
+    _max_display = 20
+
+    # Compute thumbnail dimensions from spatial extent metadata
+    _tw, _th = get_thumb_dimensions(src_img_tbl)
+
     _thumbs = fetch_thumbnails_batch(src_img_tbl, _selected_ids, _max_display)
     _count_msg, _gallery_html = render_thumbnail_gallery(
         _thumbs, len(_filtered), _max_display, theme=map_theme.value,
+        thumb_w=_tw, thumb_h=_th,
     )
     mo.vstack([mo.md(f"**{_count_msg}**"), mo.Html(_gallery_html)])
     return
