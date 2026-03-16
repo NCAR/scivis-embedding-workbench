@@ -1,7 +1,7 @@
 import marimo
 
 __generated_with = "0.20.4"
-app = marimo.App(layout_file="layouts/app.grid.json")
+app = marimo.App()
 
 
 @app.cell
@@ -491,11 +491,19 @@ def apply_brush_filter(data_cols, brush_extents):
         if axis_name not in data_cols:
             continue
         vals = np.asarray(data_cols[axis_name], dtype=float)
-        lo = min(info["range"])
-        hi = max(info["range"])
-        axis_mask = (vals >= lo) & (vals <= hi)
-        if info.get("include_infnans", False):
-            axis_mask |= ~np.isfinite(vals)
+        if "range" in info:
+            # Numeric / timestamp: filter by [lo, hi] range
+            lo = min(info["range"])
+            hi = max(info["range"])
+            axis_mask = (vals >= lo) & (vals <= hi)
+            if info.get("include_infnans", False):
+                axis_mask |= ~np.isfinite(vals)
+        elif "values" in info:
+            # Categorical: filter by set membership
+            allowed = [float(v) for v in info["values"]]
+            axis_mask = np.isin(vals, allowed)
+        else:
+            continue
         mask &= axis_mask
     return np.where(mask)[0].tolist()
 
@@ -565,7 +573,7 @@ def render_thumbnail_gallery(thumbs, n_filtered, max_display, theme="light",
         imgs.append(
             f'<div style="display:inline-block;margin:3px;text-align:center">'
             f'<img src="data:image/jpeg;base64,{b64}" '
-            f'style="width:{thumb_w}px;height:{thumb_h}px;border:1px solid {border};'
+            f'style="width:{thumb_w}px;height:{thumb_h}px;object-fit:fill;border:1px solid {border};'
             f'border-radius:4px" title="{fname}"/>'
             f'<div style="font-size:11px;color:{text};max-width:{thumb_w}px;'
             f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
@@ -613,7 +621,11 @@ def _(get_pca, mo, np):
     if _meta is not None and len(_meta) > 0:
         _skip = {"id", "filename", "dt"}
         for _col in _meta.columns:
-            if _col not in _skip and np.issubdtype(_meta[_col].dtype, np.number):
+            try:
+                _is_numeric = np.issubdtype(_meta[_col].dtype, np.number)
+            except TypeError:
+                _is_numeric = False
+            if _col not in _skip and _is_numeric:
                 _extra_options.append(_col)
 
     extra_axes_select = mo.ui.multiselect(
