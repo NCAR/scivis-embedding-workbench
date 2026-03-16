@@ -32,6 +32,32 @@ def list_experiments(db_path: str) -> list:
 
 
 @app.function
+def get_theme_colors(theme: str) -> dict:
+    """Centralized color palette for light/dark theme. Used by all plot functions.
+    Values are identical to those previously hardcoded in each plot function.
+    Edit here to change colors app-wide.
+    """
+    is_dark = (theme == "dark")
+    return {
+        # Shared text + border
+        "text":            "#e0e0e0" if is_dark else "#222222",
+        "border":          "#444444" if is_dark else "#cccccc",
+        # Map (make_extent_map)
+        "bg":              "#1a1a1a" if is_dark else "#ffffff",
+        "ocean":           "#1e3a5f" if is_dark else "#a8c8e8",
+        "land":            "#3a3a3a" if is_dark else "#d4d4d4",
+        "coast":           "#aaaaaa" if is_dark else "#555555",
+        "grid":            "#666666" if is_dark else "#888888",
+        # Thumbnail gallery (render_thumbnail_gallery)
+        "gallery_bg":      "rgba(30,30,30,0.85)" if is_dark else "#ffffff",
+        # Scree plot (make_scree_plot)
+        "bar_color":       "#4FC3F7" if is_dark else "#1565C0",
+        "line_color":      "#FF7043" if is_dark else "#C62828",
+        "plotly_template": "plotly_dark" if is_dark else "plotly_white",
+    }
+
+
+@app.function
 def load_config_dict(db, config_table_name: str) -> dict:
     """Load a config table into a Python dict keyed by the 'key' column."""
     tbl = db.open_table(config_table_name)
@@ -62,14 +88,7 @@ def make_extent_map(lat_min, lat_max, lon_min, lon_max, num_patch_tokens, patch_
     import cartopy.crs as ccrs
     import cartopy.feature as cfeature
     import math
-    is_dark = theme == "dark"
-    colors = (
-        {"land": "#3a3a3a", "ocean": "#1e3a5f", "coast": "#aaaaaa",
-         "grid": "#666666", "text": "#e0e0e0", "bg": "#1a1a1a"}
-        if is_dark else
-        {"land": "#d4d4d4", "ocean": "#a8c8e8", "coast": "#555555",
-         "grid": "#888888", "text": "#222222", "bg": "#ffffff"}
-    )
+    colors = get_theme_colors(theme)
     proj = ccrs.PlateCarree()
     fig, ax = plt.subplots(figsize=(8, 5), subplot_kw={"projection": proj})
     fig.patch.set_facecolor(colors["bg"])
@@ -153,8 +172,10 @@ def make_scree_plot(evr, n_total: int, emb_dim: int, n_used: int, backend: str, 
     import numpy as np
     import plotly.graph_objects as go
 
-    is_dark = theme == "dark"
-    plotly_template = "plotly_dark" if is_dark else "plotly_white"
+    _c = get_theme_colors(theme)
+    plotly_template = _c["plotly_template"]
+    bar_color       = _c["bar_color"]
+    line_color      = _c["line_color"]
 
     cum = np.cumsum(evr) * 100
     per_comp = evr * 100
@@ -162,9 +183,6 @@ def make_scree_plot(evr, n_total: int, emb_dim: int, n_used: int, backend: str, 
     _sample_label = f"{n_used:,} / {n_total:,}" if n_used < n_total else f"{n_total:,}"
 
     fig = go.Figure()
-
-    bar_color = "#4FC3F7" if is_dark else "#1565C0"
-    line_color = "#FF7043" if is_dark else "#C62828"
 
     fig.add_trace(go.Bar(
         x=components,
@@ -210,18 +228,13 @@ def make_scree_plot(evr, n_total: int, emb_dim: int, n_used: int, backend: str, 
 
 @app.cell
 def _(mo):
-    map_theme = mo.ui.radio(
-        options=["system", "light", "dark"],
-        value=mo.app_meta().theme,
-        label="Map theme",
-        inline=True,
-    )
     embedding_db_path = mo.ui.text(
         value="",
         placeholder="e.g. /data/lancedb/experiments/era5",
         label="Experiments DB path",
         full_width=True,
     )
+    map_theme = mo.ui.switch(label="Dark mode")
     return embedding_db_path, map_theme
 
 
@@ -369,7 +382,7 @@ def _(
                 lon_min=float(_ext["lon_min"]), lon_max=float(_ext["lon_max"]),
                 num_patch_tokens=int(config["num_patch_tokens"]),
                 patch_size=int(config.get("patch_size", 16)),
-                theme=map_theme.value,
+                theme="dark" if map_theme.value else "light",
                 experiment=experiment_selector.value,
             )
             _map_subtab = mo.as_html(_map_fig)
@@ -446,7 +459,8 @@ def _(get_pca, map_theme, mo):
     mo.stop(_r is None)
     _fig = make_scree_plot(
         _r["evr"],
-        _r["n_total"], _r["emb_dim"], _r["n_used"], _r["backend"], map_theme.value,
+        _r["n_total"], _r["emb_dim"], _r["n_used"], _r["backend"],
+        "dark" if map_theme.value else "light",
     )
     mo.as_html(_fig)
     return
@@ -561,10 +575,8 @@ def render_thumbnail_gallery(thumbs, n_filtered, max_display, theme="light",
     """Build HTML for a theme-aware thumbnail gallery with datetime labels."""
     import base64
 
-    is_dark = theme == "dark"
-    bg = "rgba(30,30,30,0.85)" if is_dark else "#ffffff"
-    text = "#e0e0e0" if is_dark else "#222222"
-    border = "#444444" if is_dark else "#cccccc"
+    _c = get_theme_colors(theme)
+    bg, text, border = _c["gallery_bg"], _c["text"], _c["border"]
 
     imgs = []
     for fname, blob, dt in thumbs:
@@ -683,9 +695,15 @@ def _(
             elif _sel in _meta.columns:
                 _extra_cols[_sel] = _meta[_sel].astype(float).values
 
-    # Build PC columns
+    # Build PC columns (reversed so HiPlot's internal .reverse() yields PC1→PCn left-to-right)
     _scores = _r["scores"]
-    _pc_values = {f"PC{i + 1}": _scores[:, i] for i in _indices}
+    _pc_values = {f"PC{i + 1}": _scores[:, i] for i in reversed(_indices)}
+
+    # Combine in reverse: PCs (reversed) then extras (reversed)
+    # HiPlot's componentDidMount reverses Object.keys order, so after
+    # .reverse() the plot renders: extra1, extra2, ..., PC1, PC2, ... (left→right)
+    _reversed_extras = dict(reversed(list(_extra_cols.items())))
+    parcoord_data_cols = {**_pc_values, **_reversed_extras}
 
     # Sentinel rows to equalize PC axis ranges (values stay untouched)
     _sentinels = None
@@ -695,17 +713,17 @@ def _(
         _gmax = float(_all_vals.max())
         _sentinel_lo = {k: _gmin for k in _pc_values}
         _sentinel_hi = {k: _gmax for k in _pc_values}
-        for k, v in _extra_cols.items():
+        for k, v in _reversed_extras.items():
             _sentinel_lo[k] = float(np.nanmin(v))
             _sentinel_hi[k] = float(np.nanmax(v))
         _sentinels = pl.DataFrame([_sentinel_lo, _sentinel_hi])
 
-    # Combine: extra columns first, then PCs
-    parcoord_data_cols = {**_extra_cols, **_pc_values}
     _df = pl.DataFrame(parcoord_data_cols)
     if _sentinels is not None:
         _df = pl.concat([_df, _sentinels], how="diagonal_relaxed")
-    parcoord_widget = mo.ui.anywidget(ParallelCoordinates(_df, height=350))
+    # Last key in reversed dict = leftmost axis after HiPlot's .reverse()
+    _color_axis = list(parcoord_data_cols.keys())[-1]
+    parcoord_widget = mo.ui.anywidget(ParallelCoordinates(_df, height=350, color_by=_color_axis))
     parcoord_widget
     return parcoord_data_cols, parcoord_widget
 
@@ -713,9 +731,9 @@ def _(
 @app.cell(hide_code=True)
 def _(
     get_pca,
-    map_theme,
     mo,
     parcoord_data_cols,
+    map_theme,
     parcoord_widget,
     src_img_tbl,
 ):
@@ -743,7 +761,8 @@ def _(
 
     _thumbs = fetch_thumbnails_batch(src_img_tbl, _selected_ids, _max_display)
     _count_msg, _gallery_html = render_thumbnail_gallery(
-        _thumbs, len(_filtered), _max_display, theme=map_theme.value,
+        _thumbs, len(_filtered), _max_display,
+        theme="dark" if map_theme.value else "light",
         thumb_w=_tw, thumb_h=_th,
     )
     mo.vstack([mo.md(f"**{_count_msg}**"), mo.Html(_gallery_html)])
