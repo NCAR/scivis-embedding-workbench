@@ -1,13 +1,14 @@
 import marimo
 
 __generated_with = "0.20.4"
-app = marimo.App()
+app = marimo.App(layout_file="layouts/app.grid.json")
 
 
 @app.cell
 def _():
     import marimo as mo
     import numpy as np
+    import IPython  # must be imported before lancedb to avoid circular import via tqdm→ipywidgets
     import lancedb
     import pandas as pd
     import polars as pl
@@ -50,6 +51,7 @@ def get_theme_colors(theme: str) -> dict:
         "grid":            "#666666" if is_dark else "#888888",
         # Thumbnail gallery (render_thumbnail_gallery)
         "gallery_bg":      "rgba(30,30,30,0.85)" if is_dark else "#ffffff",
+        "gallery_bg_rgb":  (30, 30, 30) if is_dark else (255, 255, 255),
         # Scree plot (make_scree_plot)
         "bar_color":       "#4FC3F7" if is_dark else "#1565C0",
         "line_color":      "#FF7043" if is_dark else "#C62828",
@@ -398,15 +400,6 @@ def _(
 
 
 @app.cell
-def _(explore_tab, mo, overview_tab):
-    mo.ui.tabs({
-        "Overview": overview_tab,
-        "Explore": explore_tab,
-    })
-    return
-
-
-@app.cell
 def _(mo):
     get_pca, set_pca = mo.state(None)
     return get_pca, set_pca
@@ -415,9 +408,13 @@ def _(mo):
 @app.cell
 def _(mo):
     n_vectors = mo.ui.number(value=5000, start=2, label="Max vectors")
-    run_pca = mo.ui.run_button(label="Run PCA")
-    mo.hstack([n_vectors, run_pca], justify="start")
-    return n_vectors, run_pca
+    run_pca = mo.ui.run_button(
+        label="▶ Run PCA",
+        kind="success",
+        tooltip="Run Principal Component Analysis on loaded embeddings",
+    )
+    pca_controls_ui = mo.hstack([n_vectors, run_pca], justify="start", align="end")
+    return n_vectors, pca_controls_ui, run_pca
 
 
 @app.cell
@@ -436,9 +433,9 @@ def _(
     if _current is not None and _current.get("experiment") != _exp:
         set_pca(None)
     if not run_pca.value:
-        mo.callout(mo.md("Configure options above and click Run PCA."), kind="info")
+        pca_status = mo.callout(mo.md("Configure options above and click Run PCA."), kind="info")
     elif img_emb_tbl is None:
-        mo.callout(mo.md("No experiment loaded — enter a DB path above."), kind="warn")
+        pca_status = mo.callout(mo.md("No experiment loaded — enter a DB path above."), kind="warn")
     else:
         _X, _image_ids, _n_total = load_embedding_matrix(img_emb_tbl, n_vectors.value)
         _evr, _scores, _backend = run_pca_best(_X, _X.shape[1])
@@ -450,20 +447,23 @@ def _(
             "n_total": _n_total, "emb_dim": _X.shape[1], "n_used": len(_X),
             "experiment": _exp,
         })
-    return
+        pca_status = None
+    return (pca_status,)
 
 
 @app.cell
 def _(get_pca, map_theme, mo):
     _r = get_pca()
-    mo.stop(_r is None)
-    _fig = make_scree_plot(
-        _r["evr"],
-        _r["n_total"], _r["emb_dim"], _r["n_used"], _r["backend"],
-        "dark" if map_theme.value else "light",
-    )
-    mo.as_html(_fig)
-    return
+    if _r is None:
+        scree_html = None
+    else:
+        _fig = make_scree_plot(
+            _r["evr"],
+            _r["n_total"], _r["emb_dim"], _r["n_used"], _r["backend"],
+            "dark" if map_theme.value else "light",
+        )
+        scree_html = mo.as_html(_fig)
+    return (scree_html,)
 
 
 @app.function
@@ -504,8 +504,11 @@ def apply_brush_filter(data_cols, brush_extents):
     for axis_name, info in brush_extents.items():
         if axis_name not in data_cols:
             continue
-        vals = np.asarray(data_cols[axis_name], dtype=float)
-        if "range" in info:
+        _raw = data_cols[axis_name]
+        _first = _raw.flat[0] if hasattr(_raw, "flat") else _raw[0]
+        _is_str = isinstance(_first, str)
+        vals = np.asarray(_raw, dtype=object if _is_str else float)
+        if "range" in info and not _is_str:
             # Numeric / timestamp: filter by [lo, hi] range
             lo = min(info["range"])
             hi = max(info["range"])
@@ -514,8 +517,12 @@ def apply_brush_filter(data_cols, brush_extents):
                 axis_mask |= ~np.isfinite(vals)
         elif "values" in info:
             # Categorical: filter by set membership
-            allowed = [float(v) for v in info["values"]]
-            axis_mask = np.isin(vals, allowed)
+            if _is_str:
+                _allowed = set(str(v) for v in info["values"])
+                axis_mask = np.array([v in _allowed for v in vals], dtype=bool)
+            else:
+                allowed = [float(v) for v in info["values"]]
+                axis_mask = np.isin(vals, allowed)
         else:
             continue
         mask &= axis_mask
@@ -570,6 +577,70 @@ def fetch_thumbnails_batch(src_img_tbl, image_ids: list, max_images: int = 20):
 
 
 @app.function
+def fetch_attention_maps(img_emb_tbl, image_ids: list) -> dict:
+    """Batch-fetch attention maps from the image embeddings table.
+    Returns {image_id: flat_float_list} for each found ID."""
+    import pyarrow.compute as pc
+    if not image_ids or img_emb_tbl is None:
+        return {}
+    df = (
+        img_emb_tbl.to_lance()
+        .scanner(
+            columns=["image_id", "attention_map"],
+            filter=pc.field("image_id").isin(image_ids),
+        )
+        .to_table()
+        .to_pandas()
+    )
+    return dict(zip(df["image_id"], df["attention_map"]))
+
+
+@app.function
+def composite_attention_overlay(
+    image_blob: bytes,
+    attention_flat,
+    spatial_h: int,
+    spatial_w: int,
+    alpha_min: float = 0.05,
+    bg_color: tuple = (255, 255, 255),
+) -> bytes:
+    """Modulate image visibility by attention: high-attention areas show the full
+    image, low-attention areas fade toward bg_color.  No colormap is used.
+    Returns JPEG bytes of the composited image."""
+    import io
+    import numpy as np
+    from PIL import Image
+
+    img = Image.open(io.BytesIO(image_blob)).convert("RGBA")
+    img_w, img_h = img.size
+
+    # Reshape flat attention → 2-D, normalise to [0, 1]
+    attn = np.array(attention_flat, dtype=np.float32).reshape(spatial_h, spatial_w)
+    attn = (attn - attn.min()) / (attn.max() - attn.min() + 1e-8)
+
+    # Scale to [alpha_min, 1] so even the lowest-attention pixels remain slightly visible
+    attn_alpha = alpha_min + (1.0 - alpha_min) * attn
+
+    # Upsample attention mask to image size
+    attn_img = Image.fromarray((attn_alpha * 255).astype(np.uint8), "L").resize(
+        (img_w, img_h), Image.NEAREST
+    )
+
+    # Replace image alpha channel with the attention mask
+    img_arr = np.array(img)
+    img_arr[..., 3] = np.array(attn_img)
+    masked = Image.fromarray(img_arr, "RGBA")
+
+    # Composite over solid background so JPEG can be saved
+    bg = Image.new("RGBA", (img_w, img_h), bg_color + (255,))
+    composite = Image.alpha_composite(bg, masked).convert("RGB")
+
+    buf = io.BytesIO()
+    composite.save(buf, format="JPEG", quality=85)
+    return buf.getvalue()
+
+
+@app.function
 def render_thumbnail_gallery(thumbs, n_filtered, max_display, theme="light",
                              thumb_w=192, thumb_h=192):
     """Build HTML for a theme-aware thumbnail gallery with datetime labels."""
@@ -597,8 +668,8 @@ def render_thumbnail_gallery(thumbs, n_filtered, max_display, theme="light",
         count_msg += f" (capped at {max_display})"
 
     gallery_html = (
-        f'<div style="display:flex;flex-wrap:wrap;gap:4px;'
-        f'max-height:300px;overflow-y:auto;background:{bg};'
+        f'<div style="display:flex;flex-wrap:wrap;gap:4px;align-content:flex-start;'
+        f'height:600px;overflow-y:auto;background:{bg};'
         f'border-radius:8px;padding:8px;border:1px solid {border}">'
         + "".join(imgs)
         + "</div>"
@@ -609,45 +680,57 @@ def render_thumbnail_gallery(thumbs, n_filtered, max_display, theme="light",
 @app.cell
 def _(get_pca, mo):
     _r = get_pca()
-    mo.stop(_r is None)
-    _default = ",".join(str(i + 1) for i in range(min(6, len(_r["evr"]))))
-    pc_axes_input = mo.ui.text(
-        value=_default,
-        label="PCs to display (comma-separated)",
-    )
-    pc_axes_input
+    if _r is None:
+        pc_axes_input = mo.ui.text(value="", label="PCs to display (comma-separated)")
+    else:
+        _default = ",".join(str(i + 1) for i in range(min(6, len(_r["evr"]))))
+        pc_axes_input = mo.ui.text(
+            value=_default,
+            label="PCs to display (comma-separated)",
+        )
     return (pc_axes_input,)
 
 
 @app.cell(hide_code=True)
 def _(get_pca, mo, np):
-
-
     _r = get_pca()
-    mo.stop(_r is None)
 
-    # Build options: datetime components + any numeric source columns
-    _dt_options = ["dt:year", "dt:month", "dt:day", "dt:hour", "dt:minute", "dt:second"]
-    _extra_options = list(_dt_options)
-    _meta = _r.get("metadata")
-    if _meta is not None and len(_meta) > 0:
-        _skip = {"id", "filename", "dt"}
-        for _col in _meta.columns:
-            try:
-                _is_numeric = np.issubdtype(_meta[_col].dtype, np.number)
-            except TypeError:
-                _is_numeric = False
-            if _col not in _skip and _is_numeric:
-                _extra_options.append(_col)
+    if _r is None:
+        extra_axes_select = mo.ui.multiselect(options=[], value=[], label="Extra axes")
+        normalize_toggle = mo.ui.switch(value=False, label="Equal PC axis range")
+        attention_toggle = mo.ui.switch(value=False, label="Attention overlay")
+    else:
+        # Build options: datetime components + any numeric source columns
+        _dt_options = ["dt:year", "dt:month", "dt:day", "dt:hour", "dt:minute", "dt:second"]
+        _extra_options = list(_dt_options)
+        _meta = _r.get("metadata")
+        if _meta is not None and len(_meta) > 0:
+            _skip = {"id", "filename", "dt"}
+            for _col in _meta.columns:
+                try:
+                    _is_numeric = np.issubdtype(_meta[_col].dtype, np.number)
+                except TypeError:
+                    _is_numeric = False
+                if _col not in _skip and _is_numeric:
+                    _extra_options.append(_col)
 
-    extra_axes_select = mo.ui.multiselect(
-        options=_extra_options,
-        value=["dt:month"],
-        label="Extra axes",
+        extra_axes_select = mo.ui.multiselect(
+            options=_extra_options,
+            value=["dt:month"],
+            label="Extra axes",
+        )
+        normalize_toggle = mo.ui.switch(value=False, label="Equal PC axis range")
+        attention_toggle = mo.ui.switch(value=False, label="Attention overlay")
+
+    parcoord_options_ui = mo.hstack(
+        [extra_axes_select, normalize_toggle, attention_toggle], justify="start"
     )
-    normalize_toggle = mo.ui.switch(value=False, label="Equal PC axis range")
-    mo.hstack([extra_axes_select, normalize_toggle], justify="start")
-    return extra_axes_select, normalize_toggle
+    return (
+        attention_toggle,
+        extra_axes_select,
+        normalize_toggle,
+        parcoord_options_ui,
+    )
 
 
 @app.cell(hide_code=True)
@@ -656,116 +739,265 @@ def _(
     extra_axes_select,
     get_pca,
     mo,
-    normalize_toggle,
     np,
     pc_axes_input,
     pl,
 ):
-
-
     _r = get_pca()
-    mo.stop(_r is None)
 
-    # Parse PC indices
-    _max_pc = _r["scores"].shape[1]
-    _indices = []
-    for _tok in pc_axes_input.value.split(","):
-        _tok = _tok.strip()
-        if _tok.isdigit() and 1 <= int(_tok) <= _max_pc:
-            _indices.append(int(_tok) - 1)
-    mo.stop(
-        len(_indices) == 0,
-        mo.callout(mo.md("Enter valid PC numbers."), kind="warn"),
-    )
+    if _r is None:
+        parcoord_data_cols = {}
+        parcoord_widget = None
+    else:
+        # Parse PC indices
+        _max_pc = _r["scores"].shape[1]
+        _indices = []
+        for _tok in pc_axes_input.value.split(","):
+            _tok = _tok.strip()
+            if _tok.isdigit() and 1 <= int(_tok) <= _max_pc:
+                _indices.append(int(_tok) - 1)
 
-    # Build extra columns from metadata
-    _meta = _r.get("metadata")
-    _extra_cols = {}
-    if _meta is not None and len(_meta) > 0:
-        for _sel in extra_axes_select.value:
-            if _sel.startswith("dt:") and "dt" in _meta.columns:
-                _part = _sel.split(":")[1]
-                if hasattr(_meta["dt"].dt, _part):
-                    _vals = getattr(_meta["dt"].dt, _part).astype(float)
-                    _n_nan = int(_vals.isna().sum())
-                    if _n_nan > 0:
-                        print(f"[parcoord] WARNING: {_sel} has {_n_nan} NaN values "
-                              f"out of {len(_vals)} rows (missing metadata)")
-                    _extra_cols[_sel] = _vals.values
-            elif _sel in _meta.columns:
-                _extra_cols[_sel] = _meta[_sel].astype(float).values
+        if len(_indices) == 0:
+            parcoord_data_cols = {}
+            parcoord_widget = mo.callout(mo.md("Enter valid PC numbers."), kind="warn")
+        else:
+            # Build extra columns from metadata
+            _meta = _r.get("metadata")
+            _extra_cols = {}
+            if _meta is not None and len(_meta) > 0:
+                _MONTH_LABELS = {
+                    1: "01 Jan", 2: "02 Feb", 3: "03 Mar", 4: "04 Apr",
+                    5: "05 May", 6: "06 Jun", 7: "07 Jul", 8: "08 Aug",
+                    9: "09 Sep", 10: "10 Oct", 11: "11 Nov", 12: "12 Dec",
+                }
+                for _sel in extra_axes_select.value:
+                    if _sel.startswith("dt:") and "dt" in _meta.columns:
+                        _part = _sel.split(":")[1]
+                        if hasattr(_meta["dt"].dt, _part):
+                            if _sel == "dt:month":
+                                # String labels sort alphabetically = chronologically
+                                _month_ints = getattr(_meta["dt"].dt, "month").values
+                                _extra_cols[_sel] = np.array(
+                                    [_MONTH_LABELS.get(int(v), str(v)) for v in _month_ints]
+                                )
+                            else:
+                                _vals = getattr(_meta["dt"].dt, _part).astype(float)
+                                _n_nan = int(_vals.isna().sum())
+                                if _n_nan > 0:
+                                    print(f"[parcoord] WARNING: {_sel} has {_n_nan} NaN values "
+                                          f"out of {len(_vals)} rows (missing metadata)")
+                                _extra_cols[_sel] = _vals.values
+                    elif _sel in _meta.columns:
+                        _extra_cols[_sel] = _meta[_sel].astype(float).values
 
-    # Build PC columns (reversed so HiPlot's internal .reverse() yields PC1→PCn left-to-right)
-    _scores = _r["scores"]
-    _pc_values = {f"PC{i + 1}": _scores[:, i] for i in reversed(_indices)}
+            # Build PC columns (reversed so HiPlot's internal .reverse() yields PC1→PCn left-to-right)
+            _scores = _r["scores"]
+            _pc_values = {f"PC{i + 1}": _scores[:, i] for i in reversed(_indices)}
 
-    # Combine in reverse: PCs (reversed) then extras (reversed)
-    # HiPlot's componentDidMount reverses Object.keys order, so after
-    # .reverse() the plot renders: extra1, extra2, ..., PC1, PC2, ... (left→right)
-    _reversed_extras = dict(reversed(list(_extra_cols.items())))
-    parcoord_data_cols = {**_pc_values, **_reversed_extras}
+            # Combine in reverse: PCs (reversed) then extras (reversed)
+            # HiPlot's componentDidMount reverses Object.keys order, so after
+            # .reverse() the plot renders: extra1, extra2, ..., PC1, PC2, ... (left→right)
+            _reversed_extras = dict(reversed(list(_extra_cols.items())))
+            parcoord_data_cols = {**_pc_values, **_reversed_extras}
 
-    # Sentinel rows to equalize PC axis ranges (values stay untouched)
-    _sentinels = None
-    if normalize_toggle.value:
-        _all_vals = np.column_stack([_scores[:, i] for i in _indices])
-        _gmin = float(_all_vals.min())
-        _gmax = float(_all_vals.max())
-        _sentinel_lo = {k: _gmin for k in _pc_values}
-        _sentinel_hi = {k: _gmax for k in _pc_values}
-        for k, v in _reversed_extras.items():
-            _sentinel_lo[k] = float(np.nanmin(v))
-            _sentinel_hi[k] = float(np.nanmax(v))
-        _sentinels = pl.DataFrame([_sentinel_lo, _sentinel_hi])
+            # Always include 2 sentinel rows (per-column min/max) so data.length
+            # stays constant — prevents HiPlot React key change & axis-order flip.
+            _keys = list(parcoord_data_cols.keys())
 
-    _df = pl.DataFrame(parcoord_data_cols)
-    if _sentinels is not None:
-        _df = pl.concat([_df, _sentinels], how="diagonal_relaxed")
-    # Last key in reversed dict = leftmost axis after HiPlot's .reverse()
-    _color_axis = list(parcoord_data_cols.keys())[-1]
-    parcoord_widget = mo.ui.anywidget(ParallelCoordinates(_df, height=350, color_by=_color_axis))
-    parcoord_widget
+            def _col_extreme(arr, hi=False):
+                first = arr.flat[0] if hasattr(arr, "flat") else arr[0]
+                if isinstance(first, str):
+                    sv = sorted(set(arr))
+                    return sv[-1] if hi else sv[0]
+                return float(np.nanmax(arr) if hi else np.nanmin(arr))
+
+            _sentinel_lo = {k: _col_extreme(parcoord_data_cols[k], hi=False) for k in _keys}
+            _sentinel_hi = {k: _col_extreme(parcoord_data_cols[k], hi=True) for k in _keys}
+            _base_df = pl.DataFrame(parcoord_data_cols)
+            _sent_df = pl.DataFrame([_sentinel_lo, _sentinel_hi]).cast(dict(zip(_base_df.columns, _base_df.dtypes)))
+            _df = pl.concat([_base_df, _sent_df]).select(_keys)
+            _color_axis = _keys[-1]
+            parcoord_widget = mo.ui.anywidget(ParallelCoordinates(_df, height=350, color_by=_color_axis))
     return parcoord_data_cols, parcoord_widget
 
 
-@app.cell(hide_code=True)
+@app.cell
+def _(normalize_toggle, np, parcoord_data_cols, parcoord_widget):
+    if parcoord_widget is not None and parcoord_data_cols:
+        _pc_keys = [k for k in parcoord_data_cols if k.startswith("PC")]
+        _keys = list(parcoord_data_cols.keys())
+
+        # Build base rows with explicit key order, NaN→None for JSON
+        _col_vals = []
+        for _k in _keys:
+            _raw = parcoord_data_cols[_k]
+            _lst = _raw.tolist() if hasattr(_raw, "tolist") else list(_raw)
+            _col_vals.append([None if (isinstance(_v, float) and _v != _v) else _v for _v in _lst])
+        _base_rows = [dict(zip(_keys, _row)) for _row in zip(*_col_vals)]
+
+        def _col_extreme(arr, hi=False):
+            first = arr.flat[0] if hasattr(arr, "flat") else arr[0]
+            if isinstance(first, str):
+                sv = sorted(set(arr))
+                return sv[-1] if hi else sv[0]
+            return float(np.nanmax(arr) if hi else np.nanmin(arr))
+
+        if normalize_toggle.value and _pc_keys:
+            _all_pc = np.column_stack([parcoord_data_cols[_k] for _k in _pc_keys])
+            _gmin, _gmax = float(_all_pc.min()), float(_all_pc.max())
+            _sentinel_lo = {k: (_gmin if k in _pc_keys else _col_extreme(parcoord_data_cols[k], hi=False)) for k in _keys}
+            _sentinel_hi = {k: (_gmax if k in _pc_keys else _col_extreme(parcoord_data_cols[k], hi=True)) for k in _keys}
+        else:
+            # Per-column natural extremes — no visual effect, keeps data.length stable
+            _sentinel_lo = {k: _col_extreme(parcoord_data_cols[k], hi=False) for k in _keys}
+            _sentinel_hi = {k: _col_extreme(parcoord_data_cols[k], hi=True) for k in _keys}
+
+        # Always N+2 rows → React key stays constant → no remount → no order flip
+        parcoord_widget.widget.data = _base_rows + [_sentinel_lo, _sentinel_hi]
+    return
+
+
+@app.cell
 def _(
+    attention_toggle,
+    config,
     get_pca,
+    img_emb_tbl,
+    map_theme,
     mo,
     parcoord_data_cols,
-    map_theme,
     parcoord_widget,
     src_img_tbl,
 ):
     _r = get_pca()
-    mo.stop(_r is None or src_img_tbl is None)
 
-    # Use brush_extents (synced) to filter — filtered_uids is bugged in wigglystuff
-    _val = parcoord_widget.value
-    _brush = _val.get("brush_extents", {}) if isinstance(_val, dict) else {}
-    _ids = _r["image_ids"]
-    _n_real = len(_ids)
-
-    _filtered = apply_brush_filter(parcoord_data_cols, _brush)
-    if _filtered is None:
-        _filtered = list(range(_n_real))
+    if _r is None or src_img_tbl is None or parcoord_widget is None or not parcoord_data_cols:
+        gallery_ui = None
     else:
-        # Exclude sentinel row indices
-        _filtered = [i for i in _filtered if i < _n_real]
+        # Use brush_extents (synced) to filter — filtered_uids is bugged in wigglystuff
+        _val = parcoord_widget.value
+        _brush = _val.get("brush_extents", {}) if isinstance(_val, dict) else {}
+        _ids = _r["image_ids"]
+        _n_real = len(_ids)
 
-    _selected_ids = [str(_ids[i]) for i in _filtered]
-    _max_display = 20
+        _filtered = apply_brush_filter(parcoord_data_cols, _brush)
+        if _filtered is None:
+            _filtered = list(range(_n_real))
+        else:
+            # Exclude sentinel row indices
+            _filtered = [i for i in _filtered if i < _n_real]
 
-    # Compute thumbnail dimensions from spatial extent metadata
-    _tw, _th = get_thumb_dimensions(src_img_tbl)
+        _selected_ids = [str(_ids[i]) for i in _filtered]
+        _max_display = 20
 
-    _thumbs = fetch_thumbnails_batch(src_img_tbl, _selected_ids, _max_display)
-    _count_msg, _gallery_html = render_thumbnail_gallery(
-        _thumbs, len(_filtered), _max_display,
-        theme="dark" if map_theme.value else "light",
-        thumb_w=_tw, thumb_h=_th,
+        # Compute thumbnail dimensions from spatial extent metadata
+        _tw, _th = get_thumb_dimensions(src_img_tbl)
+
+        _thumbs = fetch_thumbnails_batch(src_img_tbl, _selected_ids, _max_display)
+
+        # Attention overlay — composite each thumbnail when toggle is on
+        if attention_toggle.value and img_emb_tbl is not None:
+            _attn_cols = [f.name for f in img_emb_tbl.schema]
+            if "attention_map" in _attn_cols:
+                _sh = int(config.get("attention_spatial_h", 14))
+                _sw = int(config.get("attention_spatial_w", 14))
+                _display_ids = _selected_ids[:len(_thumbs)]
+                _attn_maps = fetch_attention_maps(img_emb_tbl, _display_ids)
+                _bg_color  = get_theme_colors(
+                    "dark" if map_theme.value else "light"
+                )["gallery_bg_rgb"]
+                _thumbs = [
+                    (fname,
+                     composite_attention_overlay(blob, _attn_maps[iid], _sh, _sw,
+                                                 bg_color=_bg_color)
+                     if iid in _attn_maps else blob,
+                     dt)
+                    for (fname, blob, dt), iid in zip(_thumbs, _display_ids)
+                ]
+
+        _count_msg, _gallery_html = render_thumbnail_gallery(
+            _thumbs, len(_filtered), _max_display,
+            theme="dark" if map_theme.value else "light",
+            thumb_w=_tw, thumb_h=_th,
+        )
+        gallery_ui = mo.vstack([mo.md(f"**{_count_msg}**"), mo.Html(_gallery_html)])
+    return (gallery_ui,)
+
+
+@app.cell(hide_code=True)
+def _(
+    gallery_ui,
+    mo,
+    parcoord_options_ui,
+    parcoord_widget,
+    pc_axes_input,
+    pca_controls_ui,
+    pca_status,
+    scree_html,
+):
+    _items = [pca_controls_ui]
+    if pca_status is not None:
+        _items.append(pca_status)
+    if scree_html is not None:
+        _items += [scree_html, pc_axes_input, parcoord_options_ui, parcoord_widget]
+    if gallery_ui is not None:
+        _items.append(gallery_ui)
+    pca_tab = mo.vstack([i for i in _items if i is not None])
+    return (pca_tab,)
+
+
+@app.cell
+def _(mo, pca_tab):
+    _umap_placeholder = mo.callout(
+        mo.md("UMAP dimensionality reduction — coming soon."), kind="neutral"
     )
-    mo.vstack([mo.md(f"**{_count_msg}**"), mo.Html(_gallery_html)])
+    dim_reduction_tab = mo.ui.tabs({"PCA": pca_tab, "UMAP": _umap_placeholder})
+    return (dim_reduction_tab,)
+
+
+@app.cell
+def _(mo):
+    spatial_search_tab = mo.callout(
+        mo.md("**Spatial Search** — coming soon."), kind="neutral"
+    )
+    return (spatial_search_tab,)
+
+
+@app.cell
+def _(mo):
+    visualize_tab = mo.callout(
+        mo.md("**Visualize** — coming soon."), kind="neutral"
+    )
+    return (visualize_tab,)
+
+
+@app.cell
+def _(mo):
+    def _chat_model(messages, config):
+        return "Chat functionality coming soon."
+
+    chat_tab = mo.ui.chat(_chat_model, prompts=["Tell me about this dataset"])
+    return (chat_tab,)
+
+
+@app.cell
+def _(
+    chat_tab,
+    dim_reduction_tab,
+    explore_tab,
+    mo,
+    overview_tab,
+    spatial_search_tab,
+    visualize_tab,
+):
+    mo.ui.tabs({
+        "Overview": overview_tab,
+        "Data": explore_tab,
+        "Dimensionality Reduction": dim_reduction_tab,
+        "Spatial Search": spatial_search_tab,
+        "Visualize": visualize_tab,
+        "Chat": chat_tab,
+    })
     return
 
 
