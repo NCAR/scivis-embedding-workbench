@@ -6,18 +6,16 @@ app = marimo.App()
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(
-        r"""
-        # Marimo DAG Demo
+    mo.md(r"""
+    # Notebook DAG
 
-        Marimo notebooks are **reactive**: each cell is a node in a directed acyclic graph (DAG).
-        When you change an input, only the cells that depend on it re-run — automatically, in the
-        correct order, no matter how the cells are arranged on screen.
+    Marimo notebooks are **reactive**: each cell is a node in a directed acyclic graph (DAG).
+    When you change an input, only the cells that depend on it re-run — automatically, in the
+    correct order, no matter how the cells are arranged on screen.
 
-        Try the controls below, then **drag cells into a different order** in the editor to see
-        that the reactive wiring stays intact.
-        """
-    )
+    Try the controls below, then **drag cells into a different order** in the editor to see
+    that the reactive wiring stays intact.
+    """)
     return
 
 
@@ -26,6 +24,7 @@ def _():
     import marimo as mo
     import numpy as np
     import matplotlib.pyplot as plt
+
     return mo, np, plt
 
 
@@ -56,7 +55,7 @@ def _(amplitude_slider, freq_slider, mo, np, reset_button):
 
 
 @app.cell
-def _(amp, freq, mo, plt, x, y):
+def _(amp, freq, plt, x, y):
     fig, ax = plt.subplots(figsize=(7, 3))
     ax.plot(x, y, linewidth=2, color="#4C8BF5")
     ax.set_title(f"sin wave  |  freq={freq}  amp={amp:.1f}", fontsize=13)
@@ -65,8 +64,7 @@ def _(amp, freq, mo, plt, x, y):
     ax.set_ylim(-2.2, 2.2)
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
-    mo.pyplot(fig)
-    return
+    fig
 
 
 @app.cell(hide_code=True)
