@@ -1,7 +1,7 @@
 import marimo
 
 __generated_with = "0.20.4"
-app = marimo.App()
+app = marimo.App(layout_file="layouts/dag_demo.grid.json")
 
 
 @app.cell(hide_code=True)
@@ -30,22 +30,28 @@ def _():
 
 @app.cell
 def _(mo):
+    reset_button = mo.ui.button(label="Reset to defaults", kind="neutral")
+    reset_button
+    return (reset_button,)
+
+
+@app.cell
+def _(mo, reset_button):
+    # Reading reset_button.value creates a reactive dependency — every click
+    # invalidates this cell, which recreates the sliders at their default values.
+    _ = reset_button.value
     freq_slider = mo.ui.slider(1, 10, value=3, step=1, label="Frequency")
     amplitude_slider = mo.ui.slider(0.1, 2.0, value=1.0, step=0.1, label="Amplitude")
-    reset_button = mo.ui.button(label="Reset to defaults", kind="neutral")
     mo.vstack([
         mo.md("### Controls"),
         freq_slider,
         amplitude_slider,
-        reset_button,
     ])
-    return amplitude_slider, freq_slider, reset_button
+    return amplitude_slider, freq_slider
 
 
 @app.cell
-def _(amplitude_slider, freq_slider, mo, np, reset_button):
-    # Reading reset_button.value creates a reactive dependency — clicking re-runs this cell
-    _ = reset_button.value
+def _(amplitude_slider, freq_slider, mo, np):
     freq = freq_slider.value
     amp = amplitude_slider.value
     x = np.linspace(0, 2 * np.pi, 500)
@@ -65,6 +71,7 @@ def _(amp, freq, plt, x, y):
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
     fig
+    return
 
 
 @app.cell(hide_code=True)
@@ -72,8 +79,9 @@ def _(mo):
     mo.callout(
         mo.md("""
         **How the DAG works here:**
-        - **Controls cell** defines `freq_slider`, `amplitude_slider`, `reset_button`
-        - **Derived values cell** reads those → computes `x`, `y`
+        - **Reset button cell** defines `reset_button`
+        - **Sliders cell** depends on `reset_button` → recreated fresh (at defaults) on every click
+        - **Derived values cell** reads sliders → computes `x`, `y`
         - **Plot cell** reads `x`, `y`, `freq`, `amp` → renders the chart
 
         Moving any of these cells up or down in the editor doesn't change execution order —
