@@ -3,7 +3,7 @@
   "data": {
     "columns": 24,
     "rowHeight": 20,
-    "maxWidth": 1400,
+    "maxWidth": 2100,
     "bordered": true,
     "cells": [
       {
@@ -25,11 +25,20 @@
         "position": null
       },
       {
+        "position": null
+      },
+      {
+        "position": null
+      },
+      {
+        "position": null
+      },
+      {
         "position": [
           0,
-          52,
-          21,
-          4
+          6,
+          11,
+          31
         ]
       },
       {
@@ -45,18 +54,13 @@
         "position": null
       },
       {
-        "position": null
-      },
-      {
-        "position": null
-      },
-      {
         "position": [
-          0,
-          25,
-          21,
+          11,
+          33,
+          13,
           27
-        ]
+        ],
+        "scrollable": true
       },
       {
         "position": null
@@ -96,10 +100,10 @@
       },
       {
         "position": [
-          0,
-          0,
-          21,
-          25
+          11,
+          6,
+          13,
+          27
         ]
       },
       {

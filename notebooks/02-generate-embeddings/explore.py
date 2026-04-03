@@ -152,6 +152,17 @@ def _(FILENAME, fetch_image_by_filename, plt, src_img_tbl):
 
 
 @app.cell
+def _(mo, src_img_tbl):
+    # --- METADATA FILTER ---
+    _blob_cols = {"image_blob", "thumb_blob"}
+    _meta_cols = [f.name for f in src_img_tbl.schema if f.name not in _blob_cols]
+    _meta_df = src_img_tbl.search().select(_meta_cols).to_pandas()
+    metadata_filter = mo.ui.dataframe(_meta_df)
+    mo.vstack([mo.md("### Image metadata filter"), metadata_filter])
+    return (metadata_filter,)
+
+
+@app.cell
 def _(IMG_SIZE, PATCH_SIZE, mo):
     # --- PATCH INDEX INPUT ---
     _grid = IMG_SIZE // PATCH_SIZE
@@ -171,6 +182,7 @@ def _(
     FILENAME,
     get_selected_patch,
     img_emb_tbl,
+    metadata_filter,
     n_similar_images,
     n_similar_patches,
     patch_emb_tbl,
@@ -186,9 +198,13 @@ def _(
 
     _img_q = img_emb_tbl.search().where(f"image_id = '{_img_id}'").select(["embedding"]).limit(1).to_pandas().iloc[0]
 
+    _allowed_ids = metadata_filter.value["id"].tolist()
+    _id_clause = ", ".join(f"'{i}'" for i in _allowed_ids)
+
     _sim_ims = (
         img_emb_tbl.search(_img_q["embedding"], vector_column_name="embedding")
         .metric("cosine")
+        .where(f"image_id IN ({_id_clause})")
         .select(["image_id"])
         .limit(n_similar_images.value)
         .to_pandas()
