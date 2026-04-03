@@ -27,7 +27,7 @@
       {
         "position": [
           0,
-          48,
+          47,
           21,
           4
         ]
@@ -57,6 +57,9 @@
           21,
           22
         ]
+      },
+      {
+        "position": null
       },
       {
         "position": null

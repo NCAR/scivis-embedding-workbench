@@ -107,8 +107,15 @@ def _(mo):
     n_similar_images = mo.ui.number(start=1, stop=50, step=1, value=10, label="Similar images")
     n_similar_patches = mo.ui.number(start=10, stop=500, step=10, value=100, label="Max patches")
     max_gallery_display = mo.ui.number(start=4, stop=100, step=4, value=24, label="Gallery cap")
-    mo.hstack([FILENAME, n_similar_images, n_similar_patches, max_gallery_display], align="end")
-    return FILENAME, max_gallery_display, n_similar_images, n_similar_patches
+    similarity_overlay_toggle = mo.ui.switch(label="Similarity overlay")
+    mo.hstack([FILENAME, n_similar_images, n_similar_patches, max_gallery_display, similarity_overlay_toggle], align="end")
+    return (
+        FILENAME,
+        max_gallery_display,
+        n_similar_images,
+        n_similar_patches,
+        similarity_overlay_toggle,
+    )
 
 
 @app.cell
@@ -280,7 +287,9 @@ def _(
     lon_min,
     max_gallery_display,
     mo,
+    n_side,
     patch_box_from_index,
+    similarity_overlay_toggle,
     src_img_tbl,
     top_df,
 ):
@@ -296,22 +305,41 @@ def _(
     _spatial_extent = {"lat_min": lat_min, "lat_max": lat_max, "lon_min": lon_min, "lon_max": lon_max}
     _thumb_w, _thumb_h = compute_thumb_dimensions(_spatial_extent, base_size=320)
 
+    # Pre-build {(image_id, patch_index): distance} for overlay mode
+    _patch_dists = {
+        (row["image_id"], int(row["patch_index"])): row["_distance"]
+        for _, row in top_df.iterrows()
+    }
+
     _thumbs = []
     for _id, _data in _groups.iterrows():
         _r = src_img_tbl.search().where(f"id = '{_id}'").select(['image_blob', 'dt']).limit(1).to_pandas().iloc[0]
-        _im = _Image.open(io.BytesIO(_r['image_blob'])).convert('RGB')
-        _tw, _th = _im.size
-        _sx, _sy = _tw / IMG_SIZE, _th / IMG_SIZE
-        _draw = _ImageDraw.Draw(_im)
-        for _p in map(int, _data['patch_index']):
-            _bx = patch_box_from_index(_p)
-            _draw.rectangle(
-                (int(_bx[0]*_sx), int(_bx[1]*_sy), int(_bx[2]*_sx), int(_bx[3]*_sy)),
-                outline=(255, 80, 0), width=2
-            )
-        _buf = io.BytesIO()
-        _im.save(_buf, format="JPEG", quality=85)
-        _thumbs.append((f"{str(_r['dt'])[:10]}  ·  d={_data['_distance']:.2f}", _buf.getvalue(), _r['dt']))
+
+        if similarity_overlay_toggle.value:
+            # Overlay mode: matched patches bright, rest faded
+            _matched_dists = {
+                int(p): _patch_dists[(_id, int(p))]
+                for p in _data['patch_index']
+                if (_id, int(p)) in _patch_dists
+            }
+            _blob = apply_similarity_overlay(_r['image_blob'], _matched_dists, n_side)
+        else:
+            # Red box mode
+            _im = _Image.open(io.BytesIO(_r['image_blob'])).convert('RGB')
+            _tw, _th = _im.size
+            _sx, _sy = _tw / IMG_SIZE, _th / IMG_SIZE
+            _draw = _ImageDraw.Draw(_im)
+            for _p in map(int, _data['patch_index']):
+                _bx = patch_box_from_index(_p)
+                _draw.rectangle(
+                    (int(_bx[0]*_sx), int(_bx[1]*_sy), int(_bx[2]*_sx), int(_bx[3]*_sy)),
+                    outline=(255, 80, 0), width=2
+                )
+            _buf = io.BytesIO()
+            _im.save(_buf, format="JPEG", quality=85)
+            _blob = _buf.getvalue()
+
+        _thumbs.append((f"{str(_r['dt'])[:10]}  ·  d={_data['_distance']:.2f}", _blob, _r['dt']))
 
     _n_patches = len(top_df)
     _n_images  = top_df['image_id'].nunique()
@@ -519,6 +547,46 @@ def compute_thumb_dimensions(spatial_extent, base_size=192):
         return base_size, round(base_size / aspect)
     else:
         return round(base_size * aspect), base_size
+
+
+@app.function
+def apply_similarity_overlay(image_blob, matched_patch_distances, n_side, alpha_min=0.08, bg_color=(0, 0, 0)):
+    """Fade non-matched patches toward bg_color; matched patches stay opaque.
+
+    matched_patch_distances: {patch_index: cosine_distance} — lower = more similar.
+    Matched patches graded [0.5, 1.0] by relative distance; non-matched get alpha_min.
+    """
+    import io
+    import numpy as np
+    from PIL import Image
+
+    img = Image.open(io.BytesIO(image_blob)).convert("RGBA")
+    iw, ih = img.size
+
+    alpha_grid = np.full((n_side, n_side), alpha_min, dtype=np.float32)
+    if matched_patch_distances:
+        dists = np.array(list(matched_patch_distances.values()), dtype=np.float32)
+        d_min, d_max = dists.min(), dists.max()
+        for pidx, dist in matched_patch_distances.items():
+            row, col = int(pidx) // n_side, int(pidx) % n_side
+            norm = (dist - d_min) / (d_max - d_min + 1e-8)
+            alpha_grid[row, col] = 1.0 - norm * 0.5   # grades to [0.5, 1.0]
+
+    ph, pw = ih // n_side, iw // n_side
+    alpha_up = np.repeat(np.repeat(alpha_grid, ph, axis=0), pw, axis=1)
+    pad_h, pad_w = ih - alpha_up.shape[0], iw - alpha_up.shape[1]
+    if pad_h > 0 or pad_w > 0:
+        alpha_up = np.pad(alpha_up, ((0, pad_h), (0, pad_w)), mode="edge")
+
+    img_arr = np.array(img)
+    img_arr[..., 3] = (alpha_up * 255).astype(np.uint8)
+    masked = Image.fromarray(img_arr, "RGBA")
+    bg = Image.new("RGBA", (iw, ih), bg_color + (255,))
+    composite = Image.alpha_composite(bg, masked).convert("RGB")
+
+    buf = io.BytesIO()
+    composite.save(buf, format="JPEG", quality=85)
+    return buf.getvalue()
 
 
 @app.function
