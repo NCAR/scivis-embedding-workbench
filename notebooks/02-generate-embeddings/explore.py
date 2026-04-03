@@ -312,8 +312,10 @@ def _(
     }
 
     _thumbs = []
+    _date_map = {}
     for _id, _data in _groups.iterrows():
         _r = src_img_tbl.search().where(f"id = '{_id}'").select(['image_blob', 'dt']).limit(1).to_pandas().iloc[0]
+        _date_map[_id] = _r['dt']
 
         if similarity_overlay_toggle.value:
             # Overlay mode: matched patches bright, rest faded
@@ -354,7 +356,25 @@ def _(
         _thumbs, _n_shown, _MAX_DISPLAY, theme="dark",
         thumb_w=_thumb_w, thumb_h=_thumb_h,
     )
-    mo.vstack([_status, mo.Html(_gallery_html)])
+
+    # --- Data tab: one row per image with lists of matched patches + distances ---
+    import pandas as _pd
+    _df_merged = (
+        top_df.groupby("image_id")
+        .agg(patch_indices=("patch_index", list), cosine_dists=("_distance", list))
+        .reset_index()
+    )
+    _df_merged["date"] = _df_merged["image_id"].map(lambda x: str(_date_map.get(x, ""))[:10])
+    _df_merged["best_dist"] = _df_merged["cosine_dists"].apply(min)
+    _df_merged = (
+        _df_merged[["date", "image_id", "patch_indices", "cosine_dists", "best_dist"]]
+        .sort_values("best_dist")
+        .reset_index(drop=True)
+    )
+
+    _visual_tab = mo.vstack([_status, mo.Html(_gallery_html)])
+    _data_tab = mo.ui.table(_df_merged, selection=None)
+    mo.ui.tabs({"Visuals": _visual_tab, "Data": _data_tab})
     return
 
 
