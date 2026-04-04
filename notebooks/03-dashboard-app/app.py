@@ -1321,6 +1321,19 @@ def _(src_img_tbl, ss_init):
 
 
 @app.cell
+def _(mo, src_img_tbl, ss_init):
+    if ss_init is None or src_img_tbl is None:
+        import pandas as _pd_mf
+        ss_metadata_filter = mo.ui.dataframe(_pd_mf.DataFrame())
+    else:
+        _blob_cols = {"image_blob", "thumb_blob"}
+        _meta_cols = [f.name for f in src_img_tbl.schema if f.name not in _blob_cols]
+        _meta_df = src_img_tbl.search().select(_meta_cols).to_pandas()
+        ss_metadata_filter = mo.ui.dataframe(_meta_df)
+    return (ss_metadata_filter,)
+
+
+@app.cell
 def _(mo, ss_available_dates):
     _n = len(ss_available_dates)
     ss_date_picker = mo.ui.datetime(
@@ -1430,6 +1443,7 @@ def _(
     img_emb_tbl,
     patch_emb_tbl,
     ss_init,
+    ss_metadata_filter,
     ss_n_similar_images,
     ss_n_similar_patches,
     ss_selected_img_id,
@@ -1450,13 +1464,13 @@ def _(
             .iloc[0]
         )
 
-        _sim_ims = (
-            img_emb_tbl.search(_img_q["embedding"], vector_column_name="embedding")
-            .metric("cosine")
-            .select(["image_id"])
-            .limit(ss_n_similar_images.value)
-            .to_pandas()
-        )
+        _allowed_ids = ss_metadata_filter.value["id"].tolist() if ss_metadata_filter.value is not None and len(ss_metadata_filter.value) > 0 else None
+        _id_clause = ", ".join(f"'{i}'" for i in _allowed_ids) if _allowed_ids else None
+
+        _search = img_emb_tbl.search(_img_q["embedding"], vector_column_name="embedding").metric("cosine").select(["image_id"])
+        if _id_clause:
+            _search = _search.where(f"image_id IN ({_id_clause})")
+        _sim_ims = _search.limit(ss_n_similar_images.value).to_pandas()
         _img_filter = ", ".join(f"'{i}'" for i in _sim_ims["image_id"].tolist())
 
         _p_q = (
@@ -1488,11 +1502,14 @@ def _(
 
 @app.cell
 def _(
+    get_ss_spatial_filter,
     map_theme,
     mo,
     src_img_tbl,
+    ss_available_ids,
     ss_init,
     ss_max_gallery,
+    ss_metadata_filter,
     ss_similarity_toggle,
     ss_top_df,
 ):
@@ -1570,7 +1587,17 @@ def _(
         _n_images = ss_top_df["image_id"].nunique()
         _n_shown = len(_groups)
         _cap = f" (capped at {_MAX})" if _n_images > _MAX else ""
-        _status = mo.md(f"**{_n_patches} patches** across **{_n_images} images** — showing **{_n_shown}**{_cap}")
+
+        _sf = get_ss_spatial_filter() or []
+        _filter_parts = []
+        if _sf:
+            _filter_parts.append(f"spatial filter active ({len(_sf)} region{'s' if len(_sf) != 1 else ''})")
+        _meta_count = len(ss_metadata_filter.value) if ss_metadata_filter.value is not None else len(ss_available_ids)
+        if _meta_count < len(ss_available_ids):
+            _filter_parts.append(f"data filter: {_meta_count} of {len(ss_available_ids)} rows")
+        _filter_note = "  ·  " + ",  ".join(_filter_parts) if _filter_parts else ""
+
+        _status = mo.md(f"**{_n_patches} patches** across **{_n_images} images** — showing **{_n_shown}**{_cap}{_filter_note}")
 
         _, _gallery_html = render_thumbnail_gallery(
             _thumbs, _n_shown, _MAX, theme=_theme,
@@ -1590,13 +1617,11 @@ def _(
             .reset_index(drop=True)
         )
 
+        _visual_tab = mo.vstack([_status, mo.Html(_gallery_html)])
+        _data_tab = mo.ui.table(_df_merged, selection=None)
         ss_gallery_ui = mo.vstack([
             mo.hstack([ss_similarity_toggle], justify="end"),
-            _status,
-            mo.ui.tabs({
-                "Visuals": mo.Html(_gallery_html),
-                "Data": mo.ui.table(_df_merged, selection=None),
-            }),
+            mo.ui.tabs({"Visuals": _visual_tab, "Data": _data_tab}),
         ])
     return (ss_gallery_ui,)
 
@@ -1614,6 +1639,7 @@ def _(
     ss_init_status,
     ss_load_button,
     ss_max_gallery,
+    ss_metadata_filter,
     ss_n_similar_images,
     ss_n_similar_patches,
     ss_similarity_toggle,
@@ -1637,6 +1663,7 @@ def _(
                 mo.hstack([mo.md(_label_s), _clear_btn], align="center"),
                 ss_spatial_filter_map,
             ]),
+            "Data Filter": ss_metadata_filter,
             "Settings": mo.vstack([ss_n_similar_images, ss_n_similar_patches, ss_max_gallery, ss_similarity_toggle]),
         }))
     if ss_gallery_ui is not None:
