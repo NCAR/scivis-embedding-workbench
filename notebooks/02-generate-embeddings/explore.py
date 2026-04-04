@@ -108,9 +108,12 @@ def _(mo):
     n_similar_patches = mo.ui.number(start=10, stop=500, step=10, value=100, label="Max patches")
     max_gallery_display = mo.ui.number(start=4, stop=100, step=4, value=24, label="Gallery cap")
     similarity_overlay_toggle = mo.ui.switch(label="Similarity overlay")
-    mo.hstack([FILENAME, n_similar_images, n_similar_patches, max_gallery_display, similarity_overlay_toggle], align="end")
+    map_theme = mo.ui.switch(label="Dark mode")
+    mo.hstack([FILENAME, n_similar_images, n_similar_patches, max_gallery_display,
+               similarity_overlay_toggle, map_theme], align="end")
     return (
         FILENAME,
+        map_theme,
         max_gallery_display,
         n_similar_images,
         n_similar_patches,
@@ -158,7 +161,6 @@ def _(mo, src_img_tbl):
     _meta_cols = [f.name for f in src_img_tbl.schema if f.name not in _blob_cols]
     _meta_df = src_img_tbl.search().select(_meta_cols).to_pandas()
     metadata_filter = mo.ui.dataframe(_meta_df)
-    mo.vstack([mo.md("### Image metadata filter"), metadata_filter])
     return (metadata_filter,)
 
 
@@ -181,6 +183,7 @@ def _(IMG_SIZE, PATCH_SIZE, mo):
 def _(
     FILENAME,
     get_selected_patch,
+    get_spatial_filter,
     img_emb_tbl,
     metadata_filter,
     n_similar_images,
@@ -220,9 +223,15 @@ def _(
         .iloc[0]
     )
 
+    _spatial = get_spatial_filter()
+    _patch_clause = (
+        f" AND patch_index IN ({', '.join(str(i) for i in _spatial)})"
+        if _spatial else ""
+    )
+
     top_df = (
         patch_emb_tbl.search(_p_q["embedding"], vector_column_name="embedding")
-        .where(f"image_id IN ({_filter})")
+        .where(f"image_id IN ({_filter}){_patch_clause}")
         .metric("cosine")
         .refine_factor(10)
         .select(["image_id", "patch_index"])
@@ -529,10 +538,14 @@ def make_selection_shape(patch_idx, lat_min, lat_max, lon_min, lon_max, n_side):
 @app.function
 def build_geo_patch_figure(
     img_arr, lon_min, lon_max, lat_min, lat_max,
-    coast_traces, heatmap_trace, selection_shape,
+    coast_traces, heatmap_trace, selection_shape, theme="light",
 ):
     """Assemble the three-layer geo patch figure from pre-built components."""
     import plotly.graph_objects as go
+
+    _is_dark = (theme == "dark")
+    _bg   = "#1a1a1a" if _is_dark else "white"
+    _text = "#e0e0e0" if _is_dark else "#222222"
 
     H, W = img_arr.shape[:2]
     fig = go.Figure()
@@ -555,15 +568,19 @@ def build_geo_patch_figure(
     shapes = [selection_shape] if selection_shape is not None else []
     fig.update_layout(
         xaxis=dict(range=[lon_min, lon_max], title="Longitude",
-                   tickformat=".2f", ticksuffix="°", showgrid=False),
+                   tickformat=".2f", ticksuffix="°", showgrid=False,
+                   tickfont=dict(color=_text), title_font=dict(color=_text)),
         yaxis=dict(range=[lat_min, lat_max], title="Latitude",
                    tickformat=".2f", ticksuffix="°",
-                   scaleanchor="x", scaleratio=1, showgrid=False),
+                   scaleanchor="x", scaleratio=1, showgrid=False,
+                   tickfont=dict(color=_text), title_font=dict(color=_text)),
         shapes=shapes,
         uirevision="geo_patch_map",
         clickmode="event+select",
         dragmode="pan",
         margin=dict(l=65, r=10, t=40, b=60),
+        plot_bgcolor=_bg,
+        paper_bgcolor=_bg,
     )
     return fig
 
@@ -662,6 +679,106 @@ def render_thumbnail_gallery(thumbs, n_filtered, max_display, theme="light",
     return count_msg, gallery_html
 
 
+@app.function
+def render_basemap(lat_min, lat_max, lon_min, lon_max, target_w=512, theme="light"):
+    """Render a cartopy land/ocean map of the extent as a numpy RGB array."""
+    import io
+    import numpy as np
+    from PIL import Image as _PILImage
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    try:
+        import cartopy.crs as ccrs
+        import cartopy.feature as cfeature
+    except ImportError as e:
+        raise ImportError(
+            "cartopy is required for the basemap. Install with: pip install cartopy"
+        ) from e
+
+    _is_dark = (theme == "dark")
+    _ocean = "#1e3a5f" if _is_dark else "#a8c8e8"
+    _land  = "#3a3a3a" if _is_dark else "#d4d4d4"
+    _coast = "#aaaaaa" if _is_dark else "#555555"
+    _bg    = "#1a1a1a" if _is_dark else "#ffffff"
+
+    lon_offset = 360 if lon_min > 180 else 0
+    lon_min_180 = lon_min - lon_offset
+    lon_max_180 = lon_max - lon_offset
+    aspect = (lon_max - lon_min) / max(lat_max - lat_min, 1e-6)
+    target_h = max(1, int(target_w / aspect))
+
+    fig, ax = plt.subplots(
+        figsize=(target_w / 100, target_h / 100), dpi=100,
+        subplot_kw={"projection": ccrs.PlateCarree()},
+    )
+    fig.patch.set_facecolor(_bg)
+    ax.set_facecolor(_bg)
+    ax.set_extent([lon_min_180, lon_max_180, lat_min, lat_max], crs=ccrs.PlateCarree())
+    ax.add_feature(cfeature.OCEAN.with_scale("110m"),    color=_ocean, zorder=0)
+    ax.add_feature(cfeature.LAND.with_scale("110m"),     color=_land,  zorder=1)
+    ax.add_feature(cfeature.COASTLINE.with_scale("110m"), edgecolor=_coast, linewidth=0.8, zorder=2)
+    ax.add_feature(cfeature.BORDERS.with_scale("110m"),   edgecolor=_coast, linewidth=0.5, zorder=2)
+    ax.axis("off")
+    fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight", pad_inches=0, facecolor=_bg)
+    plt.close(fig)
+    buf.seek(0)
+    return np.array(_PILImage.open(buf).convert("RGB"))
+
+
+@app.function
+def build_spatial_filter_shapes(selected_indices, lat_min, lat_max, lon_min, lon_max, n_side):
+    """Return a list of Plotly rect shapes highlighting each selected patch."""
+    if not selected_indices:
+        return []
+    lat_step = (lat_max - lat_min) / n_side
+    lon_step = (lon_max - lon_min) / n_side
+    shapes = []
+    for idx in selected_indices:
+        row, col = idx // n_side, idx % n_side
+        x0 = lon_min + col * lon_step
+        x1 = x0 + lon_step
+        y1 = lat_max - row * lat_step
+        y0 = y1 - lat_step
+        shapes.append(dict(
+            type="rect", x0=x0, x1=x1, y0=y0, y1=y1,
+            line=dict(color="rgba(255,80,0,0.9)", width=1.5),
+            fillcolor="rgba(255,80,0,0.25)",
+        ))
+    return shapes
+
+
+@app.function
+def build_patch_grid_lines(lat_min, lat_max, lon_min, lon_max, n_side):
+    """Dotted grid lines at patch boundaries."""
+    import plotly.graph_objects as go
+
+    lat_step = (lat_max - lat_min) / n_side
+    lon_step = (lon_max - lon_min) / n_side
+
+    xs, ys = [], []
+    for i in range(n_side + 1):
+        lat = lat_min + i * lat_step
+        xs.extend([lon_min, lon_max, None])
+        ys.extend([lat, lat, None])
+    for j in range(n_side + 1):
+        lon = lon_min + j * lon_step
+        xs.extend([lon, lon, None])
+        ys.extend([lat_min, lat_max, None])
+
+    return go.Scatter(
+        x=xs, y=ys,
+        mode="lines",
+        line=dict(color="rgba(100,100,100,0.3)", width=0.5, dash="dot"),
+        showlegend=False,
+        hoverinfo="skip",
+        name="patch_grid",
+    )
+
+
 @app.cell
 def _(config, src_img_tbl):
     lat_min, lat_max, lon_min, lon_max, n_side = get_spatial_extent(src_img_tbl, config)
@@ -675,6 +792,54 @@ def _(lat_max, lat_min, lon_max, lon_min, n_side):
     coast_traces = build_coastline_traces(lat_min, lat_max, lon_min, lon_max, n_side)
     patch_heatmap_trace = make_patch_heatmap(lat_min, lat_max, lon_min, lon_max, n_side)
     return coast_traces, patch_heatmap_trace
+
+
+@app.cell
+def _(mo):
+    get_spatial_filter, set_spatial_filter = mo.state(None)
+    return get_spatial_filter, set_spatial_filter
+
+
+@app.cell
+def _(
+    coast_traces,
+    get_spatial_filter,
+    lat_max,
+    lat_min,
+    lon_max,
+    lon_min,
+    map_theme,
+    mo,
+    n_side,
+    patch_heatmap_trace,
+):
+    _theme = "dark" if map_theme.value else "light"
+    _basemap_arr = render_basemap(lat_min, lat_max, lon_min, lon_max, theme=_theme)
+    _active = get_spatial_filter() or []
+    _fig_sf = build_geo_patch_figure(
+        _basemap_arr, lon_min, lon_max, lat_min, lat_max,
+        coast_traces, patch_heatmap_trace, None, theme=_theme,
+    )
+    _fig_sf.update_layout(
+        shapes=build_spatial_filter_shapes(_active, lat_min, lat_max, lon_min, lon_max, n_side),
+        uirevision="spatial_filter_map",
+    )
+    spatial_filter_map = mo.ui.plotly(_fig_sf)
+    return (spatial_filter_map,)
+
+
+@app.cell
+def _(get_spatial_filter, set_spatial_filter, spatial_filter_map):
+    _val = spatial_filter_map.value
+    if isinstance(_val, list) and _val and "z" in _val[0]:
+        _idx = int(_val[0]["z"])
+        _cur = list(get_spatial_filter() or [])
+        if _idx in _cur:
+            _cur.remove(_idx)
+        else:
+            _cur.append(_idx)
+        set_spatial_filter(_cur if _cur else None)
+    return
 
 
 @app.cell
@@ -700,6 +865,7 @@ def _(
     lat_min,
     lon_max,
     lon_min,
+    map_theme,
     mo,
     n_side,
     patch_heatmap_trace,
@@ -707,26 +873,55 @@ def _(
 ):
     import numpy as _np
 
+    _theme = "dark" if map_theme.value else "light"
     _sel = get_selected_patch()
     _img_arr = _np.array(fetch_image_by_filename(src_img_tbl, FILENAME.value).convert("RGB"))
     _shape = make_selection_shape(_sel, lat_min, lat_max, lon_min, lon_max, n_side)
     _fig = build_geo_patch_figure(
         _img_arr, lon_min, lon_max, lat_min, lat_max,
-        coast_traces, patch_heatmap_trace, _shape,
+        coast_traces, patch_heatmap_trace, _shape, theme=_theme,
     )
-
     geo_patch_map = mo.ui.plotly(_fig)
-    _label = f"**Selected patch:** `{_sel}`" if _sel is not None else "*Click a patch to select it*"
-    mo.vstack([mo.md(_label), geo_patch_map])
     return (geo_patch_map,)
 
 
 @app.cell
 def _(geo_patch_map, set_selected_patch):
-    # geo_patch_map.value is a list of point dicts: [{"z": 150, "x": ..., "y": ...}]
     _click = geo_patch_map.value
     if isinstance(_click, list) and _click and "z" in _click[0]:
         set_selected_patch(int(_click[0]["z"]))
+    return
+
+
+@app.cell
+def _(
+    geo_patch_map,
+    get_selected_patch,
+    get_spatial_filter,
+    metadata_filter,
+    mo,
+    set_spatial_filter,
+    spatial_filter_map,
+):
+    _sel = get_selected_patch()
+    _label_q = f"**Selected patch:** `{_sel}`" if _sel is not None else "*Click a patch to select it*"
+
+    _active_sf = get_spatial_filter() or []
+    _n_sf = len(_active_sf)
+    _label_s = (
+        f"**Search region:** {_n_sf} patches selected"
+        if _n_sf else "*Click patches to restrict the search region*"
+    )
+    _clear_btn = mo.ui.button(label="✕ Clear", on_click=lambda _: set_spatial_filter(None))
+
+    mo.ui.tabs({
+        "Patch Query": mo.vstack([mo.md(_label_q), geo_patch_map]),
+        "Search Region": mo.vstack([
+            mo.hstack([mo.md(_label_s), _clear_btn], align="center"),
+            spatial_filter_map,
+        ]),
+        "Data Filter": metadata_filter,
+    })
     return
 
 
