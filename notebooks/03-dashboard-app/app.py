@@ -1087,7 +1087,7 @@ def make_selection_shape(patch_idx, lat_min, lat_max, lon_min, lon_max, n_side):
 @app.function
 def build_geo_patch_figure(
     img_arr, lon_min, lon_max, lat_min, lat_max,
-    coast_traces, heatmap_trace, selection_shape, theme="light",
+    coast_traces, heatmap_trace, selection_shape, theme="light", target_w=600,
 ):
     """Assemble the three-layer geo patch figure from pre-built components."""
     import plotly.graph_objects as go
@@ -1112,6 +1112,11 @@ def build_geo_patch_figure(
     fig.add_trace(heatmap_trace)
 
     shapes = [selection_shape] if selection_shape is not None else []
+    _l, _r, _t, _b = 65, 10, 10, 40
+    _plot_w = max(target_w - _l - _r, 1)
+    _lat_range = lat_max - lat_min
+    _lon_range = lon_max - lon_min
+    _fig_h = int(_plot_w * (_lat_range / _lon_range) + _t + _b) if _lon_range else 400
     fig.update_layout(
         xaxis=dict(range=[lon_min, lon_max], title="Longitude",
                    tickformat=".2f", ticksuffix="°", showgrid=False,
@@ -1124,7 +1129,8 @@ def build_geo_patch_figure(
         uirevision="geo_patch_map",
         clickmode="event+select",
         dragmode="pan",
-        margin=dict(l=65, r=10, t=40, b=60),
+        height=_fig_h,
+        margin=dict(l=_l, r=_r, t=_t, b=_b),
         plot_bgcolor=_bg,
         paper_bgcolor=_bg,
     )
