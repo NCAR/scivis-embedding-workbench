@@ -392,9 +392,12 @@ def _(
         else:
             _map_subtab = mo.callout(mo.md("Spatial extent or `num_patch_tokens` not available."), kind="warn")
 
+        _data_tabs = mo.ui.tabs({"Source": _src_subtab, "Experiment": _exp_subtab})
+        _t = f'<div style="flex:3 3 0;min-width:0;overflow:auto;">{_data_tabs.text}</div>'
+        _m = f'<div style="flex:2 2 0;min-width:0;overflow:auto;">{_map_subtab.text}</div>'
         explore_tab = mo.vstack([
             mo.hstack([embedding_db_path, experiment_selector, map_theme], justify="start"),
-            mo.ui.tabs({"Source": _src_subtab, "Experiment": _exp_subtab, "Map": _map_subtab}),
+            mo.Html(f'<div style="display:flex;align-items:flex-start;gap:8px;">{_t}{_m}</div>'),
         ])
     return (explore_tab,)
 
@@ -1536,7 +1539,7 @@ def _(
             "lat_min": _d["lat_min"], "lat_max": _d["lat_max"],
             "lon_min": _d["lon_min"], "lon_max": _d["lon_max"],
         }
-        _thumb_w, _thumb_h = compute_thumb_dimensions(_spatial_extent, base_size=320)
+        _thumb_w, _thumb_h = compute_thumb_dimensions(_spatial_extent, base_size=192)
 
         _patch_dists = {
             (row["image_id"], int(row["patch_index"])): row["_distance"]
@@ -1657,7 +1660,7 @@ def _(
             if _active_sf else "*Click patches to restrict the search region*"
         )
         _clear_btn = mo.ui.button(label="✕ Clear", on_click=lambda _: set_ss_spatial_filter(None))
-        _items.append(mo.ui.tabs({
+        _search_panel = mo.ui.tabs({
             "Patch Query": mo.vstack([ss_date_picker, mo.md(_label_q), ss_geo_patch_map]),
             "Search Region": mo.vstack([
                 mo.hstack([mo.md(_label_s), _clear_btn], align="center"),
@@ -1665,8 +1668,12 @@ def _(
             ]),
             "Data Filter": ss_metadata_filter,
             "Settings": mo.vstack([ss_n_similar_images, ss_n_similar_patches, ss_max_gallery, ss_similarity_toggle]),
-        }))
-    if ss_gallery_ui is not None:
+        })
+        _gallery = ss_gallery_ui if ss_gallery_ui is not None else mo.md("")
+        _s = f'<div style="flex:1 1 0;min-width:0;overflow:auto;">{_search_panel.text}</div>'
+        _g = f'<div style="flex:1 1 0;min-width:0;overflow:auto;">{_gallery.text}</div>'
+        _items.append(mo.Html(f'<div style="display:flex;align-items:flex-start;gap:8px;">{_s}{_g}</div>'))
+    elif ss_gallery_ui is not None:
         _items.append(ss_gallery_ui)
     spatial_search_tab = mo.vstack(_items)
     return (spatial_search_tab,)
