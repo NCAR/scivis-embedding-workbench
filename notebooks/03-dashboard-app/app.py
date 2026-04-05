@@ -1199,12 +1199,12 @@ def _(get_umap_result, map_theme, mo, np, src_img_tbl, umap_scatter):
     if _r is None or src_img_tbl is None or not hasattr(umap_scatter, "value"):
         umap_gallery_ui = None
     else:
-        _val = umap_scatter.value
         _MAX = 20
-        # marimo's bridge only filters by X range (ignores Y), so apply the
-        # full 2D bounding box ourselves using the range Plotly sends directly.
+        # umap_scatter.value is a processed list of point dicts (marimo output).
+        # umap_scatter.ranges holds the raw Plotly range {"x":[x0,x1],"y":[y0,y1]}.
+        # marimo's bridge filters by X only, so we apply the full 2D box ourselves.
         _sel_ids = []
-        _rng = _val.get("range") if isinstance(_val, dict) else None
+        _rng = umap_scatter.ranges  # {} when nothing selected
         if _rng and "x" in _rng and "y" in _rng:
             _emb = _r["embedding"]
             _x0, _x1 = min(_rng["x"]), max(_rng["x"])
