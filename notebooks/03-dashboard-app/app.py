@@ -425,29 +425,47 @@ def _(
 
 @app.cell
 def _(mo):
+    shared_n_vectors = mo.ui.number(value=5000, start=2, label="Max vectors to load")
+    load_data_btn = mo.ui.run_button(label="📥 Load Data", kind="primary")
+    return load_data_btn, shared_n_vectors
+
+
+@app.cell
+def _(experiment_selector, img_emb_tbl, load_data_btn, shared_n_vectors):
+    if load_data_btn.value and img_emb_tbl is not None:
+        _X, _ids, _n_total = load_embedding_matrix(img_emb_tbl, shared_n_vectors.value)
+        cached_data = {
+            "X": _X, "ids": _ids, "n_total": _n_total,
+            "experiment": experiment_selector.value,
+        }
+    else:
+        cached_data = None
+    return (cached_data,)
+
+
+@app.cell
+def _(mo):
     get_pca, set_pca = mo.state(None)
     return get_pca, set_pca
 
 
 @app.cell
 def _(mo):
-    n_vectors = mo.ui.number(value=5000, start=2, label="Max vectors")
     run_pca = mo.ui.run_button(
         label="▶ Run PCA",
         kind="success",
         tooltip="Run Principal Component Analysis on loaded embeddings",
     )
-    pca_controls_ui = mo.hstack([n_vectors, run_pca], justify="start", align="end")
-    return n_vectors, pca_controls_ui, run_pca
+    pca_controls_ui = mo.hstack([run_pca], justify="start", align="end")
+    return pca_controls_ui, run_pca
 
 
 @app.cell
 def _(
+    cached_data,
     experiment_selector,
     get_pca,
-    img_emb_tbl,
     mo,
-    n_vectors,
     run_pca,
     set_pca,
     src_img_tbl,
@@ -457,11 +475,15 @@ def _(
     if _current is not None and _current.get("experiment") != _exp:
         set_pca(None)
     if not run_pca.value:
-        pca_status = mo.callout(mo.md("Configure options above and click Run PCA."), kind="info")
-    elif img_emb_tbl is None:
-        pca_status = mo.callout(mo.md("No experiment loaded — enter a DB path above."), kind="warn")
+        pca_status = mo.callout(
+            mo.md("Load data above, then click **▶ Run PCA**."), kind="info")
+    elif cached_data is None:
+        pca_status = mo.callout(
+            mo.md("Click **📥 Load Data** first."), kind="warn")
     else:
-        _X, _image_ids, _n_total = load_embedding_matrix(img_emb_tbl, n_vectors.value)
+        _X         = cached_data["X"]
+        _image_ids = cached_data["ids"]
+        _n_total   = cached_data["n_total"]
         _evr, _scores, _backend = run_pca_best(_X, _X.shape[1])
         _meta_df = fetch_metadata_for_ids(src_img_tbl, list(_image_ids))
         set_pca({
@@ -951,6 +973,7 @@ def _(
 @app.cell(hide_code=True)
 def _(
     gallery_ui,
+    load_data_btn,
     mo,
     parcoord_options_ui,
     parcoord_widget,
@@ -958,8 +981,10 @@ def _(
     pca_controls_ui,
     pca_status,
     scree_html,
+    shared_n_vectors,
 ):
-    _items = [pca_controls_ui]
+    _shared = mo.hstack([shared_n_vectors, load_data_btn], justify="start", align="end")
+    _items = [_shared, pca_controls_ui]
     if pca_status is not None:
         _items.append(pca_status)
     if scree_html is not None:
@@ -978,7 +1003,6 @@ def _(mo):
 
 @app.cell
 def _(mo):
-    umap_n_vectors   = mo.ui.number(value=5000, start=2, label="Max vectors")
     umap_n_neighbors = mo.ui.number(value=15, start=2, stop=200, step=1, label="n_neighbors")
     umap_min_dist    = mo.ui.number(value=0.1, start=0.0, stop=1.0, step=0.05, label="min_dist")
     run_umap = mo.ui.run_button(
@@ -986,42 +1010,37 @@ def _(mo):
         tooltip="Run UMAP on loaded embeddings",
     )
     umap_controls_ui = mo.hstack(
-        [umap_n_vectors, umap_n_neighbors, umap_min_dist, run_umap],
+        [umap_n_neighbors, umap_min_dist, run_umap],
         justify="start", align="end",
     )
-    return (
-        run_umap,
-        umap_controls_ui,
-        umap_min_dist,
-        umap_n_neighbors,
-        umap_n_vectors,
-    )
+    return run_umap, umap_controls_ui, umap_min_dist, umap_n_neighbors
 
 
 @app.cell
 def _(
+    cached_data,
     experiment_selector,
     get_umap_result,
-    img_emb_tbl,
     mo,
     run_umap,
     set_umap_result,
     src_img_tbl,
     umap_min_dist,
     umap_n_neighbors,
-    umap_n_vectors,
 ):
     _exp = experiment_selector.value if experiment_selector.value else None
     if get_umap_result() is not None and get_umap_result().get("experiment") != _exp:
         set_umap_result(None)
     if not run_umap.value:
         umap_status = mo.callout(
-            mo.md("Configure options above and click **▶ Run UMAP**."), kind="info")
-    elif img_emb_tbl is None:
-        umap_status = mo.callout(mo.md("No experiment loaded."), kind="warn")
+            mo.md("Load data above, then click **▶ Run UMAP**."), kind="info")
+    elif cached_data is None:
+        umap_status = mo.callout(mo.md("Click **📥 Load Data** first."), kind="warn")
     else:
         try:
-            _X, _ids, _n_total = load_embedding_matrix(img_emb_tbl, umap_n_vectors.value)
+            _X       = cached_data["X"]
+            _ids     = cached_data["ids"]
+            _n_total = cached_data["n_total"]
             _emb, _backend = run_umap_best(_X, umap_n_neighbors.value, umap_min_dist.value)
             _meta = fetch_metadata_for_ids(src_img_tbl, list(_ids))
             set_umap_result({
@@ -1231,14 +1250,17 @@ def _(get_umap_result, map_theme, mo, np, src_img_tbl, umap_scatter):
 
 @app.cell
 def _(
+    load_data_btn,
     mo,
+    shared_n_vectors,
     umap_color_select,
     umap_controls_ui,
     umap_gallery_ui,
     umap_scatter,
     umap_status,
 ):
-    _items_u = [umap_controls_ui]
+    _shared = mo.hstack([shared_n_vectors, load_data_btn], justify="start", align="end")
+    _items_u = [_shared, umap_controls_ui]
     if umap_status is not None:
         _items_u.append(umap_status)
     else:
