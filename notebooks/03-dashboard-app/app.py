@@ -129,14 +129,12 @@ def load_embedding_matrix(img_emb_tbl, n_vectors: int):
     df = img_emb_tbl.to_pandas()
     X = np.asarray(df["embedding"].to_list(), dtype=np.float32)
     image_ids = df["image_id"].to_numpy()
-    n_total = len(df)
-    del df  # free the full pandas DataFrame; X and image_ids hold only what's needed
     if n_vectors < len(X):
         rng = np.random.default_rng(42)
         idx = rng.choice(len(X), n_vectors, replace=False)
         X = X[idx]
         image_ids = image_ids[idx]
-    return X, image_ids, n_total
+    return X, image_ids, len(df)
 
 
 @app.function
@@ -473,7 +471,6 @@ def _(
             "n_total": _n_total, "emb_dim": _X.shape[1], "n_used": len(_X),
             "experiment": _exp,
         })
-        del _X  # free the raw embedding matrix; PCA scores are stored in state
         pca_status = None
     return (pca_status,)
 
@@ -1033,7 +1030,6 @@ def _(
                 "n_total": _n_total, "emb_dim": _X.shape[1], "n_used": len(_X),
                 "experiment": _exp,
             })
-            del _X  # free the raw embedding matrix; UMAP embedding is stored in state
             umap_status = None
         except ImportError as _e:
             umap_status = mo.callout(
@@ -1453,41 +1449,32 @@ def apply_similarity_overlay(image_blob, matched_patch_distances, n_side, alpha_
     from PIL import Image
 
     img = Image.open(io.BytesIO(image_blob)).convert("RGBA")
-    try:
-        iw, ih = img.size
+    iw, ih = img.size
 
-        alpha_grid = np.full((n_side, n_side), alpha_min, dtype=np.float32)
-        if matched_patch_distances:
-            dists = np.array(list(matched_patch_distances.values()), dtype=np.float32)
-            d_min, d_max = dists.min(), dists.max()
-            for pidx, dist in matched_patch_distances.items():
-                row, col = int(pidx) // n_side, int(pidx) % n_side
-                norm = (dist - d_min) / (d_max - d_min + 1e-8)
-                alpha_grid[row, col] = 1.0 - norm * 0.5
+    alpha_grid = np.full((n_side, n_side), alpha_min, dtype=np.float32)
+    if matched_patch_distances:
+        dists = np.array(list(matched_patch_distances.values()), dtype=np.float32)
+        d_min, d_max = dists.min(), dists.max()
+        for pidx, dist in matched_patch_distances.items():
+            row, col = int(pidx) // n_side, int(pidx) % n_side
+            norm = (dist - d_min) / (d_max - d_min + 1e-8)
+            alpha_grid[row, col] = 1.0 - norm * 0.5
 
-        ph, pw = ih // n_side, iw // n_side
-        alpha_up = np.repeat(np.repeat(alpha_grid, ph, axis=0), pw, axis=1)
-        pad_h, pad_w = ih - alpha_up.shape[0], iw - alpha_up.shape[1]
-        if pad_h > 0 or pad_w > 0:
-            alpha_up = np.pad(alpha_up, ((0, pad_h), (0, pad_w)), mode="edge")
+    ph, pw = ih // n_side, iw // n_side
+    alpha_up = np.repeat(np.repeat(alpha_grid, ph, axis=0), pw, axis=1)
+    pad_h, pad_w = ih - alpha_up.shape[0], iw - alpha_up.shape[1]
+    if pad_h > 0 or pad_w > 0:
+        alpha_up = np.pad(alpha_up, ((0, pad_h), (0, pad_w)), mode="edge")
 
-        img_arr = np.array(img)
-        img_arr[..., 3] = (alpha_up * 255).astype(np.uint8)
-        masked = Image.fromarray(img_arr, "RGBA")
-        bg = Image.new("RGBA", (iw, ih), bg_color + (255,))
-        composite = Image.alpha_composite(bg, masked).convert("RGB")
-        masked.close()
-        bg.close()
+    img_arr = np.array(img)
+    img_arr[..., 3] = (alpha_up * 255).astype(np.uint8)
+    masked = Image.fromarray(img_arr, "RGBA")
+    bg = Image.new("RGBA", (iw, ih), bg_color + (255,))
+    composite = Image.alpha_composite(bg, masked).convert("RGB")
 
-        buf = io.BytesIO()
-        try:
-            composite.save(buf, format="JPEG", quality=85)
-            return buf.getvalue()
-        finally:
-            buf.close()
-            composite.close()
-    finally:
-        img.close()
+    buf = io.BytesIO()
+    composite.save(buf, format="JPEG", quality=85)
+    return buf.getvalue()
 
 
 @app.function
@@ -1938,28 +1925,18 @@ def _(
             for _, row in ss_top_df.iterrows()
         }
 
-        # Batch-fetch all image blobs in one query instead of one-per-image
-        _img_ids_to_fetch = list(_groups.index)
-        _id_str = ", ".join(f"'{i}'" for i in _img_ids_to_fetch)
-        _bulk_df = (
-            src_img_tbl.search()
-            .where(f"id IN ({_id_str})")
-            .select(["id", "image_blob", "dt"])
-            .limit(len(_img_ids_to_fetch))
-            .to_pandas()
-        )
-        _blob_by_id = dict(zip(_bulk_df["id"], _bulk_df["image_blob"]))
-        _dt_by_id   = dict(zip(_bulk_df["id"], _bulk_df["dt"]))
-        del _bulk_df  # free the large DataFrame immediately
-
         _thumbs = []
         _date_map = {}
         for _img_id, _data in _groups.iterrows():
-            _raw_blob = _blob_by_id.get(_img_id)
-            _dt = _dt_by_id.get(_img_id)
-            if _raw_blob is None:
-                continue
-            _date_map[_img_id] = _dt
+            _r = (
+                src_img_tbl.search()
+                .where(f"id = '{_img_id}'")
+                .select(["image_blob", "dt"])
+                .limit(1)
+                .to_pandas()
+                .iloc[0]
+            )
+            _date_map[_img_id] = _r["dt"]
 
             if ss_similarity_toggle.value:
                 _matched = {
@@ -1967,36 +1944,25 @@ def _(
                     for p in _data["patch_index"]
                     if (_img_id, int(p)) in _patch_dists
                 }
-                _blob = apply_similarity_overlay(_raw_blob, _matched, _d["n_side"])
-                del _raw_blob
+                _blob = apply_similarity_overlay(_r["image_blob"], _matched, _d["n_side"])
             else:
-                _im = _Image_g.open(_io_g.BytesIO(_raw_blob)).convert("RGB")
-                del _raw_blob
-                try:
-                    _tw, _th = _im.size
-                    _sx, _sy = _tw / _IMG_SIZE, _th / _IMG_SIZE
-                    _draw = _ImageDraw_g.Draw(_im)
-                    for _p in map(int, _data["patch_index"]):
-                        _grid_w = _IMG_SIZE // _PATCH_SIZE
-                        _pr, _pc = _p // _grid_w, _p % _grid_w
-                        _bx = (_pc * _PATCH_SIZE, _pr * _PATCH_SIZE, (_pc + 1) * _PATCH_SIZE, (_pr + 1) * _PATCH_SIZE)
-                        _draw.rectangle(
-                            (int(_bx[0]*_sx), int(_bx[1]*_sy), int(_bx[2]*_sx), int(_bx[3]*_sy)),
-                            outline=(255, 80, 0), width=2,
-                        )
-                    _buf = _io_g.BytesIO()
-                    try:
-                        _im.save(_buf, format="JPEG", quality=85)
-                        _blob = _buf.getvalue()
-                    finally:
-                        _buf.close()
-                finally:
-                    _im.close()
+                _im = _Image_g.open(_io_g.BytesIO(_r["image_blob"])).convert("RGB")
+                _tw, _th = _im.size
+                _sx, _sy = _tw / _IMG_SIZE, _th / _IMG_SIZE
+                _draw = _ImageDraw_g.Draw(_im)
+                for _p in map(int, _data["patch_index"]):
+                    _grid_w = _IMG_SIZE // _PATCH_SIZE
+                    _pr, _pc = _p // _grid_w, _p % _grid_w
+                    _bx = (_pc * _PATCH_SIZE, _pr * _PATCH_SIZE, (_pc + 1) * _PATCH_SIZE, (_pr + 1) * _PATCH_SIZE)
+                    _draw.rectangle(
+                        (int(_bx[0]*_sx), int(_bx[1]*_sy), int(_bx[2]*_sx), int(_bx[3]*_sy)),
+                        outline=(255, 80, 0), width=2,
+                    )
+                _buf = _io_g.BytesIO()
+                _im.save(_buf, format="JPEG", quality=85)
+                _blob = _buf.getvalue()
 
-            _thumbs.append((f"{str(_dt)[:10]}  ·  d={_data['_distance']:.2f}", _blob, _dt))
-
-        import gc as _gc_g
-        _gc_g.collect()  # reclaim PIL/BytesIO native memory from the image loop
+            _thumbs.append((f"{str(_r['dt'])[:10]}  ·  d={_data['_distance']:.2f}", _blob, _r["dt"]))
 
         _theme = "dark" if map_theme.value else "light"
         _n_patches = len(ss_top_df)
