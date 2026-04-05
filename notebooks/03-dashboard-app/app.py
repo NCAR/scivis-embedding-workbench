@@ -1993,6 +1993,101 @@ def _(
 
 
 @app.cell
+def _(map_theme, mo, src_img_tbl, ss_top_df):
+    if ss_top_df is None or src_img_tbl is None:
+        ss_timeline_ui = None
+    else:
+        import plotly.graph_objects as _go_tl
+
+        # Fetch dates for every unique image in the results
+        _unique_ids = ss_top_df["image_id"].unique().tolist()
+        _id_quoted = ", ".join(f"'{i}'" for i in _unique_ids)
+        _dt_df = (
+            src_img_tbl.search()
+            .where(f"id IN ({_id_quoted})")
+            .select(["id", "dt"])
+            .to_pandas()
+        )
+        _id_dt_map = dict(zip(_dt_df["id"], _dt_df["dt"]))
+
+        # One row per image: patch count + best (min) cosine distance + date
+        _agg = (
+            ss_top_df.groupby("image_id")
+            .agg(n_patches=("patch_index", "count"), best_dist=("_distance", "min"))
+            .reset_index()
+        )
+        _agg["date"] = _agg["image_id"].map(lambda x: str(_id_dt_map.get(x, ""))[:10])
+        _agg = _agg.sort_values("date").reset_index(drop=True)
+
+        _is_dark = map_theme.value
+        _bg   = "#1a1a1a" if _is_dark else "white"
+        _text = "#e0e0e0" if _is_dark else "#222222"
+        _grid = "rgba(255,255,255,0.08)" if _is_dark else "rgba(0,0,0,0.08)"
+
+        # Grow width with bar count; min 600px so chart stays readable
+        _fig_w = max(600, len(_agg) * 22)
+
+        _fig_tl = _go_tl.Figure(_go_tl.Bar(
+            x=_agg["date"],
+            y=_agg["n_patches"],
+            marker=dict(
+                color=_agg["best_dist"],
+                colorscale="Viridis",
+                reversescale=True,          # low dist → yellow (similar), high → purple
+                cmin=0,
+                cmax=1,
+                colorbar=dict(
+                    orientation="h",
+                    y=-0.6,
+                    len=0.8,
+                    thickness=10,
+                    title=dict(
+                        text="Best cosine dist  (0 = identical · 1 = dissimilar)",
+                        side="bottom",
+                        font=dict(size=10, color=_text),
+                    ),
+                    tickfont=dict(size=9, color=_text),
+                    tickvals=[0, 0.25, 0.5, 0.75, 1],
+                ),
+            ),
+            hovertemplate=(
+                "<b>%{x}</b><br>"
+                "Patches: %{y}<br>"
+                "Best dist: %{marker.color:.3f}"
+                "<extra></extra>"
+            ),
+        ))
+        _fig_tl.update_layout(
+            height=200,
+            width=_fig_w,
+            margin=dict(l=45, r=10, t=6, b=85),
+            plot_bgcolor=_bg,
+            paper_bgcolor=_bg,
+            xaxis=dict(
+                type="category",
+                tickangle=-45,
+                tickfont=dict(size=9, color=_text),
+                gridcolor=_grid,
+                linecolor=_grid,
+            ),
+            yaxis=dict(
+                title=dict(text="Patches", font=dict(size=10, color=_text)),
+                tickfont=dict(size=9, color=_text),
+                gridcolor=_grid,
+            ),
+            dragmode="pan",
+        )
+        _tl_html = (
+            '<div style="overflow-x:auto;overflow-y:hidden;">'
+            + _fig_tl.to_html(full_html=False, include_plotlyjs=False,
+                              config={"displayModeBar": False})
+            + '</div>'
+        )
+        ss_timeline_ui = mo.Html(_tl_html)
+    return (ss_timeline_ui,)
+
+
+@app.cell
 def _(
     get_ss_patch,
     get_ss_spatial_filter,
@@ -2012,6 +2107,7 @@ def _(
     ss_search_mode,
     ss_similarity_toggle,
     ss_spatial_filter_map,
+    ss_timeline_ui,
 ):
     _items = [mo.hstack([ss_load_button], justify="start")]
     if ss_init_status is not None:
@@ -2035,7 +2131,13 @@ def _(
             "Settings": mo.vstack([ss_search_mode, ss_n_similar_images, ss_n_similar_patches, ss_max_gallery, ss_refine_factor, ss_similarity_toggle]),
         })
         _gallery = ss_gallery_ui if ss_gallery_ui is not None else mo.md("")
-        _s = f'<div style="flex:1 1 0;min-width:0;overflow:auto;">{_search_panel.text}</div>'
+        _chart_html = ss_timeline_ui.text if ss_timeline_ui is not None else ""
+        _s = (
+            f'<div style="flex:1 1 0;min-width:0;">'
+            f'<div style="overflow:auto;">{_search_panel.text}</div>'
+            f'<div style="margin-top:8px;">{_chart_html}</div>'
+            f'</div>'
+        )
         _g = f'<div style="flex:1 1 0;min-width:0;overflow:auto;">{_gallery.text}</div>'
         _items.append(mo.Html(f'<div style="display:flex;align-items:flex-start;gap:8px;">{_s}{_g}</div>'))
     elif ss_gallery_ui is not None:
