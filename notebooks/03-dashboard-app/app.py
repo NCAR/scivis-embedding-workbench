@@ -2134,7 +2134,7 @@ def _(map_theme, mo, src_img_tbl, ss_timeline_color_by, ss_top_df):
             plot_bgcolor=_bg,
             paper_bgcolor=_bg,
             xaxis=dict(
-                type="date",
+                type="category",
                 tickangle=-45,
                 tickfont=dict(size=9, color=_text),
                 gridcolor=_grid,
