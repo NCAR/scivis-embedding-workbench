@@ -169,6 +169,27 @@ def run_pca_best(X, n_components: int):
 
 
 @app.function
+def run_umap_best(X, n_neighbors=15, min_dist=0.1):
+    """Run UMAP with best available backend. Returns (embedding_2d, backend_label)."""
+    try:
+        from cuml.manifold import UMAP
+        reducer = UMAP(n_components=2, n_neighbors=n_neighbors, min_dist=float(min_dist),
+                       random_state=42, output_type="numpy")
+        return reducer.fit_transform(X), "cuML (CUDA)"
+    except ImportError:
+        pass
+    try:
+        import umap as _umap_lib
+    except ImportError:
+        raise ImportError(
+            "No UMAP backend found. Install umap-learn:  uv add umap-learn"
+        )
+    reducer = _umap_lib.UMAP(n_components=2, n_neighbors=int(n_neighbors),
+                              min_dist=float(min_dist), random_state=42)
+    return reducer.fit_transform(X), "umap-learn (CPU)"
+
+
+@app.function
 def make_scree_plot(evr, n_total: int, emb_dim: int, n_used: int, backend: str, theme: str = "light"):
     """Render an interactive Plotly scree plot with per-component and cumulative variance."""
     import numpy as np
@@ -950,11 +971,218 @@ def _(
 
 
 @app.cell
-def _(mo, pca_tab):
-    _umap_placeholder = mo.callout(
-        mo.md("UMAP dimensionality reduction — coming soon."), kind="neutral"
+def _(mo):
+    get_umap_result, set_umap_result = mo.state(None)
+    return get_umap_result, set_umap_result
+
+
+@app.cell
+def _(mo):
+    umap_n_vectors   = mo.ui.number(value=5000, start=2, label="Max vectors")
+    umap_n_neighbors = mo.ui.number(value=15, start=2, stop=200, step=1, label="n_neighbors")
+    umap_min_dist    = mo.ui.number(value=0.1, start=0.0, stop=1.0, step=0.05, label="min_dist")
+    run_umap = mo.ui.run_button(
+        label="▶ Run UMAP", kind="success",
+        tooltip="Run UMAP on loaded embeddings",
     )
-    dim_reduction_tab = mo.ui.tabs({"PCA": pca_tab, "UMAP": _umap_placeholder})
+    umap_controls_ui = mo.hstack(
+        [umap_n_vectors, umap_n_neighbors, umap_min_dist, run_umap],
+        justify="start", align="end",
+    )
+    return (
+        run_umap,
+        umap_controls_ui,
+        umap_min_dist,
+        umap_n_neighbors,
+        umap_n_vectors,
+    )
+
+
+@app.cell
+def _(
+    experiment_selector,
+    get_umap_result,
+    img_emb_tbl,
+    mo,
+    run_umap,
+    set_umap_result,
+    src_img_tbl,
+    umap_min_dist,
+    umap_n_neighbors,
+    umap_n_vectors,
+):
+    _exp = experiment_selector.value if experiment_selector.value else None
+    if get_umap_result() is not None and get_umap_result().get("experiment") != _exp:
+        set_umap_result(None)
+    if not run_umap.value:
+        umap_status = mo.callout(
+            mo.md("Configure options above and click **▶ Run UMAP**."), kind="info")
+    elif img_emb_tbl is None:
+        umap_status = mo.callout(mo.md("No experiment loaded."), kind="warn")
+    else:
+        try:
+            _X, _ids, _n_total = load_embedding_matrix(img_emb_tbl, umap_n_vectors.value)
+            _emb, _backend = run_umap_best(_X, umap_n_neighbors.value, umap_min_dist.value)
+            _meta = fetch_metadata_for_ids(src_img_tbl, list(_ids))
+            set_umap_result({
+                "embedding": _emb, "image_ids": _ids, "metadata": _meta,
+                "backend": _backend,
+                "n_total": _n_total, "emb_dim": _X.shape[1], "n_used": len(_X),
+                "experiment": _exp,
+            })
+            umap_status = None
+        except ImportError as _e:
+            umap_status = mo.callout(
+                mo.md(f"**Missing dependency:** {_e}"), kind="danger")
+        except Exception as _e:
+            umap_status = mo.callout(
+                mo.md(f"**UMAP failed:** {_e}"), kind="danger")
+    return (umap_status,)
+
+
+@app.cell
+def _(get_umap_result, mo, np):
+    _r = get_umap_result()
+    if _r is None:
+        umap_color_select = mo.ui.dropdown(options=[], value=None, label="Color by")
+    else:
+        _dt_opts = ["dt:year", "dt:month", "dt:day", "dt:hour"]
+        _opts = list(_dt_opts)
+        _meta = _r.get("metadata")
+        if _meta is not None and len(_meta) > 0:
+            _skip = {"id", "filename", "dt"}
+            for _col in _meta.columns:
+                try:
+                    _ok = np.issubdtype(_meta[_col].dtype, np.number)
+                except TypeError:
+                    _ok = False
+                if _col not in _skip and _ok:
+                    _opts.append(_col)
+        umap_color_select = mo.ui.dropdown(
+            options=_opts, value="dt:month", label="Color by")
+    return (umap_color_select,)
+
+
+@app.cell
+def _(get_umap_result, map_theme, mo, np, umap_color_select):
+    import plotly.graph_objects as _go_umap
+    _r = get_umap_result()
+    if _r is None:
+        umap_scatter = mo.callout(mo.md("Run UMAP first."), kind="neutral")
+    else:
+        _emb   = _r["embedding"]
+        _meta  = _r.get("metadata")
+        _theme = "dark" if map_theme.value else "light"
+        _c     = get_theme_colors(_theme)
+        _bg    = "#1a1a1a" if _theme == "dark" else "white"
+
+        _ck = umap_color_select.value
+        _cvals = None
+        if _ck and _meta is not None and len(_meta):
+            if _ck.startswith("dt:") and "dt" in _meta.columns:
+                _part = _ck.split(":")[1]
+                if hasattr(_meta["dt"].dt, _part):
+                    _cvals = getattr(_meta["dt"].dt, _part).astype(float).values
+            elif _ck in _meta.columns:
+                _cvals = _meta[_ck].astype(float).values
+
+        _fig = _go_umap.Figure(_go_umap.Scatter(
+            x=_emb[:, 0], y=_emb[:, 1],
+            mode="markers",
+            marker=dict(
+                size=5, opacity=0.75,
+                color=_cvals if _cvals is not None else _c["bar_color"],
+                colorscale="Viridis" if _cvals is not None else None,
+                showscale=_cvals is not None,
+                colorbar=dict(title=_ck or "", thickness=12) if _cvals is not None else None,
+            ),
+            text=[str(i) for i in _r["image_ids"]],
+            hovertemplate="%{text}<extra></extra>",
+            selected=dict(marker=dict(color="orange", size=8, opacity=1.0)),
+            unselected=dict(marker=dict(opacity=0.15)),
+        ))
+
+        _xr = float(np.ptp(_emb[:, 0]))
+        _yr = float(np.ptp(_emb[:, 1]))
+        _l2, _r2, _t2, _b2 = 50, 20, 35, 40
+        _plot_w = max(600 - _l2 - _r2, 1)
+        _fig_h  = int(_plot_w * (_yr / _xr) + _t2 + _b2) if _xr else 480
+        _fig_h  = max(300, min(_fig_h, 700))
+
+        _fig.update_layout(
+            template=_c["plotly_template"],
+            dragmode="lasso",
+            clickmode="event+select",
+            xaxis=dict(title="UMAP 1", showgrid=False),
+            yaxis=dict(title="UMAP 2", showgrid=False,
+                       scaleanchor="x", scaleratio=1),
+            height=_fig_h,
+            margin=dict(l=_l2, r=_r2, t=_t2, b=_b2),
+            paper_bgcolor=_bg, plot_bgcolor=_bg,
+            title=dict(
+                text=(f"UMAP — {_r['n_used']:,} / {_r['n_total']:,} images"
+                      f" × dim {_r['emb_dim']}  [{_r['backend']}]"),
+                font=dict(size=13),
+            ),
+        )
+        umap_scatter = mo.ui.plotly(_fig)
+    return (umap_scatter,)
+
+
+@app.cell
+def _(get_umap_result, map_theme, mo, src_img_tbl, umap_scatter):
+    _r = get_umap_result()
+    if _r is None or src_img_tbl is None or not hasattr(umap_scatter, "value"):
+        umap_gallery_ui = None
+    else:
+        _val = umap_scatter.value
+        _ids = _r["image_ids"]
+        _MAX = 20
+        if isinstance(_val, list) and _val:
+            _sel_idx = [pt["pointIndex"] for pt in _val if "pointIndex" in pt]
+            _sel_ids = [str(_ids[i]) for i in _sel_idx if i < len(_ids)]
+        else:
+            _sel_ids = []
+        if not _sel_ids:
+            umap_gallery_ui = mo.callout(
+                mo.md("*Lasso or box-select points to see thumbnails.*"), kind="neutral")
+        else:
+            _tw, _th = get_thumb_dimensions(src_img_tbl)
+            _thumbs  = fetch_thumbnails_batch(src_img_tbl, _sel_ids, _MAX)
+            _msg, _html = render_thumbnail_gallery(
+                _thumbs, len(_sel_ids), _MAX,
+                theme="dark" if map_theme.value else "light",
+                thumb_w=_tw, thumb_h=_th,
+            )
+            umap_gallery_ui = mo.vstack([mo.md(f"**{_msg}**"), mo.Html(_html)])
+    return (umap_gallery_ui,)
+
+
+@app.cell
+def _(
+    mo,
+    umap_color_select,
+    umap_controls_ui,
+    umap_gallery_ui,
+    umap_scatter,
+    umap_status,
+):
+    _items_u = [umap_controls_ui]
+    if umap_status is not None:
+        _items_u.append(umap_status)
+    else:
+        _items_u.append(mo.hstack([umap_color_select], justify="start"))
+        _gallery_u = (umap_gallery_ui if umap_gallery_ui is not None
+                      else mo.callout(
+                          mo.md("*Select points to see thumbnails.*"), kind="neutral"))
+        _items_u.append(mo.hstack([umap_scatter, _gallery_u], align="start"))
+    umap_tab = mo.vstack(_items_u)
+    return (umap_tab,)
+
+
+@app.cell
+def _(mo, pca_tab, umap_tab):
+    dim_reduction_tab = mo.ui.tabs({"PCA": pca_tab, "UMAP": umap_tab})
     return (dim_reduction_tab,)
 
 
