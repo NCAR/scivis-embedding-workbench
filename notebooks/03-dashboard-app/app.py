@@ -1624,6 +1624,22 @@ def _(mo):
 
 
 @app.cell
+def _(mo, src_img_tbl, ss_init):
+    if src_img_tbl is None or ss_init is None:
+        _col_opts = ["Best cosine dist"]
+    else:
+        _exclude = {"image_blob", "thumb_blob", "id", "filename", "dt"}
+        _meta = [f.name for f in src_img_tbl.schema if f.name not in _exclude]
+        _col_opts = ["Best cosine dist"] + _meta
+    ss_timeline_color_by = mo.ui.dropdown(
+        options=_col_opts,
+        value="Best cosine dist",
+        label="Color by",
+    )
+    return (ss_timeline_color_by,)
+
+
+@app.cell
 def _(src_img_tbl, ss_init):
     if ss_init is None:
         ss_available_ids = []
@@ -1993,24 +2009,31 @@ def _(
 
 
 @app.cell
-def _(map_theme, mo, src_img_tbl, ss_top_df):
+def _(map_theme, mo, src_img_tbl, ss_timeline_color_by, ss_top_df):
+    import numpy as _np_tl
     if ss_top_df is None or src_img_tbl is None:
         ss_timeline_ui = None
     else:
         import plotly.graph_objects as _go_tl
+        import plotly.colors as _pc_tl
 
-        # Fetch dates for every unique image in the results
         _unique_ids = ss_top_df["image_id"].unique().tolist()
-        _id_quoted = ", ".join(f"'{i}'" for i in _unique_ids)
+        _id_quoted  = ", ".join(f"'{i}'" for i in _unique_ids)
+        _color_col  = ss_timeline_color_by.value
+
+        # Fetch id + dt + optional color column from src_img_tbl
+        _extra      = [] if _color_col == "Best cosine dist" else [_color_col]
+        _fetch_cols = ["id", "dt"] + _extra
         _dt_df = (
             src_img_tbl.search()
             .where(f"id IN ({_id_quoted})")
-            .select(["id", "dt"])
+            .select(_fetch_cols)
             .to_pandas()
         )
-        _id_dt_map = dict(zip(_dt_df["id"], _dt_df["dt"]))
+        _id_dt_map  = dict(zip(_dt_df["id"], _dt_df["dt"]))
+        _id_col_map = dict(zip(_dt_df["id"], _dt_df[_color_col])) if _extra else {}
 
-        # One row per image: patch count + best (min) cosine distance + date
+        # One row per image: patch count + best cosine dist + date
         _agg = (
             ss_top_df.groupby("image_id")
             .agg(n_patches=("patch_index", "count"), best_dist=("_distance", "min"))
@@ -2019,48 +2042,87 @@ def _(map_theme, mo, src_img_tbl, ss_top_df):
         _agg["date"] = _agg["image_id"].map(lambda x: str(_id_dt_map.get(x, ""))[:10])
         _agg = _agg.sort_values("date").reset_index(drop=True)
 
+        # Resolve color values and detect categorical vs continuous
+        if _color_col == "Best cosine dist":
+            _color_vals = _agg["best_dist"]
+            _is_cat = False
+        else:
+            _color_vals = _agg["image_id"].map(lambda x: _id_col_map.get(x))
+            _sample = _color_vals.dropna()
+            _is_cat = (
+                len(_sample) > 0 and isinstance(_sample.iloc[0], str)
+            ) or (len(_sample.unique()) <= 20)
+
         _is_dark = map_theme.value
         _bg   = "#1a1a1a" if _is_dark else "white"
         _text = "#e0e0e0" if _is_dark else "#222222"
         _grid = "rgba(255,255,255,0.08)" if _is_dark else "rgba(0,0,0,0.08)"
-
-        # Grow width with bar count; min 600px so chart stays readable
         _fig_w = max(600, len(_agg) * 22)
 
-        _fig_tl = _go_tl.Figure(_go_tl.Bar(
-            x=_agg["date"],
-            y=_agg["n_patches"],
-            marker=dict(
-                color=_agg["best_dist"],
-                colorscale="Viridis",
-                reversescale=True,          # low dist → yellow (similar), high → purple
-                cmin=0,
-                cmax=1,
-                colorbar=dict(
-                    orientation="h",
-                    y=-0.6,
-                    len=0.8,
-                    thickness=10,
-                    title=dict(
-                        text="Best cosine dist  (0 = identical · 1 = dissimilar)",
-                        side="bottom",
-                        font=dict(size=10, color=_text),
+        if _is_cat:
+            # One Bar trace per category → qualitative palette + Plotly legend
+            _pal = _pc_tl.qualitative.Dark24 + _pc_tl.qualitative.Light24
+            _cats = sorted(_color_vals.dropna().unique(), key=str)
+            _cat_color = {c: _pal[i % len(_pal)] for i, c in enumerate(_cats)}
+            _fig_tl = _go_tl.Figure()
+            for _cat in _cats:
+                _sub = _agg[_color_vals == _cat]
+                _fig_tl.add_trace(_go_tl.Bar(
+                    x=_sub["date"], y=_sub["n_patches"],
+                    name=str(_cat),
+                    marker_color=_cat_color[_cat],
+                    hovertemplate=(
+                        f"<b>%{{x}}</b><br>Patches: %{{y}}<br>"
+                        f"{_color_col}: {_cat}<extra></extra>"
                     ),
-                    tickfont=dict(size=9, color=_text),
-                    tickvals=[0, 0.25, 0.5, 0.75, 1],
+                ))
+            _fig_tl.update_layout(
+                barmode="stack",
+                legend=dict(
+                    orientation="v", x=1.02, y=1,
+                    font=dict(size=9, color=_text),
+                    bgcolor="rgba(0,0,0,0)",
                 ),
-            ),
-            hovertemplate=(
-                "<b>%{x}</b><br>"
-                "Patches: %{y}<br>"
-                "Best dist: %{marker.color:.3f}"
-                "<extra></extra>"
-            ),
-        ))
+            )
+        else:
+            # Continuous: Viridis, vertical colorbar on right, autoscaled cmin/cmax
+            _cv   = _color_vals.fillna(_color_vals.median())
+            _cmin = float(_cv.min())
+            _cmax = float(_cv.max())
+            _rev  = (_color_col == "Best cosine dist")   # low dist = similar = bright
+            _fig_tl = _go_tl.Figure(_go_tl.Bar(
+                x=_agg["date"],
+                y=_agg["n_patches"],
+                marker=dict(
+                    color=_cv,
+                    colorscale="Viridis",
+                    reversescale=_rev,
+                    cmin=_cmin,
+                    cmax=_cmax,
+                    colorbar=dict(
+                        orientation="v",
+                        x=1.02, xanchor="left",
+                        y=0.5,  yanchor="middle",
+                        len=1.0, thickness=12,
+                        title=dict(
+                            text=_color_col, side="right",
+                            font=dict(size=10, color=_text),
+                        ),
+                        tickfont=dict(size=9, color=_text),
+                    ),
+                ),
+                hovertemplate=(
+                    "<b>%{x}</b><br>"
+                    "Patches: %{y}<br>"
+                    f"{_color_col}: %{{marker.color:.3f}}"
+                    "<extra></extra>"
+                ),
+            ))
+
         _fig_tl.update_layout(
             height=200,
             width=_fig_w,
-            margin=dict(l=45, r=10, t=6, b=85),
+            margin=dict(l=45, r=110, t=6, b=65),
             plot_bgcolor=_bg,
             paper_bgcolor=_bg,
             xaxis=dict(
@@ -2077,13 +2139,7 @@ def _(map_theme, mo, src_img_tbl, ss_top_df):
             ),
             dragmode="pan",
         )
-        _tl_html = (
-            '<div style="overflow-x:auto;overflow-y:hidden;">'
-            + _fig_tl.to_html(full_html=False, include_plotlyjs=False,
-                              config={"displayModeBar": False})
-            + '</div>'
-        )
-        ss_timeline_ui = mo.Html(_tl_html)
+        ss_timeline_ui = mo.ui.plotly(_fig_tl)
     return (ss_timeline_ui,)
 
 
@@ -2107,6 +2163,7 @@ def _(
     ss_search_mode,
     ss_similarity_toggle,
     ss_spatial_filter_map,
+    ss_timeline_color_by,
     ss_timeline_ui,
 ):
     _items = [mo.hstack([ss_load_button], justify="start")]
@@ -2131,14 +2188,16 @@ def _(
             "Settings": mo.vstack([ss_search_mode, ss_n_similar_images, ss_n_similar_patches, ss_max_gallery, ss_refine_factor, ss_similarity_toggle]),
         })
         _gallery = ss_gallery_ui if ss_gallery_ui is not None else mo.md("")
-        _chart_html = ss_timeline_ui.text if ss_timeline_ui is not None else ""
-        _s = (
+        _color_by_html = ss_timeline_color_by.text if ss_timeline_color_by is not None else ""
+        _chart_html    = ss_timeline_ui.text        if ss_timeline_ui        is not None else ""
+        _s = f'<div style="flex:1 1 0;min-width:0;overflow:auto;">{_search_panel.text}</div>'
+        _g = (
             f'<div style="flex:1 1 0;min-width:0;">'
-            f'<div style="overflow:auto;">{_search_panel.text}</div>'
-            f'<div style="margin-top:8px;">{_chart_html}</div>'
+            f'<div>{_color_by_html}'
+            f'<div style="overflow-x:auto;width:100%;">{_chart_html}</div></div>'
+            f'<div style="margin-top:8px;overflow:auto;">{_gallery.text}</div>'
             f'</div>'
         )
-        _g = f'<div style="flex:1 1 0;min-width:0;overflow:auto;">{_gallery.text}</div>'
         _items.append(mo.Html(f'<div style="display:flex;align-items:flex-start;gap:8px;">{_s}{_g}</div>'))
     elif ss_gallery_ui is not None:
         _items.append(ss_gallery_ui)
