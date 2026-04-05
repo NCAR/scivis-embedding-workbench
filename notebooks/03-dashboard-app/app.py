@@ -1636,7 +1636,7 @@ def _(mo, src_img_tbl, ss_init):
         value="Best cosine dist",
         label="Color by",
     )
-    return (ss_timeline_color_by,)
+    return
 
 
 @app.cell
@@ -2009,149 +2009,10 @@ def _(
 
 
 @app.cell
-def _(map_theme, mo, src_img_tbl, ss_timeline_color_by, ss_top_df):
-    import numpy as _np_tl
-    if ss_top_df is None or src_img_tbl is None:
-        ss_timeline_ui = None
-    else:
-        import plotly.graph_objects as _go_tl
-        import plotly.colors as _pc_tl
-
-        _unique_ids = ss_top_df["image_id"].unique().tolist()
-        _id_quoted  = ", ".join(f"'{i}'" for i in _unique_ids)
-        _color_col  = ss_timeline_color_by.value
-
-        # Fetch id + dt + optional color column from src_img_tbl
-        _extra      = [] if _color_col == "Best cosine dist" else [_color_col]
-        _fetch_cols = ["id", "dt"] + _extra
-        _dt_df = (
-            src_img_tbl.search()
-            .where(f"id IN ({_id_quoted})")
-            .select(_fetch_cols)
-            .to_pandas()
-        )
-        _id_dt_map  = dict(zip(_dt_df["id"], _dt_df["dt"]))
-        _id_col_map = dict(zip(_dt_df["id"], _dt_df[_color_col])) if _extra else {}
-
-        # One row per image: patch count + best cosine dist + date
-        _agg = (
-            ss_top_df.groupby("image_id")
-            .agg(n_patches=("patch_index", "count"), best_dist=("_distance", "min"))
-            .reset_index()
-        )
-        _agg["date"] = _agg["image_id"].map(lambda x: str(_id_dt_map.get(x, ""))[:10])
-        _agg = _agg.sort_values("date").reset_index(drop=True)
-
-        # Resolve color values and detect categorical vs continuous
-        if _color_col == "Best cosine dist":
-            _color_vals = _agg["best_dist"]
-            _is_cat = False
-        else:
-            _color_vals = _agg["image_id"].map(lambda x: _id_col_map.get(x))
-            _sample = _color_vals.dropna()
-            # Only string/object columns are categorical; numeric columns always continuous
-            _is_cat = len(_sample) > 0 and isinstance(_sample.iloc[0], str)
-
-        _is_dark = map_theme.value
-        _bg   = "#1a1a1a" if _is_dark else "white"
-        _text = "#e0e0e0" if _is_dark else "#222222"
-        _grid = "rgba(255,255,255,0.08)" if _is_dark else "rgba(0,0,0,0.08)"
-        _fig_w = max(600, len(_agg) * 22)
-
-        # Y is always best similarity (1 - dist); only color changes with dropdown
-        _agg["similarity"] = 1.0 - _agg["best_dist"]
-        _bar_width_ms = int(0.8 * 86_400_000)   # 80 % of one day in ms → readable bars on date axis
-
-        if _is_cat:
-            # One Bar trace per category → qualitative palette + Plotly legend
-            _pal = _pc_tl.qualitative.Dark24 + _pc_tl.qualitative.Light24
-            _cats = sorted(_color_vals.dropna().unique(), key=str)
-            _cat_color = {c: _pal[i % len(_pal)] for i, c in enumerate(_cats)}
-            _fig_tl = _go_tl.Figure()
-            for _cat in _cats:
-                _sub = _agg[_color_vals == _cat]
-                _fig_tl.add_trace(_go_tl.Bar(
-                    x=_sub["date"], y=_sub["similarity"],
-                    width=_bar_width_ms,
-                    name=str(_cat),
-                    marker_color=_cat_color[_cat],
-                    hovertemplate=(
-                        f"<b>%{{x}}</b><br>Similarity: %{{y:.3f}}<br>"
-                        f"{_color_col}: {_cat}<extra></extra>"
-                    ),
-                ))
-            _fig_tl.update_layout(
-                barmode="stack",
-                legend=dict(
-                    orientation="v", x=1.02, y=1,
-                    font=dict(size=9, color=_text),
-                    bgcolor="rgba(0,0,0,0)",
-                ),
-            )
-        else:
-            # Continuous: Y always = similarity; only color/label change with dropdown
-            _y_vals  = _agg["similarity"]
-            if _color_col == "Best cosine dist":
-                _cv      = _agg["n_patches"].astype(float)
-                _c_label = "Patches"
-                _hover   = ("<b>%{x}</b><br>Similarity: %{y:.3f}<br>"
-                            "Patches: %{marker.color:.0f}<extra></extra>")
-            else:
-                _cv      = _color_vals.fillna(_color_vals.median())
-                _c_label = _color_col
-                _hover   = (f"<b>%{{x}}</b><br>Similarity: %{{y:.3f}}<br>"
-                            f"{_color_col}: %{{marker.color:.3f}}<extra></extra>")
-
-            _cmin = float(_cv.min())
-            _cmax = float(_cv.max())
-            _fig_tl = _go_tl.Figure(_go_tl.Bar(
-                x=_agg["date"],
-                y=_y_vals,
-                width=_bar_width_ms,
-                marker=dict(
-                    color=_cv,
-                    colorscale="Viridis",
-                    reversescale=False,
-                    cmin=_cmin,
-                    cmax=_cmax,
-                    colorbar=dict(
-                        orientation="v",
-                        x=1.02, xanchor="left",
-                        y=0.5,  yanchor="middle",
-                        len=1.0, thickness=12,
-                        title=dict(
-                            text=_c_label, side="right",
-                            font=dict(size=10, color=_text),
-                        ),
-                        tickfont=dict(size=9, color=_text),
-                    ),
-                ),
-                hovertemplate=_hover,
-            ))
-
-        _fig_tl.update_layout(
-            height=160,
-            width=_fig_w,
-            margin=dict(l=45, r=110, t=6, b=65),
-            plot_bgcolor=_bg,
-            paper_bgcolor=_bg,
-            xaxis=dict(
-                type="date",
-                tickangle=-45,
-                tickfont=dict(size=9, color=_text),
-                gridcolor=_grid,
-                linecolor=_grid,
-            ),
-            yaxis=dict(
-                title=dict(text="Best similarity",
-                           font=dict(size=10, color=_text)),
-                tickfont=dict(size=9, color=_text),
-                gridcolor=_grid,
-            ),
-            dragmode="pan",
-        )
-        ss_timeline_ui = mo.ui.plotly(_fig_tl)
-    return (ss_timeline_ui,)
+def _():
+    # Timeline chart temporarily disabled
+    ss_timeline_ui = None
+    return
 
 
 @app.cell
@@ -2174,8 +2035,6 @@ def _(
     ss_search_mode,
     ss_similarity_toggle,
     ss_spatial_filter_map,
-    ss_timeline_color_by,
-    ss_timeline_ui,
 ):
     _items = [mo.hstack([ss_load_button], justify="start")]
     if ss_init_status is not None:
@@ -2199,13 +2058,9 @@ def _(
             "Settings": mo.vstack([ss_search_mode, ss_n_similar_images, ss_n_similar_patches, ss_max_gallery, ss_refine_factor, ss_similarity_toggle]),
         })
         _gallery = ss_gallery_ui if ss_gallery_ui is not None else mo.md("")
-        _color_by_html = ss_timeline_color_by.text if ss_timeline_color_by is not None else ""
-        _chart_html    = ss_timeline_ui.text        if ss_timeline_ui        is not None else ""
         _s = f'<div style="flex:1 1 0;min-width:0;overflow:auto;">{_search_panel.text}</div>'
         _g = (
             f'<div style="flex:1 1 0;min-width:0;">'
-            f'<div>{_color_by_html}'
-            f'<div style="overflow-x:auto;width:100%;">{_chart_html}</div></div>'
             f'<div style="margin-top:8px;overflow:auto;">{_gallery.text}</div>'
             f'</div>'
         )
