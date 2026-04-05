@@ -1194,26 +1194,26 @@ def _(get_umap_result, map_theme, mo, np, umap_color_select):
 
 
 @app.cell
-def _(get_umap_result, map_theme, mo, src_img_tbl, umap_scatter):
+def _(get_umap_result, map_theme, mo, np, src_img_tbl, umap_scatter):
     _r = get_umap_result()
     if _r is None or src_img_tbl is None or not hasattr(umap_scatter, "value"):
         umap_gallery_ui = None
     else:
         _val = umap_scatter.value
         _MAX = 20
-        if isinstance(_val, dict) and "points" in _val:
-            _pts = _val["points"]
-        elif isinstance(_val, list):
-            _pts = _val
-        else:
-            _pts = []
+        # marimo's bridge only filters by X range (ignores Y), so apply the
+        # full 2D bounding box ourselves using the range Plotly sends directly.
         _sel_ids = []
-        for pt in _pts:
-            if isinstance(pt, dict) and "pointIndex" in pt:
-                _idx = pt["pointIndex"]
-                if _idx < len(_r["image_ids"]):
-                    _sel_ids.append(str(_r["image_ids"][_idx]))
-        _sel_ids = list(dict.fromkeys(_sel_ids))          # dedupe, preserve order
+        _rng = _val.get("range") if isinstance(_val, dict) else None
+        if _rng and "x" in _rng and "y" in _rng:
+            _emb = _r["embedding"]
+            _x0, _x1 = min(_rng["x"]), max(_rng["x"])
+            _y0, _y1 = min(_rng["y"]), max(_rng["y"])
+            _mask = (
+                (_emb[:, 0] >= _x0) & (_emb[:, 0] <= _x1) &
+                (_emb[:, 1] >= _y0) & (_emb[:, 1] <= _y1)
+            )
+            _sel_ids = [str(_r["image_ids"][i]) for i in np.where(_mask)[0]]
         if not _sel_ids:
             umap_gallery_ui = mo.callout(
                 mo.md("*Box-select points on the scatter to see thumbnails.*"), kind="neutral")
