@@ -59,6 +59,47 @@ def _(experiments, mo):
 
 
 @app.cell
+def _(alt):
+    _chart = (
+        alt.Chart([]) # <-- replace with data
+        .mark_bar()
+        .transform_aggregate(count="count()", groupby=["date"])
+        .transform_window(
+            rank="rank()",
+            sort=[
+                alt.SortField("count", order="descending"),
+                alt.SortField("date", order="ascending"),
+            ],
+        )
+        .transform_filter(alt.datum.rank <= 10)
+        .encode(
+            y=alt.Y(
+                "date:N",
+                sort="-x",
+                axis=alt.Axis(title=None),
+            ),
+            x=alt.X("count:Q", title="Number of records"),
+            tooltip=[
+                alt.Tooltip("date:N"),
+                alt.Tooltip("count:Q", format=",.0f", title="Number of records"),
+            ],
+        )
+        .properties(width="container")
+        .configure_view(stroke=None)
+        .configure_axis(grid=False)
+    )
+    _chart
+    return
+
+
+@app.cell
+def _():
+    import altair as alt
+
+    return (alt,)
+
+
+@app.cell
 def _(embedding_db_path, experiment_selector, lancedb, source_db_path):
     # Connect and Open Tables
     _db = lancedb.connect(embedding_db_path.value)
@@ -102,23 +143,51 @@ def _(img_emb_tbl, mo, patch_emb_tbl):
 
 @app.cell
 def _(mo):
-    # Filename input is in its own cell to avoid circular references
-    FILENAME = mo.ui.text(value="20161009_rgb.jpeg", label="Query Filename")
     n_similar_images = mo.ui.number(start=1, stop=50, step=1, value=10, label="Similar images")
     n_similar_patches = mo.ui.number(start=10, stop=500, step=10, value=100, label="Max patches")
     max_gallery_display = mo.ui.number(start=4, stop=100, step=4, value=24, label="Gallery cap")
     similarity_overlay_toggle = mo.ui.switch(label="Similarity overlay")
     map_theme = mo.ui.switch(label="Dark mode")
-    mo.hstack([FILENAME, n_similar_images, n_similar_patches, max_gallery_display,
-               similarity_overlay_toggle, map_theme], align="end")
     return (
-        FILENAME,
         map_theme,
         max_gallery_display,
         n_similar_images,
         n_similar_patches,
         similarity_overlay_toggle,
     )
+
+
+@app.cell
+def _(src_img_tbl):
+    _df = (
+        src_img_tbl.search()
+        .select(["id", "dt"])
+        .to_pandas()
+        .sort_values("dt")
+        .reset_index(drop=True)
+    )
+    available_ids   = _df["id"].tolist()
+    available_dates = [str(d)[:10] for d in _df["dt"].tolist()]
+    return available_dates, available_ids
+
+
+@app.cell
+def _(available_dates, mo):
+    _n = len(available_dates)
+    date_picker = mo.ui.datetime(
+        value=available_dates[0] if _n else None,
+        start=available_dates[0] if _n else None,
+        stop=available_dates[-1] if _n else None,
+    )
+    date_navigator = date_picker
+    return date_navigator, date_picker
+
+
+@app.cell
+def _(available_dates, available_ids, date_picker):
+    _s = str(date_picker.value)[:10] if date_picker.value else ""
+    selected_img_id = available_ids[available_dates.index(_s)] if _s in available_dates else (available_ids[0] if available_ids else "")
+    return (selected_img_id,)
 
 
 @app.cell
@@ -137,18 +206,19 @@ def _(Image, io):
         return (c * p_size, r * p_size, (c + 1) * p_size, (r + 1) * p_size)
 
 
-    return IMG_SIZE, PATCH_SIZE, fetch_image_by_filename, patch_box_from_index
+    return IMG_SIZE, PATCH_SIZE, patch_box_from_index
 
 
 @app.cell
-def _(FILENAME, fetch_image_by_filename, plt, src_img_tbl):
+def _(Image, io, plt, selected_img_id, src_img_tbl):
     # --- IMAGE DISPLAY ---
-    _raw_img = fetch_image_by_filename(src_img_tbl, FILENAME.value)
+    _row = src_img_tbl.search().where(f"id = '{selected_img_id}'").select(["image_blob"]).limit(1).to_pandas().iloc[0]
+    _raw_img = Image.open(io.BytesIO(_row["image_blob"])).convert("RGB")
     _w, _h = _raw_img.size
     _scale = 4 / max(_w, _h)
     _fig, _ax = plt.subplots(figsize=(_w * _scale, _h * _scale))
     _ax.imshow(_raw_img)
-    _ax.axis('off')
+    _ax.axis("off")
     _fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
     _fig
     return
@@ -181,7 +251,6 @@ def _(IMG_SIZE, PATCH_SIZE, mo):
 
 @app.cell
 def _(
-    FILENAME,
     get_selected_patch,
     get_spatial_filter,
     img_emb_tbl,
@@ -189,17 +258,14 @@ def _(
     n_similar_images,
     n_similar_patches,
     patch_emb_tbl,
-    src_img_tbl,
+    selected_img_id,
     target_patch_idx,
 ):
     # --- HIERARCHICAL SEARCH ---
     # Map click sets get_selected_patch(); slider is the fallback
     _patch_idx = get_selected_patch() if get_selected_patch() is not None else target_patch_idx.value
 
-    _src_row = src_img_tbl.search().where(f"filename = '{FILENAME.value}'").select(["id"]).limit(1).to_pandas().iloc[0]
-    _img_id = _src_row["id"]
-
-    _img_q = img_emb_tbl.search().where(f"image_id = '{_img_id}'").select(["embedding"]).limit(1).to_pandas().iloc[0]
+    _img_q = img_emb_tbl.search().where(f"image_id = '{selected_img_id}'").select(["embedding"]).limit(1).to_pandas().iloc[0]
 
     _allowed_ids = metadata_filter.value["id"].tolist()
     _id_clause = ", ".join(f"'{i}'" for i in _allowed_ids)
@@ -216,7 +282,7 @@ def _(
 
     _p_q = (
         patch_emb_tbl.search()
-        .where(f"image_id = '{_img_id}' AND patch_index = {_patch_idx}")
+        .where(f"image_id = '{selected_img_id}' AND patch_index = {_patch_idx}")
         .select(["embedding"])
         .limit(1)
         .to_pandas()
@@ -254,11 +320,10 @@ def _(mo, top_df):
 
 @app.cell
 def _(
-    FILENAME,
     get_selected_patch,
     mo,
     patch_emb_tbl,
-    src_img_tbl,
+    selected_img_id,
     target_patch_idx,
     top_df,
 ):
@@ -266,9 +331,8 @@ def _(
 
     # --- Query patch vector ---
     _patch_idx = get_selected_patch() if get_selected_patch() is not None else target_patch_idx.value
-    _img_id = src_img_tbl.search().where(f"filename = '{FILENAME.value}'").select(["id"]).limit(1).to_pandas().iloc[0]["id"]
     _q_vec = _np.array(
-        patch_emb_tbl.search().where(f"image_id = '{_img_id}' AND patch_index = {_patch_idx}")
+        patch_emb_tbl.search().where(f"image_id = '{selected_img_id}' AND patch_index = {_patch_idx}")
         .select(["embedding"]).limit(1).to_pandas().iloc[0]["embedding"],
         dtype=_np.float32,
     )
@@ -305,12 +369,15 @@ def _(
 @app.cell
 def _(
     IMG_SIZE,
+    available_ids,
+    get_spatial_filter,
     io,
     lat_max,
     lat_min,
     lon_max,
     lon_min,
     max_gallery_display,
+    metadata_filter,
     mo,
     n_side,
     patch_box_from_index,
@@ -373,8 +440,18 @@ def _(
     _n_shown   = len(_groups)
 
     _cap = f" (capped at {_MAX_DISPLAY})" if _n_images > _MAX_DISPLAY else ""
+
+    _sf = get_spatial_filter() or []
+    _filter_parts = []
+    if _sf:
+        _filter_parts.append(f"spatial filter active ({len(_sf)} region{'s' if len(_sf) != 1 else ''})")
+    _meta_count = len(metadata_filter.value) if metadata_filter.value is not None else len(available_ids)
+    if _meta_count < len(available_ids):
+        _filter_parts.append(f"data filter: {_meta_count} of {len(available_ids)} rows")
+    _filter_note = "  ·  " + ",  ".join(_filter_parts) if _filter_parts else ""
+
     _status = mo.md(
-        f"**{_n_patches} patches** across **{_n_images} images** — showing **{_n_shown}**{_cap}"
+        f"**{_n_patches} patches** across **{_n_images} images** — showing **{_n_shown}**{_cap}{_filter_note}"
     )
 
     _, _gallery_html = render_thumbnail_gallery(
@@ -399,7 +476,10 @@ def _(
 
     _visual_tab = mo.vstack([_status, mo.Html(_gallery_html)])
     _data_tab = mo.ui.table(_df_merged, selection=None)
-    mo.ui.tabs({"Visuals": _visual_tab, "Data": _data_tab})
+    mo.vstack([
+        mo.hstack([similarity_overlay_toggle], justify="end"),
+        mo.ui.tabs({"Visuals": _visual_tab, "Data": _data_tab}),
+    ])
     return
 
 
@@ -802,7 +882,6 @@ def _(mo):
 
 @app.cell
 def _(
-    coast_traces,
     get_spatial_filter,
     lat_max,
     lat_min,
@@ -818,7 +897,7 @@ def _(
     _active = get_spatial_filter() or []
     _fig_sf = build_geo_patch_figure(
         _basemap_arr, lon_min, lon_max, lat_min, lat_max,
-        coast_traces, patch_heatmap_trace, None, theme=_theme,
+        [], patch_heatmap_trace, None, theme=_theme,  # coastlines already in basemap image
     )
     _fig_sf.update_layout(
         shapes=build_spatial_filter_shapes(_active, lat_min, lat_max, lon_min, lon_max, n_side),
@@ -857,10 +936,10 @@ def _(set_selected_patch, target_patch_idx):
 
 @app.cell
 def _(
-    FILENAME,
+    Image,
     coast_traces,
-    fetch_image_by_filename,
     get_selected_patch,
+    io,
     lat_max,
     lat_min,
     lon_max,
@@ -869,13 +948,15 @@ def _(
     mo,
     n_side,
     patch_heatmap_trace,
+    selected_img_id,
     src_img_tbl,
 ):
     import numpy as _np
 
     _theme = "dark" if map_theme.value else "light"
     _sel = get_selected_patch()
-    _img_arr = _np.array(fetch_image_by_filename(src_img_tbl, FILENAME.value).convert("RGB"))
+    _row = src_img_tbl.search().where(f"id = '{selected_img_id}'").select(["image_blob"]).limit(1).to_pandas().iloc[0]
+    _img_arr = _np.array(Image.open(io.BytesIO(_row["image_blob"])).convert("RGB"))
     _shape = make_selection_shape(_sel, lat_min, lat_max, lon_min, lon_max, n_side)
     _fig = build_geo_patch_figure(
         _img_arr, lon_min, lon_max, lat_min, lat_max,
@@ -895,11 +976,16 @@ def _(geo_patch_map, set_selected_patch):
 
 @app.cell
 def _(
+    date_navigator,
     geo_patch_map,
     get_selected_patch,
     get_spatial_filter,
+    map_theme,
+    max_gallery_display,
     metadata_filter,
     mo,
+    n_similar_images,
+    n_similar_patches,
     set_spatial_filter,
     spatial_filter_map,
 ):
@@ -915,12 +1001,13 @@ def _(
     _clear_btn = mo.ui.button(label="✕ Clear", on_click=lambda _: set_spatial_filter(None))
 
     mo.ui.tabs({
-        "Patch Query": mo.vstack([mo.md(_label_q), geo_patch_map]),
+        "Patch Query": mo.vstack([date_navigator, mo.md(_label_q), geo_patch_map]),
         "Search Region": mo.vstack([
             mo.hstack([mo.md(_label_s), _clear_btn], align="center"),
             spatial_filter_map,
         ]),
         "Data Filter": metadata_filter,
+        "Settings": mo.vstack([n_similar_images, n_similar_patches, max_gallery_display, map_theme]),
     })
     return
 

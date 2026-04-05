@@ -1086,18 +1086,79 @@ def _(get_umap_result, map_theme, mo, np, umap_color_select):
             elif _ck in _meta.columns:
                 _cvals = _meta[_ck].astype(float).values
 
-        _fig = _go_umap.Figure(_go_umap.Scatter(
-            x=_emb[:, 0], y=_emb[:, 1],
-            mode="markers",
-            marker=dict(
+        # Categorical vs continuous detection
+        _is_cat = False
+        if _cvals is not None:
+            _uniq = np.unique(_cvals[np.isfinite(_cvals)])
+            _is_cat = _ck.startswith("dt:") or len(_uniq) <= 20
+
+        if _is_cat:
+            import plotly.colors as _pc
+            _n = len(_uniq)
+            _pal = _pc.qualitative.Dark24 + _pc.qualitative.Light24
+            _cat_map = {v: i for i, v in enumerate(_uniq)}
+            _ccodes = np.array([_cat_map.get(float(v), 0) for v in _cvals], dtype=float)
+            _eps = 1e-6
+            _cscale = []
+            for _i in range(_n):
+                _col = _pal[_i % len(_pal)]
+                _lo = _i / _n + (_eps if _i > 0 else 0)
+                _hi = (_i + 1) / _n - (_eps if _i < _n - 1 else 0)
+                _cscale.append([_lo, _col])
+                _cscale.append([_hi, _col])
+            if _ck == "dt:month":
+                _MNAMES = ["Jan","Feb","Mar","Apr","May","Jun",
+                           "Jul","Aug","Sep","Oct","Nov","Dec"]
+                _ticktext = [_MNAMES[int(v)-1] if 1 <= int(v) <= 12 else str(v)
+                             for v in _uniq]
+            elif _ck in ("dt:year", "dt:day", "dt:hour"):
+                _ticktext = [str(int(v)) for v in _uniq]
+            else:
+                _ticktext = [str(v) for v in _uniq]
+            _marker_kw = dict(
+                size=5, opacity=0.75,
+                color=_ccodes, colorscale=_cscale, cmin=0, cmax=_n,
+                showscale=True,
+                colorbar=dict(
+                    title=_ck, thickness=12,
+                    tickmode="array",
+                    tickvals=[_i + 0.5 for _i in range(_n)],
+                    ticktext=_ticktext,
+                ),
+            )
+        else:
+            _marker_kw = dict(
                 size=5, opacity=0.75,
                 color=_cvals if _cvals is not None else _c["bar_color"],
                 colorscale="Viridis" if _cvals is not None else None,
                 showscale=_cvals is not None,
                 colorbar=dict(title=_ck or "", thickness=12) if _cvals is not None else None,
-            ),
-            text=[str(i) for i in _r["image_ids"]],
-            hovertemplate="%{text}<extra></extra>",
+            )
+
+        # Compact tooltip data: [datetime_str, value_label] per point
+        _has_dt = _meta is not None and "dt" in _meta.columns
+        _dt_strs = (
+            _meta["dt"].dt.strftime("%Y-%m-%d %H:%M").fillna("").values
+            if _has_dt else np.full(len(_emb), "")
+        )
+        if _cvals is not None:
+            _val_labels = (
+                np.array([_ticktext[_cat_map.get(float(v), 0)] for v in _cvals])
+                if _is_cat
+                else np.array([f"{v:.3g}" for v in _cvals])
+            )
+            _hover_val_line = f"<br><b>{_ck}:</b> %{{customdata[1]}}"
+        else:
+            _val_labels = np.full(len(_emb), "")
+            _hover_val_line = ""
+        _customdata = np.column_stack([_dt_strs, _val_labels])
+
+        _fig = _go_umap.Figure(_go_umap.Scattergl(
+            x=_emb[:, 0], y=_emb[:, 1],
+            mode="markers",
+            marker=_marker_kw,
+            customdata=_customdata,
+            hovertemplate="%{customdata[0]}" + _hover_val_line + "<extra></extra>",
             selected=dict(marker=dict(color="orange", size=8, opacity=1.0)),
             unselected=dict(marker=dict(opacity=0.15)),
         ))
@@ -1111,11 +1172,14 @@ def _(get_umap_result, map_theme, mo, np, umap_color_select):
 
         _fig.update_layout(
             template=_c["plotly_template"],
-            dragmode="lasso",
+            dragmode="select",
             clickmode="event+select",
-            xaxis=dict(title="UMAP 1", showgrid=False),
-            yaxis=dict(title="UMAP 2", showgrid=False,
-                       scaleanchor="x", scaleratio=1),
+            xaxis=dict(title="UMAP 1", showgrid=True,
+                       gridcolor="rgba(255,255,255,0.12)" if _theme == "dark" else "rgba(0,0,0,0.10)",
+                       zeroline=False),
+            yaxis=dict(title="UMAP 2", showgrid=True,
+                       gridcolor="rgba(255,255,255,0.12)" if _theme == "dark" else "rgba(0,0,0,0.10)",
+                       zeroline=False, scaleanchor="x", scaleratio=1),
             height=_fig_h,
             margin=dict(l=_l2, r=_r2, t=_t2, b=_b2),
             paper_bgcolor=_bg, plot_bgcolor=_bg,
@@ -1136,16 +1200,23 @@ def _(get_umap_result, map_theme, mo, src_img_tbl, umap_scatter):
         umap_gallery_ui = None
     else:
         _val = umap_scatter.value
-        _ids = _r["image_ids"]
         _MAX = 20
-        if isinstance(_val, list) and _val:
-            _sel_idx = [pt["pointIndex"] for pt in _val if "pointIndex" in pt]
-            _sel_ids = [str(_ids[i]) for i in _sel_idx if i < len(_ids)]
+        if isinstance(_val, dict) and "points" in _val:
+            _pts = _val["points"]
+        elif isinstance(_val, list):
+            _pts = _val
         else:
-            _sel_ids = []
+            _pts = []
+        _sel_ids = []
+        for pt in _pts:
+            if isinstance(pt, dict) and "pointIndex" in pt:
+                _idx = pt["pointIndex"]
+                if _idx < len(_r["image_ids"]):
+                    _sel_ids.append(str(_r["image_ids"][_idx]))
+        _sel_ids = list(dict.fromkeys(_sel_ids))          # dedupe, preserve order
         if not _sel_ids:
             umap_gallery_ui = mo.callout(
-                mo.md("*Lasso or box-select points to see thumbnails.*"), kind="neutral")
+                mo.md("*Box-select points on the scatter to see thumbnails.*"), kind="neutral")
         else:
             _tw, _th = get_thumb_dimensions(src_img_tbl)
             _thumbs  = fetch_thumbnails_batch(src_img_tbl, _sel_ids, _MAX)
@@ -1175,7 +1246,12 @@ def _(
         _gallery_u = (umap_gallery_ui if umap_gallery_ui is not None
                       else mo.callout(
                           mo.md("*Select points to see thumbnails.*"), kind="neutral"))
-        _items_u.append(mo.hstack([umap_scatter, _gallery_u], align="start"))
+        _items_u.append(mo.Html(
+            '<div style="display:flex;gap:1rem;align-items:flex-start;width:100%">'
+            f'<div style="flex:0 0 60%;min-width:0">{umap_scatter.text}</div>'
+            f'<div style="flex:0 0 38%;min-width:0">{_gallery_u.text}</div>'
+            '</div>'
+        ))
     umap_tab = mo.vstack(_items_u)
     return (umap_tab,)
 

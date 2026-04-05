@@ -32,6 +32,8 @@ dependencies = [
     "wigglystuff>=0.2.37",
     "polars>=1.39.0",
     "hvplot>=0.12.2",
+    "altair>=6.0.0",
+    "umap-learn>=0.5.11",
 ]
 
 [dependency-groups]
