@@ -2049,9 +2049,8 @@ def _(map_theme, mo, src_img_tbl, ss_timeline_color_by, ss_top_df):
         else:
             _color_vals = _agg["image_id"].map(lambda x: _id_col_map.get(x))
             _sample = _color_vals.dropna()
-            _is_cat = (
-                len(_sample) > 0 and isinstance(_sample.iloc[0], str)
-            ) or (len(_sample.unique()) <= 20)
+            # Only string/object columns are categorical; numeric columns always continuous
+            _is_cat = len(_sample) > 0 and isinstance(_sample.iloc[0], str)
 
         _is_dark = map_theme.value
         _bg   = "#1a1a1a" if _is_dark else "white"
@@ -2061,6 +2060,7 @@ def _(map_theme, mo, src_img_tbl, ss_timeline_color_by, ss_top_df):
 
         # Y is always best similarity (1 - dist); only color changes with dropdown
         _agg["similarity"] = 1.0 - _agg["best_dist"]
+        _bar_width_ms = int(0.8 * 86_400_000)   # 80 % of one day in ms → readable bars on date axis
 
         if _is_cat:
             # One Bar trace per category → qualitative palette + Plotly legend
@@ -2072,6 +2072,7 @@ def _(map_theme, mo, src_img_tbl, ss_timeline_color_by, ss_top_df):
                 _sub = _agg[_color_vals == _cat]
                 _fig_tl.add_trace(_go_tl.Bar(
                     x=_sub["date"], y=_sub["similarity"],
+                    width=_bar_width_ms,
                     name=str(_cat),
                     marker_color=_cat_color[_cat],
                     hovertemplate=(
@@ -2106,6 +2107,7 @@ def _(map_theme, mo, src_img_tbl, ss_timeline_color_by, ss_top_df):
             _fig_tl = _go_tl.Figure(_go_tl.Bar(
                 x=_agg["date"],
                 y=_y_vals,
+                width=_bar_width_ms,
                 marker=dict(
                     color=_cv,
                     colorscale="Viridis",
@@ -2134,7 +2136,7 @@ def _(map_theme, mo, src_img_tbl, ss_timeline_color_by, ss_top_df):
             plot_bgcolor=_bg,
             paper_bgcolor=_bg,
             xaxis=dict(
-                type="category",
+                type="date",
                 tickangle=-45,
                 tickfont=dict(size=9, color=_text),
                 gridcolor=_grid,
