@@ -1608,11 +1608,17 @@ def _(mo):
     ss_max_gallery = mo.ui.number(start=4, stop=100, step=4, value=24, label="Gallery cap")
     ss_refine_factor = mo.ui.number(start=1, stop=50, step=1, value=10, label="Refine factor")
     ss_similarity_toggle = mo.ui.switch(label="Similarity overlay")
+    ss_search_mode = mo.ui.dropdown(
+        options=["Image first", "Patch first"],
+        value="Image first",
+        label="Search mode",
+    )
     return (
         ss_max_gallery,
         ss_n_similar_images,
         ss_n_similar_patches,
         ss_refine_factor,
+        ss_search_mode,
         ss_similarity_toggle,
     )
 
@@ -1780,6 +1786,7 @@ def _(
     ss_n_similar_images,
     ss_n_similar_patches,
     ss_refine_factor,
+    ss_search_mode,
     ss_selected_img_id,
 ):
     import pandas as _pd_ss
@@ -1789,24 +1796,7 @@ def _(
     else:
         _patch_idx = get_ss_patch() if get_ss_patch() is not None else 0
 
-        _img_q = (
-            img_emb_tbl.search()
-            .where(f"image_id = '{ss_selected_img_id}'")
-            .select(["embedding"])
-            .limit(1)
-            .to_pandas()
-            .iloc[0]
-        )
-
-        _allowed_ids = ss_metadata_filter.value["id"].tolist() if ss_metadata_filter.value is not None and len(ss_metadata_filter.value) > 0 else None
-        _id_clause = ", ".join(f"'{i}'" for i in _allowed_ids) if _allowed_ids else None
-
-        _search = img_emb_tbl.search(_img_q["embedding"], vector_column_name="embedding").metric("cosine").select(["image_id"])
-        if _id_clause:
-            _search = _search.where(f"image_id IN ({_id_clause})")
-        _sim_ims = _search.limit(ss_n_similar_images.value).to_pandas()
-        _img_filter = ", ".join(f"'{i}'" for i in _sim_ims["image_id"].tolist())
-
+        # Shared: fetch the query patch embedding
         _p_q = (
             patch_emb_tbl.search()
             .where(f"image_id = '{ss_selected_img_id}' AND patch_index = {_patch_idx}")
@@ -1816,21 +1806,63 @@ def _(
             .iloc[0]
         )
 
+        # Shared: metadata and spatial filter clauses
+        _allowed_ids = ss_metadata_filter.value["id"].tolist() if ss_metadata_filter.value is not None and len(ss_metadata_filter.value) > 0 else None
+        _id_clause = ", ".join(f"'{i}'" for i in _allowed_ids) if _allowed_ids else None
         _spatial = get_ss_spatial_filter()
         _patch_clause = (
-            f" AND patch_index IN ({', '.join(str(i) for i in _spatial)})"
+            f"patch_index IN ({', '.join(str(i) for i in _spatial)})"
             if _spatial else ""
         )
 
-        ss_top_df = (
-            patch_emb_tbl.search(_p_q["embedding"], vector_column_name="embedding")
-            .where(f"image_id IN ({_img_filter}){_patch_clause}")
-            .metric("cosine")
-            .refine_factor(int(ss_refine_factor.value))
-            .select(["image_id", "patch_index"])
-            .limit(ss_n_similar_patches.value)
-            .to_pandas()
-        )
+        if ss_search_mode.value == "Patch first":
+            # Search patches directly — no image pre-filter
+            _parts = []
+            if _id_clause:
+                _parts.append(f"image_id IN ({_id_clause})")
+            if _patch_clause:
+                _parts.append(_patch_clause)
+            _where = " AND ".join(_parts) if _parts else None
+            _search = (
+                patch_emb_tbl.search(_p_q["embedding"], vector_column_name="embedding")
+                .metric("cosine")
+                .refine_factor(int(ss_refine_factor.value))
+                .select(["image_id", "patch_index"])
+                .limit(ss_n_similar_patches.value)
+            )
+            if _where:
+                _search = _search.where(_where)
+            ss_top_df = _search.to_pandas()
+
+        else:
+            # Image first: find similar images, then search patches within them
+            _img_q = (
+                img_emb_tbl.search()
+                .where(f"image_id = '{ss_selected_img_id}'")
+                .select(["embedding"])
+                .limit(1)
+                .to_pandas()
+                .iloc[0]
+            )
+            _search = img_emb_tbl.search(_img_q["embedding"], vector_column_name="embedding").metric("cosine").select(["image_id"])
+            if _id_clause:
+                _search = _search.where(f"image_id IN ({_id_clause})")
+            _sim_ims = _search.limit(ss_n_similar_images.value).to_pandas()
+            _img_filter = ", ".join(f"'{i}'" for i in _sim_ims["image_id"].tolist())
+
+            _where = f"image_id IN ({_img_filter})"
+            if _patch_clause:
+                _where += f" AND {_patch_clause}"
+
+            ss_top_df = (
+                patch_emb_tbl.search(_p_q["embedding"], vector_column_name="embedding")
+                .where(_where)
+                .metric("cosine")
+                .refine_factor(int(ss_refine_factor.value))
+                .select(["image_id", "patch_index"])
+                .limit(ss_n_similar_patches.value)
+                .to_pandas()
+            )
     return (ss_top_df,)
 
 
@@ -1977,6 +2009,7 @@ def _(
     ss_n_similar_images,
     ss_n_similar_patches,
     ss_refine_factor,
+    ss_search_mode,
     ss_similarity_toggle,
     ss_spatial_filter_map,
 ):
@@ -1999,7 +2032,7 @@ def _(
                 ss_spatial_filter_map,
             ]),
             "Data Filter": ss_metadata_filter,
-            "Settings": mo.vstack([ss_n_similar_images, ss_n_similar_patches, ss_max_gallery, ss_refine_factor, ss_similarity_toggle]),
+            "Settings": mo.vstack([ss_search_mode, ss_n_similar_images, ss_n_similar_patches, ss_max_gallery, ss_refine_factor, ss_similarity_toggle]),
         })
         _gallery = ss_gallery_ui if ss_gallery_ui is not None else mo.md("")
         _s = f'<div style="flex:1 1 0;min-width:0;overflow:auto;">{_search_panel.text}</div>'
