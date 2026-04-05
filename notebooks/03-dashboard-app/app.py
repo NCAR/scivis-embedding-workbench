@@ -2059,6 +2059,9 @@ def _(map_theme, mo, src_img_tbl, ss_timeline_color_by, ss_top_df):
         _grid = "rgba(255,255,255,0.08)" if _is_dark else "rgba(0,0,0,0.08)"
         _fig_w = max(600, len(_agg) * 22)
 
+        # Y is always best similarity (1 - dist); only color changes with dropdown
+        _agg["similarity"] = 1.0 - _agg["best_dist"]
+
         if _is_cat:
             # One Bar trace per category → qualitative palette + Plotly legend
             _pal = _pc_tl.qualitative.Dark24 + _pc_tl.qualitative.Light24
@@ -2068,11 +2071,11 @@ def _(map_theme, mo, src_img_tbl, ss_timeline_color_by, ss_top_df):
             for _cat in _cats:
                 _sub = _agg[_color_vals == _cat]
                 _fig_tl.add_trace(_go_tl.Bar(
-                    x=_sub["date"], y=_sub["n_patches"],
+                    x=_sub["date"], y=_sub["similarity"],
                     name=str(_cat),
                     marker_color=_cat_color[_cat],
                     hovertemplate=(
-                        f"<b>%{{x}}</b><br>Patches: %{{y}}<br>"
+                        f"<b>%{{x}}</b><br>Similarity: %{{y:.3f}}<br>"
                         f"{_color_col}: {_cat}<extra></extra>"
                     ),
                 ))
@@ -2085,22 +2088,17 @@ def _(map_theme, mo, src_img_tbl, ss_timeline_color_by, ss_top_df):
                 ),
             )
         else:
-            # Continuous: resolve y-values, color values, labels per selected column
+            # Continuous: Y always = similarity; only color/label change with dropdown
+            _y_vals  = _agg["similarity"]
             if _color_col == "Best cosine dist":
-                _y_vals  = 1.0 - _agg["best_dist"]        # similarity 0→1, taller = better
-                _cv      = _agg["n_patches"].astype(float) # color = patch count
-                _y_label = "Best similarity"
+                _cv      = _agg["n_patches"].astype(float)
                 _c_label = "Patches"
-                _rev     = False                           # more patches = brighter/yellow
                 _hover   = ("<b>%{x}</b><br>Similarity: %{y:.3f}<br>"
                             "Patches: %{marker.color:.0f}<extra></extra>")
             else:
-                _y_vals  = _agg["n_patches"]
                 _cv      = _color_vals.fillna(_color_vals.median())
-                _y_label = "Patches"
                 _c_label = _color_col
-                _rev     = False
-                _hover   = (f"<b>%{{x}}</b><br>Patches: %{{y}}<br>"
+                _hover   = (f"<b>%{{x}}</b><br>Similarity: %{{y:.3f}}<br>"
                             f"{_color_col}: %{{marker.color:.3f}}<extra></extra>")
 
             _cmin = float(_cv.min())
@@ -2111,7 +2109,7 @@ def _(map_theme, mo, src_img_tbl, ss_timeline_color_by, ss_top_df):
                 marker=dict(
                     color=_cv,
                     colorscale="Viridis",
-                    reversescale=_rev,
+                    reversescale=False,
                     cmin=_cmin,
                     cmax=_cmax,
                     colorbar=dict(
@@ -2136,14 +2134,14 @@ def _(map_theme, mo, src_img_tbl, ss_timeline_color_by, ss_top_df):
             plot_bgcolor=_bg,
             paper_bgcolor=_bg,
             xaxis=dict(
-                type="category",
+                type="date",
                 tickangle=-45,
                 tickfont=dict(size=9, color=_text),
                 gridcolor=_grid,
                 linecolor=_grid,
             ),
             yaxis=dict(
-                title=dict(text=_y_label if not _is_cat else "Patches",
+                title=dict(text="Best similarity",
                            font=dict(size=10, color=_text)),
                 tickfont=dict(size=9, color=_text),
                 gridcolor=_grid,
