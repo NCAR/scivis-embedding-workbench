@@ -1606,11 +1606,13 @@ def _(mo):
     ss_n_similar_images = mo.ui.number(start=1, stop=50, step=1, value=10, label="Similar images")
     ss_n_similar_patches = mo.ui.number(start=10, stop=500, step=10, value=100, label="Max patches")
     ss_max_gallery = mo.ui.number(start=4, stop=100, step=4, value=24, label="Gallery cap")
+    ss_refine_factor = mo.ui.number(start=1, stop=50, step=1, value=10, label="Refine factor")
     ss_similarity_toggle = mo.ui.switch(label="Similarity overlay")
     return (
         ss_max_gallery,
         ss_n_similar_images,
         ss_n_similar_patches,
+        ss_refine_factor,
         ss_similarity_toggle,
     )
 
@@ -1685,6 +1687,7 @@ def _(get_ss_spatial_filter, mo, ss_init):
                 _active, _d["lat_min"], _d["lat_max"], _d["lon_min"], _d["lon_max"], _d["n_side"]
             ),
             uirevision="spatial_filter_map",
+            dragmode="select",
         )
         ss_spatial_filter_map = mo.ui.plotly(_fig_sf)
     return (ss_spatial_filter_map,)
@@ -1698,15 +1701,32 @@ def _(
     ss_spatial_filter_map,
 ):
     if ss_init is not None:
-        _val = ss_spatial_filter_map.value
-        if isinstance(_val, list) and _val and "z" in _val[0]:
-            _idx = int(_val[0]["z"])
-            _cur = list(get_ss_spatial_filter() or [])
-            if _idx in _cur:
-                _cur.remove(_idx)
-            else:
-                _cur.append(_idx)
-            set_ss_spatial_filter(_cur if _cur else None)
+        _d = ss_init
+        _rng = ss_spatial_filter_map.ranges          # {} when no box drawn
+        if _rng and "x" in _rng and "y" in _rng:
+            # Box select: convert lat/lon bounds → patch indices (replaces selection)
+            _lon0, _lon1 = min(_rng["x"]), max(_rng["x"])
+            _lat0, _lat1 = min(_rng["y"]), max(_rng["y"])
+            _ns   = _d["n_side"]
+            _lnst = (_d["lon_max"] - _d["lon_min"]) / _ns
+            _ltst = (_d["lat_max"] - _d["lat_min"]) / _ns
+            _c0 = max(0,     int((_lon0 - _d["lon_min"]) / _lnst))
+            _c1 = min(_ns-1, int((_lon1 - _d["lon_min"]) / _lnst))
+            _r0 = max(0,     int((_d["lat_max"] - _lat1) / _ltst))
+            _r1 = min(_ns-1, int((_d["lat_max"] - _lat0) / _ltst))
+            _new = [r * _ns + c for r in range(_r0, _r1+1) for c in range(_c0, _c1+1)]
+            set_ss_spatial_filter(_new if _new else None)
+        else:
+            # Single click: toggle the clicked patch in/out of selection
+            _val = ss_spatial_filter_map.value
+            if isinstance(_val, list) and _val and "z" in _val[0]:
+                _idx = int(_val[0]["z"])
+                _cur = list(get_ss_spatial_filter() or [])
+                if _idx in _cur:
+                    _cur.remove(_idx)
+                else:
+                    _cur.append(_idx)
+                set_ss_spatial_filter(_cur if _cur else None)
     return
 
 
@@ -1759,6 +1779,7 @@ def _(
     ss_metadata_filter,
     ss_n_similar_images,
     ss_n_similar_patches,
+    ss_refine_factor,
     ss_selected_img_id,
 ):
     import pandas as _pd_ss
@@ -1805,7 +1826,7 @@ def _(
             patch_emb_tbl.search(_p_q["embedding"], vector_column_name="embedding")
             .where(f"image_id IN ({_img_filter}){_patch_clause}")
             .metric("cosine")
-            .refine_factor(10)
+            .refine_factor(int(ss_refine_factor.value))
             .select(["image_id", "patch_index"])
             .limit(ss_n_similar_patches.value)
             .to_pandas()
@@ -1955,6 +1976,7 @@ def _(
     ss_metadata_filter,
     ss_n_similar_images,
     ss_n_similar_patches,
+    ss_refine_factor,
     ss_similarity_toggle,
     ss_spatial_filter_map,
 ):
@@ -1977,7 +1999,7 @@ def _(
                 ss_spatial_filter_map,
             ]),
             "Data Filter": ss_metadata_filter,
-            "Settings": mo.vstack([ss_n_similar_images, ss_n_similar_patches, ss_max_gallery, ss_similarity_toggle]),
+            "Settings": mo.vstack([ss_n_similar_images, ss_n_similar_patches, ss_max_gallery, ss_refine_factor, ss_similarity_toggle]),
         })
         _gallery = ss_gallery_ui if ss_gallery_ui is not None else mo.md("")
         _s = f'<div style="flex:1 1 0;min-width:0;overflow:auto;">{_search_panel.text}</div>'
