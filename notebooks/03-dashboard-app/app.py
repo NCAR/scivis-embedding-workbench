@@ -426,7 +426,7 @@ def _(
 @app.cell
 def _(mo):
     shared_n_vectors = mo.ui.number(value=5000, start=2, label="Max vectors to load")
-    load_data_btn = mo.ui.run_button(label="📥 Load Data", kind="primary")
+    load_data_btn = mo.ui.run_button(label="📥 Load Data", kind="success")
     return load_data_btn, shared_n_vectors
 
 
