@@ -2085,14 +2085,29 @@ def _(map_theme, mo, src_img_tbl, ss_timeline_color_by, ss_top_df):
                 ),
             )
         else:
-            # Continuous: Viridis, vertical colorbar on right, autoscaled cmin/cmax
-            _cv   = _color_vals.fillna(_color_vals.median())
+            # Continuous: resolve y-values, color values, labels per selected column
+            if _color_col == "Best cosine dist":
+                _y_vals  = 1.0 - _agg["best_dist"]        # similarity 0→1, taller = better
+                _cv      = _agg["n_patches"].astype(float) # color = patch count
+                _y_label = "Best similarity"
+                _c_label = "Patches"
+                _rev     = False                           # more patches = brighter/yellow
+                _hover   = ("<b>%{x}</b><br>Similarity: %{y:.3f}<br>"
+                            "Patches: %{marker.color:.0f}<extra></extra>")
+            else:
+                _y_vals  = _agg["n_patches"]
+                _cv      = _color_vals.fillna(_color_vals.median())
+                _y_label = "Patches"
+                _c_label = _color_col
+                _rev     = False
+                _hover   = (f"<b>%{{x}}</b><br>Patches: %{{y}}<br>"
+                            f"{_color_col}: %{{marker.color:.3f}}<extra></extra>")
+
             _cmin = float(_cv.min())
             _cmax = float(_cv.max())
-            _rev  = (_color_col == "Best cosine dist")   # low dist = similar = bright
             _fig_tl = _go_tl.Figure(_go_tl.Bar(
                 x=_agg["date"],
-                y=_agg["n_patches"],
+                y=_y_vals,
                 marker=dict(
                     color=_cv,
                     colorscale="Viridis",
@@ -2105,22 +2120,17 @@ def _(map_theme, mo, src_img_tbl, ss_timeline_color_by, ss_top_df):
                         y=0.5,  yanchor="middle",
                         len=1.0, thickness=12,
                         title=dict(
-                            text=_color_col, side="right",
+                            text=_c_label, side="right",
                             font=dict(size=10, color=_text),
                         ),
                         tickfont=dict(size=9, color=_text),
                     ),
                 ),
-                hovertemplate=(
-                    "<b>%{x}</b><br>"
-                    "Patches: %{y}<br>"
-                    f"{_color_col}: %{{marker.color:.3f}}"
-                    "<extra></extra>"
-                ),
+                hovertemplate=_hover,
             ))
 
         _fig_tl.update_layout(
-            height=200,
+            height=160,
             width=_fig_w,
             margin=dict(l=45, r=110, t=6, b=65),
             plot_bgcolor=_bg,
@@ -2133,7 +2143,8 @@ def _(map_theme, mo, src_img_tbl, ss_timeline_color_by, ss_top_df):
                 linecolor=_grid,
             ),
             yaxis=dict(
-                title=dict(text="Patches", font=dict(size=10, color=_text)),
+                title=dict(text=_y_label if not _is_cat else "Patches",
+                           font=dict(size=10, color=_text)),
                 tickfont=dict(size=9, color=_text),
                 gridcolor=_grid,
             ),
