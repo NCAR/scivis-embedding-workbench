@@ -20,16 +20,15 @@ def _():
 
 @app.function
 def list_experiments(db_path: str) -> list:
-    """Scan a LanceDB directory for experiment names by finding *_config.lance dirs."""
+    """Scan a LanceDB directory for experiment names by finding subdirs with config.lance."""
     from pathlib import Path
     p = Path(db_path)
     if not p.exists() or not p.is_dir():
         return []
-    return [
-        d.name[: -len("_config.lance")]
-        for d in sorted(p.iterdir())
-        if d.is_dir() and d.name.endswith("_config.lance")
-    ]
+    return sorted(
+        d.name for d in p.iterdir()
+        if d.is_dir() and (d / "config.lance").is_dir()
+    )
 
 
 @app.function
@@ -280,16 +279,18 @@ def _(embedding_db_path, experiment_selector, lancedb):
     if not embedding_db_path.value or experiment_selector.value is None:
         db = config = img_emb_tbl = patch_emb_tbl = src_img_tbl = None
     else:
-        db = lancedb.connect(embedding_db_path.value)
-        config = load_config_dict(db, f"{experiment_selector.value}_config")
+        from pathlib import Path as _Path
+        _exp_db_path = str(_Path(embedding_db_path.value) / experiment_selector.value)
+        db = lancedb.connect(_exp_db_path)
+        config = load_config_dict(db, "config")
         _source_path = resolve_source_path(embedding_db_path.value, config.get("source_path", ""))
         if _source_path:
             source_db = lancedb.connect(_source_path)
             src_img_tbl = source_db.open_table(config["source"])
         else:
             src_img_tbl = None
-        img_emb_tbl = db.open_table(config["tbl_img_emb"])
-        patch_emb_tbl = db.open_table(config["tbl_patch_emb"])
+        img_emb_tbl = db.open_table("image_embeddings")
+        patch_emb_tbl = db.open_table("patch_embeddings")
     return config, img_emb_tbl, patch_emb_tbl, src_img_tbl
 
 

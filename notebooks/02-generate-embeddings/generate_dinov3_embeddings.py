@@ -167,10 +167,8 @@ def _(mo):
 @app.cell
 def _(
     BATCH,
-    DB_URI,
     IMG_RAW_TBL_NAME,
     MODEL,
-    PROJECT_NAME,
     SCAN_BATCH,
     SCRIPT,
     SOURCE_URI,
@@ -181,7 +179,7 @@ def _(
     # Case 1: Run inline (interactive notebook workflow)
     run_experiment(
         SCRIPT, SOURCE_URI, IMG_RAW_TBL_NAME,
-        DB_URI, experiment["config_name"], PROJECT_NAME,
+        experiment["exp_db_uri"], experiment["config_name"],
         MODEL, batch=BATCH, scan_batch=SCAN_BATCH, workers=WORKERS,
     )
     return
@@ -190,10 +188,8 @@ def _(
 @app.cell
 def _(
     BATCH,
-    DB_URI,
     IMG_RAW_TBL_NAME,
     MODEL,
-    PROJECT_NAME,
     SCAN_BATCH,
     SCRIPT,
     SOURCE_URI,
@@ -204,7 +200,7 @@ def _(
     # Case 2: Build CLI command for PBS / external job submission
     cmd = build_cli_command(
         SCRIPT, SOURCE_URI, IMG_RAW_TBL_NAME,
-        DB_URI, experiment["config_name"], PROJECT_NAME,
+        experiment["exp_db_uri"], experiment["config_name"],
         MODEL, batch=BATCH, scan_batch=SCAN_BATCH, workers=WORKERS,
     )
     print(cmd)
@@ -223,17 +219,17 @@ def _(mo):
 
 
 @app.cell
-def _(DB_URI, experiment, load_config):
+def _(experiment, load_config):
     # Inspect config after run completes (works for both Case 1 and Case 2)
-    config = load_config(DB_URI, experiment["config_name"])
+    config = load_config(experiment["exp_db_uri"], experiment["config_name"])
     config
     return
 
 
 @app.cell
-def _(DB_URI, experiment, print_table_sizes):
+def _(experiment, print_table_sizes):
     print_table_sizes(
-        DB_URI,
+        experiment["exp_db_uri"],
         experiment["config_name"],
         experiment["img_emb_name"],
         experiment["patch_emb_name"],

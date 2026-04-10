@@ -361,7 +361,7 @@ def main() -> None:
     ap.add_argument("--config_db", type=str, required=True, help="LanceDB URI for config + output tables")
     ap.add_argument("--config_table", type=str, required=True, help="Config table name (key/value)")
 
-    ap.add_argument("--out_prefix", type=str, required=True, help="Prefix for output tables")
+    ap.add_argument("--out_prefix", type=str, default="", help="(deprecated, ignored)")
 
     ap.add_argument("--run_id", type=str, default="", help="Optional run id; if not set, auto-generated")
     ap.add_argument("--author", type=str, default="", help="Optional author")
@@ -391,8 +391,8 @@ def main() -> None:
 
     db_out = lancedb.connect(args.config_db)
 
-    img_emb_table_name = args.out_prefix + "_image_embeddings"
-    patch_emb_table_name = args.out_prefix + "_patch_embeddings"
+    img_emb_table_name = "image_embeddings"
+    patch_emb_table_name = "patch_embeddings"
 
     drop_if_exists(db_out, img_emb_table_name)
     drop_if_exists(db_out, patch_emb_table_name)
