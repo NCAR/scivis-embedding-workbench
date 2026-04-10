@@ -9,7 +9,6 @@ BASE_KWARGS = dict(
     source_table="images",
     config_db="/data/exp.lance",
     config_table="my_config",
-    out_prefix="my_exp",
     model="ViT-L-14",
 )
 
@@ -26,7 +25,6 @@ def build(**overrides) -> str:
     ("--model", "ViT-L-14"),
     ("--config_db", "/data/exp.lance"),
     ("--config_table", "my_config"),
-    ("--out_prefix", "my_exp"),
     ("--batch", "256"),
     ("--scan_batch", "2000"),
     ("--workers", "4"),
