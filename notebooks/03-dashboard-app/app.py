@@ -436,6 +436,7 @@ def _(mo):
     run_pca = mo.ui.run_button(
         label="▶ Run PCA",
         kind="success",
+        tooltip="Run Principal Component Analysis on loaded embeddings",
     )
     pca_controls_ui = mo.hstack([n_vectors, run_pca], justify="start", align="end")
     return n_vectors, pca_controls_ui, run_pca
@@ -983,6 +984,7 @@ def _(mo):
     umap_min_dist    = mo.ui.number(value=0.1, start=0.0, stop=1.0, step=0.05, label="min_dist")
     run_umap = mo.ui.run_button(
         label="▶ Run UMAP", kind="success",
+        tooltip="Run UMAP on loaded embeddings",
     )
     umap_controls_ui = mo.hstack(
         [umap_n_vectors, umap_n_neighbors, umap_min_dist, run_umap],
