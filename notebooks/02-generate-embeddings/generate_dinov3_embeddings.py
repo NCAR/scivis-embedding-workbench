@@ -248,8 +248,8 @@ def _(mo):
 
 
 @app.cell
-def _(DB_URI, experiment, lancedb):
-    db = lancedb.connect(str(DB_URI))
+def _(experiment, lancedb):
+    db = lancedb.connect(experiment["exp_db_uri"])
     patch_tbl = db.open_table(experiment["patch_emb_name"])
     return db, patch_tbl
 
