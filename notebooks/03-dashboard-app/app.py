@@ -2128,17 +2128,15 @@ def _(mo):
 @app.cell
 def _(
     audit_tab,
+    dim_reduction_tab,
     explore_tab,
     mo,
-    pca_tab,
     spatial_search_tab,
-    umap_tab,
     visualize_tab,
 ):
     mo.ui.tabs({
         "Data": explore_tab,
-        "PCA": pca_tab,
-        "UMAP": umap_tab,
+        "Clustering": dim_reduction_tab,
         "Spatial Search": spatial_search_tab,
         "Visualize": visualize_tab,
         "Audit": audit_tab,
