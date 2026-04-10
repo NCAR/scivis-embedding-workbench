@@ -109,7 +109,7 @@ def _(mo):
 @app.cell
 def _(get_model_info):
     # Model-specific config — change this for a different model family
-    PROJECT_NAME = "openclip"
+    PROJECT_NAME = "dinov3"
     model_info = get_model_info(PROJECT_NAME)
 
     MODEL = model_info["default_model"]
@@ -377,6 +377,11 @@ def _(mo):
 @app.cell
 def _(patch_tbl):
     patch_tbl.create_index(metric="cosine", index_type="IVF_PQ", num_partitions=128, num_sub_vectors=64, accelerator="mps", vector_column_name="embedding")
+    return
+
+
+@app.cell
+def _():
     return
 
 

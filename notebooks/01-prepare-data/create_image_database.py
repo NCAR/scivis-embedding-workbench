@@ -97,6 +97,7 @@ def _(Path, lancedb):
     return (
         IMG_RAW_TBL_NAME,
         JPEG_QUALITY,
+        PROJECT_ROOT,
         RESOLUTION,
         THUMB_RESOLUTION,
         db,
@@ -434,6 +435,11 @@ def _(Path, db_dir, os):
 
 
     print(f"{size_bytes / 1024**2:.2f} MB")
+    return
+
+
+@app.cell
+def _():
     return
 
 

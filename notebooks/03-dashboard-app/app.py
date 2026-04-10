@@ -316,7 +316,7 @@ def _(mo, pd):
             selection=None,
         ),
     ])
-    return (overview_tab,)
+    return
 
 
 @app.cell
@@ -1603,10 +1603,10 @@ def _(config, map_theme, mo, set_ss_init, src_img_tbl, ss_load_button):
 
 @app.cell
 def _(mo):
-    ss_n_similar_images = mo.ui.number(start=1, stop=50, step=1, value=10, label="Similar images")
-    ss_n_similar_patches = mo.ui.number(start=10, stop=500, step=10, value=100, label="Max patches")
-    ss_max_gallery = mo.ui.number(start=4, stop=100, step=4, value=24, label="Gallery cap")
-    ss_refine_factor = mo.ui.number(start=1, stop=50, step=1, value=10, label="Refine factor")
+    ss_n_similar_images = mo.ui.number(start=1, stop=50, step=1, value=50, label="Similar images")
+    ss_n_similar_patches = mo.ui.number(start=10, stop=500, step=200, value=100, label="Max patches")
+    ss_max_gallery = mo.ui.number(start=4, stop=100, step=4, value=25, label="Gallery cap")
+    ss_refine_factor = mo.ui.number(start=1, stop=50, step=1, value=20, label="Refine factor")
     ss_similarity_toggle = mo.ui.switch(label="Similarity overlay")
     ss_search_mode = mo.ui.dropdown(
         options=["Image first", "Patch first"],
@@ -1851,7 +1851,7 @@ def _(
             ss_top_df = _search.to_pandas()
 
         else:
-            # Image first: find similar images, then search patches within them
+            # Image first: find similar images restricted to spatial region, then search patches
             _img_q = (
                 img_emb_tbl.search()
                 .where(f"image_id = '{ss_selected_img_id}'")
@@ -1860,25 +1860,62 @@ def _(
                 .to_pandas()
                 .iloc[0]
             )
-            _search = img_emb_tbl.search(_img_q["embedding"], vector_column_name="embedding").metric("cosine").select(["image_id"])
-            if _id_clause:
-                _search = _search.where(f"image_id IN ({_id_clause})")
-            _sim_ims = _search.limit(ss_n_similar_images.value).to_pandas()
-            _img_filter = ", ".join(f"'{i}'" for i in _sim_ims["image_id"].tolist())
 
-            _where = f"image_id IN ({_img_filter})"
-            if _patch_clause:
-                _where += f" AND {_patch_clause}"
+            # Restrict image candidates to those that have patches in the selected region
+            if _spatial:
+                _spatial_img_ids = (
+                    patch_emb_tbl.search()
+                    .where(_patch_clause)
+                    .select(["image_id"])
+                    .limit(100_000)
+                    .to_pandas()["image_id"]
+                    .unique()
+                    .tolist()
+                )
+                if _allowed_ids:
+                    _allowed_set = set(_allowed_ids)
+                    _spatial_img_ids = [i for i in _spatial_img_ids if i in _allowed_set]
+                _img_where = (
+                    f"image_id IN ({', '.join(repr(i) for i in _spatial_img_ids)})"
+                    if _spatial_img_ids else None
+                )
+                _no_candidates = not _spatial_img_ids
+            elif _id_clause:
+                _img_where = f"image_id IN ({_id_clause})"
+                _no_candidates = False
+            else:
+                _img_where = None
+                _no_candidates = False
 
-            ss_top_df = (
-                patch_emb_tbl.search(_p_q["embedding"], vector_column_name="embedding")
-                .where(_where)
-                .metric("cosine")
-                .refine_factor(int(ss_refine_factor.value))
-                .select(["image_id", "patch_index"])
-                .limit(ss_n_similar_patches.value)
-                .to_pandas()
-            )
+            if _no_candidates:
+                ss_top_df = _pd_ss.DataFrame(columns=["image_id", "patch_index", "_distance"])
+            else:
+                _search = (
+                    img_emb_tbl.search(_img_q["embedding"], vector_column_name="embedding")
+                    .metric("cosine")
+                    .select(["image_id"])
+                )
+                if _img_where:
+                    _search = _search.where(_img_where)
+                _sim_ims = _search.limit(ss_n_similar_images.value).to_pandas()
+
+                if _sim_ims.empty:
+                    ss_top_df = _pd_ss.DataFrame(columns=["image_id", "patch_index", "_distance"])
+                else:
+                    _img_filter = ", ".join(f"'{i}'" for i in _sim_ims["image_id"].tolist())
+                    _where = f"image_id IN ({_img_filter})"
+                    if _patch_clause:
+                        _where += f" AND {_patch_clause}"
+
+                    ss_top_df = (
+                        patch_emb_tbl.search(_p_q["embedding"], vector_column_name="embedding")
+                        .where(_where)
+                        .metric("cosine")
+                        .refine_factor(int(ss_refine_factor.value))
+                        .select(["image_id", "patch_index"])
+                        .limit(ss_n_similar_patches.value)
+                        .to_pandas()
+                    )
     return (ss_top_df,)
 
 
@@ -2081,30 +2118,27 @@ def _(mo):
 
 @app.cell
 def _(mo):
-    def _chat_model(messages, config):
-        return "Chat functionality coming soon."
-
-    chat_tab = mo.ui.chat(_chat_model, prompts=["Tell me about this dataset"])
-    return (chat_tab,)
+    audit_tab = mo.callout(
+        mo.md("**Audit** — coming soon."), kind="neutral"
+    )
+    return (audit_tab,)
 
 
 @app.cell
 def _(
-    chat_tab,
+    audit_tab,
     dim_reduction_tab,
     explore_tab,
     mo,
-    overview_tab,
     spatial_search_tab,
     visualize_tab,
 ):
     mo.ui.tabs({
-        "Overview": overview_tab,
         "Data": explore_tab,
-        "Dimensionality Reduction": dim_reduction_tab,
+        "Clustering": dim_reduction_tab,
         "Spatial Search": spatial_search_tab,
         "Visualize": visualize_tab,
-        "Chat": chat_tab,
+        "Audit": audit_tab,
     })
     return
 

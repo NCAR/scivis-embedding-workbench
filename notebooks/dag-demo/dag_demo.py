@@ -1,7 +1,7 @@
 import marimo
 
 __generated_with = "0.20.4"
-app = marimo.App(layout_file="layouts/dag_demo.grid.json")
+app = marimo.App()
 
 
 @app.cell(hide_code=True)
@@ -25,20 +25,9 @@ def _():
     import numpy as np
     import matplotlib.pyplot as plt
 
-    return mo, np, plt
+    return mo, plt
 
 
-# ---------------------------------------------------------------------------
-# @app.function — exported helper
-# Functions decorated with @app.function are:
-#   • callable from any cell in this notebook (just like a regular function)
-#   • exported at module level so external scripts can import them directly:
-#
-#       from dag_demo import make_wave
-#
-# They live outside the DAG (not a cell) so they never auto-run — they only
-# execute when called.
-# ---------------------------------------------------------------------------
 @app.function
 def make_wave(freq: int, amp: float, n_points: int = 500):
     """Return (x, y) arrays for a sine wave with given frequency and amplitude."""
@@ -46,37 +35,6 @@ def make_wave(freq: int, amp: float, n_points: int = 500):
     x = np.linspace(0, 2 * np.pi, n_points)
     y = amp * np.sin(freq * x)
     return x, y
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.callout(
-        mo.md("""
-        **`@app.function` — exporting helpers**
-
-        ```python
-        @app.function
-        def make_wave(freq, amp, n_points=500):
-            import numpy as np
-            x = np.linspace(0, 2 * np.pi, n_points)
-            y = amp * np.sin(freq * x)
-            return x, y
-        ```
-
-        From any external Python script:
-        ```python
-        from dag_demo import make_wave
-
-        x, y = make_wave(freq=5, amp=1.5)
-        ```
-
-        Unlike `@app.cell`, `@app.function` functions are **not DAG nodes** — they run
-        only when called, and are available both inside the notebook and as plain importable
-        Python functions.
-        """),
-        kind="neutral",
-    )
-    return
 
 
 @app.cell
@@ -102,7 +60,7 @@ def _(mo, reset_button):
 
 
 @app.cell
-def _(amplitude_slider, freq_slider, make_wave, mo):
+def _(amplitude_slider, freq_slider, mo):
     freq = freq_slider.value
     amp = amplitude_slider.value
     # make_wave is defined with @app.function above — used here just like any function
@@ -122,24 +80,6 @@ def _(amp, freq, plt, x, y):
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
     fig
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.callout(
-        mo.md("""
-        **How the DAG works here:**
-        - **Reset button cell** defines `reset_button`
-        - **Sliders cell** depends on `reset_button` → recreated fresh (at defaults) on every click
-        - **Derived values cell** calls `make_wave(freq, amp)` → produces `x`, `y`
-        - **Plot cell** reads `x`, `y`, `freq`, `amp` → renders the chart
-
-        Moving any of these cells up or down in the editor doesn't change execution order —
-        Marimo always follows the dependency graph.
-        """),
-        kind="info",
-    )
     return
 
 
