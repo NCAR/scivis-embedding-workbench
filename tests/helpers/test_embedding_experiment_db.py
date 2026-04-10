@@ -21,30 +21,35 @@ def exp(tmp_path):
 # ── setup_experiment ──────────────────────────────────────────────────────────
 
 def test_setup_returns_expected_keys(exp):
-    assert {"db", "config_tbl", "config_name", "img_emb_name", "patch_emb_name"} <= exp.keys()
+    assert {"db", "config_tbl", "config_name", "img_emb_name", "patch_emb_name", "exp_db_uri"} <= exp.keys()
 
 
 def test_setup_config_table_name(exp):
-    assert exp["config_name"] == "test_proj_config"
+    assert exp["config_name"] == "config"
 
 
 def test_setup_derived_table_names(exp):
-    assert exp["img_emb_name"] == "test_proj_image_embeddings"
-    assert exp["patch_emb_name"] == "test_proj_patch_embeddings"
+    assert exp["img_emb_name"] == "image_embeddings"
+    assert exp["patch_emb_name"] == "patch_embeddings"
 
 
-def test_setup_config_has_all_keys(tmp_path, exp):
-    config = load_config(tmp_path / "db", exp["config_name"])
+def test_setup_exp_db_uri_is_subfolder(tmp_path, exp):
+    from pathlib import Path
+    assert exp["exp_db_uri"] == str(tmp_path / "db" / "test_proj")
+
+
+def test_setup_config_has_all_keys(exp):
+    config = load_config(exp["exp_db_uri"], exp["config_name"])
     assert CONFIG_KEYS <= config.keys()
 
 
-def test_setup_config_author(tmp_path, exp):
-    config = load_config(tmp_path / "db", exp["config_name"])
+def test_setup_config_author(exp):
+    config = load_config(exp["exp_db_uri"], exp["config_name"])
     assert config["author"] == "tester"
 
 
-def test_setup_config_source_table(tmp_path, exp):
-    config = load_config(tmp_path / "db", exp["config_name"])
+def test_setup_config_source_table(exp):
+    config = load_config(exp["exp_db_uri"], exp["config_name"])
     assert config["source"] == "raw_images"
 
 
@@ -58,7 +63,7 @@ def test_setup_source_path_absolute_when_no_project_root(tmp_path):
         db_uri=tmp_path / "db2",
         project_root=None,
     )
-    config = load_config(tmp_path / "db2", result["config_name"])
+    config = load_config(result["exp_db_uri"], result["config_name"])
     assert config["source_path"] == str(source)
 
 
@@ -73,7 +78,7 @@ def test_setup_source_path_relative_when_inside_project_root(tmp_path):
         db_uri=tmp_path / "db3",
         project_root=project_root,
     )
-    config = load_config(tmp_path / "db3", result["config_name"])
+    config = load_config(result["exp_db_uri"], result["config_name"])
     assert config["source_path"] == "data/source"
 
 
@@ -89,7 +94,7 @@ def test_setup_source_path_absolute_when_outside_project_root(tmp_path):
         db_uri=tmp_path / "db4",
         project_root=project_root,
     )
-    config = load_config(tmp_path / "db4", result["config_name"])
+    config = load_config(result["exp_db_uri"], result["config_name"])
     assert config["source_path"] == str(source)
 
 
@@ -108,45 +113,45 @@ def test_setup_overwrite_is_idempotent(tmp_path):
 
 # ── load_config ───────────────────────────────────────────────────────────────
 
-def test_load_config_returns_dict(tmp_path, exp):
-    config = load_config(tmp_path / "db", exp["config_name"])
+def test_load_config_returns_dict(exp):
+    config = load_config(exp["exp_db_uri"], exp["config_name"])
     assert isinstance(config, dict)
 
 
-def test_load_config_tbl_names_match_setup(tmp_path, exp):
-    config = load_config(tmp_path / "db", exp["config_name"])
+def test_load_config_tbl_names_match_setup(exp):
+    config = load_config(exp["exp_db_uri"], exp["config_name"])
     assert config["tbl_img_emb"] == exp["img_emb_name"]
     assert config["tbl_patch_emb"] == exp["patch_emb_name"]
 
 
 # ── upsert_config ─────────────────────────────────────────────────────────────
 
-def test_upsert_updates_existing_key(tmp_path, exp):
-    upsert_config(tmp_path / "db", exp["config_name"], {"author": "new_author"})
-    config = load_config(tmp_path / "db", exp["config_name"])
+def test_upsert_updates_existing_key(exp):
+    upsert_config(exp["exp_db_uri"], exp["config_name"], {"author": "new_author"})
+    config = load_config(exp["exp_db_uri"], exp["config_name"])
     assert config["author"] == "new_author"
 
 
-def test_upsert_adds_new_key(tmp_path, exp):
-    upsert_config(tmp_path / "db", exp["config_name"], {"new_key": "new_value"})
-    config = load_config(tmp_path / "db", exp["config_name"])
+def test_upsert_adds_new_key(exp):
+    upsert_config(exp["exp_db_uri"], exp["config_name"], {"new_key": "new_value"})
+    config = load_config(exp["exp_db_uri"], exp["config_name"])
     assert config["new_key"] == "new_value"
 
 
-def test_upsert_preserves_other_keys(tmp_path, exp):
-    upsert_config(tmp_path / "db", exp["config_name"], {"author": "changed"})
-    config = load_config(tmp_path / "db", exp["config_name"])
+def test_upsert_preserves_other_keys(exp):
+    upsert_config(exp["exp_db_uri"], exp["config_name"], {"author": "changed"})
+    config = load_config(exp["exp_db_uri"], exp["config_name"])
     assert "source" in config  # untouched key still present
 
 
-def test_upsert_coerces_int_to_string(tmp_path, exp):
-    upsert_config(tmp_path / "db", exp["config_name"], {"batch_size": 64})
-    config = load_config(tmp_path / "db", exp["config_name"])
+def test_upsert_coerces_int_to_string(exp):
+    upsert_config(exp["exp_db_uri"], exp["config_name"], {"batch_size": 64})
+    config = load_config(exp["exp_db_uri"], exp["config_name"])
     assert config["batch_size"] == "64"
 
 
-def test_upsert_multiple_keys(tmp_path, exp):
-    upsert_config(tmp_path / "db", exp["config_name"], {"k1": "v1", "k2": "v2"})
-    config = load_config(tmp_path / "db", exp["config_name"])
+def test_upsert_multiple_keys(exp):
+    upsert_config(exp["exp_db_uri"], exp["config_name"], {"k1": "v1", "k2": "v2"})
+    config = load_config(exp["exp_db_uri"], exp["config_name"])
     assert config["k1"] == "v1"
     assert config["k2"] == "v2"

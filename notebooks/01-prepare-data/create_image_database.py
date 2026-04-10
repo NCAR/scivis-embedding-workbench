@@ -78,7 +78,7 @@ def _(mo):
 
 @app.cell
 def _(Path, lancedb):
-    PROJECT_ROOT = Path.cwd().parent.parent
+    PROJECT_ROOT = Path("/Users/ncheruku/Documents/Work/sample_data")
 
     IMG_RAW_TBL_NAME = "era5_sample_images"
 
@@ -97,6 +97,7 @@ def _(Path, lancedb):
     return (
         IMG_RAW_TBL_NAME,
         JPEG_QUALITY,
+        PROJECT_ROOT,
         RESOLUTION,
         THUMB_RESOLUTION,
         db,
@@ -124,6 +125,7 @@ def _(JPEG_QUALITY, RESOLUTION, THUMB_RESOLUTION, datetime, json, timezone):
         "author": "cherukuru",
         "generated_by_script": "e5_channels.ipynb",
         "created_at": datetime.now(timezone.utc).isoformat(),  # Dynamic Timestamp
+        "row_count": 0,  # updated dynamically after ingestion
         # --- 2. SOURCE PROVENANCE (Sorted by Importance) ---
         "source_metadata": {
             "data_source": "ECMWF: https://cds.climate.copernicus.eu, Copernicus Climate Data Store",
@@ -170,6 +172,28 @@ def _(JPEG_QUALITY, RESOLUTION, THUMB_RESOLUTION, datetime, json, timezone):
                 "logic": "Square Root Scaled",
             },
         },
+        # --- 6. HURRICANE EVENT LABELS ---
+        "hurricane_source": {
+            "dataset": "IBTrACS v04r01",
+            "full_name": "International Best Track Archive for Climate Stewardship",
+            "url": "https://www.ncei.noaa.gov/products/international-best-track-archive",
+            "basin": "North Atlantic (NA)",
+            "wind_unit": "knots (WMO standard)",
+            "coordinate_system": "degrees_north / degrees_east (negative for west)",
+        },
+        "hurricane_matching": {
+            "logic": "Per image date, find all storms in spatial domain; pick obs closest to 12Z per storm",
+            "columns": "hurricane_present, n_storms, max_wind_kts, max_category, storm_ids, storm_lats, storm_lons",
+        },
+        "saffir_simpson_scale": {
+            "-1 (TD)": "< 34 kts",
+            "0 (TS)": "34-63 kts",
+            "1 (Cat1)": "64-82 kts",
+            "2 (Cat2)": "83-95 kts",
+            "3 (Cat3)": "96-112 kts",
+            "4 (Cat4)": "113-136 kts",
+            "5 (Cat5)": ">= 137 kts",
+        },
     }
 
     # 2. Serialize to JSON Bytes
@@ -187,6 +211,14 @@ def _(IMG_RAW_TBL_NAME, arrow_metadata, db, pa):
             pa.field("dt", pa.timestamp("s")),
             pa.field("image_blob", pa.binary()),
             pa.field("thumb_blob", pa.binary()),
+            # --- Hurricane event columns (populated after ingestion) ---
+            pa.field("hurricane_present", pa.bool_()),
+            pa.field("n_storms", pa.int32()),
+            pa.field("max_wind_kts", pa.float32()),
+            pa.field("max_category", pa.int32()),
+            pa.field("storm_ids", pa.string()),
+            pa.field("storm_lats", pa.string()),
+            pa.field("storm_lons", pa.string()),
         ],
         metadata=arrow_metadata,
     )
@@ -261,6 +293,94 @@ def _(RESOLUTION, THUMB_RESOLUTION, image_dir, ingest_images_to_table, table):
     return
 
 
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## 1b. Enrich with Hurricane Event Labels
+    Load IBTrACS storm tracks, match to each image date, and fill
+    the hurricane columns via `merge_insert`.
+    """)
+    return
+
+
+@app.cell
+def _(PROJECT_ROOT):
+    from helpers.hurricane_metadata import (
+        build_daily_hurricane_lookup,
+        filter_to_domain,
+        load_ibtracs,
+    )
+
+    _ibtracs_path = PROJECT_ROOT / "data" / "ibtracs" / "ibtracs.NA.list.v04r01.csv"
+
+    # Load IBTrACS North Atlantic, filtered to our temporal range
+    _ibtracs_raw = load_ibtracs(
+        _ibtracs_path,
+        start_date="2016-01-01",
+        end_date="2018-12-31",
+    )
+
+    # Keep only observations inside the ERA5 spatial domain
+    _ibtracs_domain = filter_to_domain(
+        _ibtracs_raw,
+        lat_min=15.0,
+        lat_max=35.0,
+        lon_min=260.0,
+        lon_max=330.0,
+    )
+
+    # One-row-per-storm-per-day → daily aggregate lookup
+    hurricane_lookup = build_daily_hurricane_lookup(_ibtracs_domain)
+
+    print(
+        f"IBTrACS: {len(_ibtracs_raw)} obs loaded, "
+        f"{len(_ibtracs_domain)} in domain, "
+        f"{len(hurricane_lookup)} unique days with storms"
+    )
+    return (hurricane_lookup,)
+
+
+@app.cell
+def _(hurricane_lookup, json, table):
+    import pyarrow as _pa
+
+    from helpers.hurricane_metadata import enrich_image_rows
+
+    # Read lightweight columns (no blobs) via Lance scanner
+    _scanner = table.to_lance().scanner(columns=["id", "dt"])
+    _id_dt = _scanner.to_table().to_pandas()
+
+    # Compute hurricane columns for every image row
+    _hurricane_df = enrich_image_rows(_id_dt["dt"], hurricane_lookup)
+    _hurricane_df["id"] = _id_dt["id"].values
+
+    # Build Arrow table with types matching the LanceDB table schema
+    # (pandas defaults to int64/double/large_string, but schema has int32/float/string)
+    _merge_fields = ["id", "hurricane_present", "n_storms", "max_wind_kts",
+                     "max_category", "storm_ids", "storm_lats", "storm_lons"]
+    _merge_schema = _pa.schema([table.schema.field(f) for f in _merge_fields])
+    _merge_tbl = _pa.Table.from_pandas(_hurricane_df, schema=_merge_schema, preserve_index=False)
+
+    # Merge hurricane columns into the table, matched on "id"
+    table.merge_insert("id").when_matched_update_all().execute(_merge_tbl)
+
+    # Update row_count in schema metadata
+    _row_count = table.count_rows()
+    _raw_meta = table.schema.metadata or {}
+    _ds_info = json.loads(_raw_meta.get(b"dataset_info", b"{}"))
+    _ds_info["row_count"] = _row_count
+    _new_meta = {"dataset_info": json.dumps(_ds_info), "version": "1.0"}
+    table.to_lance().replace_schema_metadata(_new_meta)
+
+    _n_with = int(_hurricane_df["hurricane_present"].sum())
+    print(
+        f"Hurricane enrichment complete: "
+        f"{_n_with}/{len(_hurricane_df)} days with storms, "
+        f"row_count metadata set to {_row_count}"
+    )
+    return
+
+
 @app.cell
 def _(table):
     table.schema
@@ -315,6 +435,11 @@ def _(Path, db_dir, os):
 
 
     print(f"{size_bytes / 1024**2:.2f} MB")
+    return
+
+
+@app.cell
+def _():
     return
 
 

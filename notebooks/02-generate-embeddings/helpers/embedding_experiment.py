@@ -56,11 +56,12 @@ def setup_experiment(
 
     Returns dict with db connection, config table, and derived table names.
     """
-    db = lancedb.connect(str(db_uri))
+    exp_db_uri = str(Path(db_uri) / project_name)
+    db = lancedb.connect(exp_db_uri)
 
-    config_name = project_name + "_config"
-    img_emb_name = project_name + "_image_embeddings"
-    patch_emb_name = project_name + "_patch_embeddings"
+    config_name = "config"
+    img_emb_name = "image_embeddings"
+    patch_emb_name = "patch_embeddings"
 
     source_path_str = str(source_uri)
     if project_root is not None:
@@ -90,6 +91,7 @@ def setup_experiment(
         "config_name": config_name,
         "img_emb_name": img_emb_name,
         "patch_emb_name": patch_emb_name,
+        "exp_db_uri": exp_db_uri,
     }
 
 
@@ -99,7 +101,6 @@ def build_cli_command(
     source_table: str,
     config_db,
     config_table: str,
-    out_prefix: str,
     model: str,
     img_id_field: str = "id",
     batch: int = 256,
@@ -124,8 +125,6 @@ def build_cli_command(
         str(source_table),
         "--img_id_field",
         str(img_id_field),
-        "--out_prefix",
-        str(out_prefix),
         "--config_db",
         str(config_db),
         "--config_table",
@@ -165,7 +164,6 @@ def run_experiment(
     source_table: str,
     config_db,
     config_table: str,
-    out_prefix: str,
     model: str,
     img_id_field: str = "id",
     batch: int = 256,
@@ -187,7 +185,6 @@ def run_experiment(
         source_table=source_table,
         config_db=config_db,
         config_table=config_table,
-        out_prefix=out_prefix,
         model=model,
         img_id_field=img_id_field,
         batch=batch,

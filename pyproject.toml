@@ -26,6 +26,14 @@ dependencies = [
     "marimo>=0.13.0",
     "rich>=13.0.0",
     "cartopy>=0.25.0",
+    "mcp>=1.26.0",
+    "scikit-learn>=1.8.0",
+    "plotly>=6.6.0",
+    "wigglystuff>=0.2.37",
+    "polars>=1.39.0",
+    "hvplot>=0.12.2",
+    "altair>=6.0.0",
+    "umap-learn>=0.5.11",
 ]
 
 [dependency-groups]
