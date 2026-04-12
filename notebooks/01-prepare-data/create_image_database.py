@@ -84,7 +84,7 @@ def _(Path, lancedb):
 
     # Folder holding the source images to ingest (change to processed_rgb_rect
     # for rectangular images)
-    image_dir = PROJECT_ROOT / "data" / "processed_rgb"
+    image_dir = PROJECT_ROOT / "data" / "processed_rgb_rect"
 
     # LanceDB storage directory
     db_dir = PROJECT_ROOT / "data" / "lancedb" / "shared_source"
@@ -97,7 +97,7 @@ def _(Path, lancedb):
     # Stored image width and height in pixels.
     # Both must be multiples of 16 for DINO patch compatibility.
     # For a 7:2 geographic aspect ratio (lon 70° × lat 20°) use WIDTH=896, HEIGHT=256.
-    WIDTH  = 256
+    WIDTH  = 896
     HEIGHT = 256
 
     # Square thumbnail size stored alongside each image for quick previews
@@ -127,6 +127,7 @@ def _(Path, lancedb):
     return (
         BATCH_SIZE,
         DT_FORMAT,
+        HEIGHT,
         IMG_RAW_TBL_NAME,
         JPEG_QUALITY,
         PROJECT_ROOT,
@@ -134,7 +135,6 @@ def _(Path, lancedb):
         TEMPORAL_START,
         THUMB_RESOLUTION,
         WIDTH,
-        HEIGHT,
         WORKERS,
         db,
         db_dir,
@@ -151,7 +151,17 @@ def _(mo):
 
 
 @app.cell
-def _(HEIGHT, JPEG_QUALITY, TEMPORAL_END, TEMPORAL_START, THUMB_RESOLUTION, WIDTH, datetime, json, timezone):
+def _(
+    HEIGHT,
+    JPEG_QUALITY,
+    TEMPORAL_END,
+    TEMPORAL_START,
+    THUMB_RESOLUTION,
+    WIDTH,
+    datetime,
+    json,
+    timezone,
+):
     # 1. Define the metadata structure
 
     metadata_dict = {
@@ -312,7 +322,17 @@ def _():
 
 
 @app.cell
-def _(BATCH_SIZE, DT_FORMAT, HEIGHT, THUMB_RESOLUTION, WIDTH, WORKERS, image_dir, ingest_images_to_table, table):
+def _(
+    BATCH_SIZE,
+    DT_FORMAT,
+    HEIGHT,
+    THUMB_RESOLUTION,
+    WIDTH,
+    WORKERS,
+    image_dir,
+    ingest_images_to_table,
+    table,
+):
     # parallel workflow
 
     ingest_images_to_table(
@@ -439,7 +459,7 @@ def _(table):
     table.search().select(["id"]).limit(10).to_pandas()
 
     row = table.search().limit(1000).to_pandas().iloc[999]
-    img = Image.open(io.BytesIO(row["image_blob"]))
+    img = Image.open(io.BytesIO(row["thumb_blob"]))
 
     print(img.size)
     img
