@@ -7,6 +7,14 @@
     "default_workers": 5,
     "default_scan_batch": 1000
   },
+  "dinov3_rect": {
+    "script": "v5_dino_embeddings_lancedb.py",
+    "default_model": "vit_base_patch16_dinov3",
+    "description": "DINOv2/v3 ViT models with rectangular image support (no center-crop)",
+    "default_batch": 64,
+    "default_workers": 5,
+    "default_scan_batch": 1000
+  },
   "openclip": {
     "script": "v1_openclip_embeddings_lancedb.py",
     "default_model": "ViT-L-14",

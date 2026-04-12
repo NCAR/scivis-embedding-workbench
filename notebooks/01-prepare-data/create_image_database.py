@@ -86,7 +86,8 @@ def _(Path, lancedb):
 
     image_dir = PROJECT_ROOT / "data" / "processed_rgb"
 
-    RESOLUTION = 256
+    WIDTH = 256
+    HEIGHT = 256
 
     THUMB_RESOLUTION = 64
 
@@ -98,8 +99,9 @@ def _(Path, lancedb):
         IMG_RAW_TBL_NAME,
         JPEG_QUALITY,
         PROJECT_ROOT,
-        RESOLUTION,
         THUMB_RESOLUTION,
+        WIDTH,
+        HEIGHT,
         db,
         db_dir,
         image_dir,
@@ -115,7 +117,7 @@ def _(mo):
 
 
 @app.cell
-def _(JPEG_QUALITY, RESOLUTION, THUMB_RESOLUTION, datetime, json, timezone):
+def _(HEIGHT, JPEG_QUALITY, THUMB_RESOLUTION, WIDTH, datetime, json, timezone):
     # 1. Define the metadata structure
 
     metadata_dict = {
@@ -136,7 +138,7 @@ def _(JPEG_QUALITY, RESOLUTION, THUMB_RESOLUTION, datetime, json, timezone):
         },
         # --- 3. OUTPUT SPECIFICATIONS ---
         "image_specs": {
-            "resolution": [RESOLUTION, RESOLUTION],
+            "resolution": [WIDTH, HEIGHT],
             "thumb_resolution": [THUMB_RESOLUTION, THUMB_RESOLUTION],
             "format": "JPEG",
             "quality": JPEG_QUALITY,
@@ -266,8 +268,8 @@ def _():
     # ingest_images_to_table(
     #     table,
     #     image_dir=image_dir,
-    #     width=RESOLUTION,
-    #     height=RESOLUTION,
+    #     width=WIDTH,
+    #     height=HEIGHT,
     #     dt_format="%Y%m%d_rgb.jpeg",
     #     thumb_size=THUMB_RESOLUTION,
     #     batch_size=256
@@ -276,14 +278,14 @@ def _():
 
 
 @app.cell
-def _(RESOLUTION, THUMB_RESOLUTION, image_dir, ingest_images_to_table, table):
+def _(HEIGHT, THUMB_RESOLUTION, WIDTH, image_dir, ingest_images_to_table, table):
     # parallel workflow
 
     ingest_images_to_table(
         table_obj=table,  # Open LanceDB table to write into
         image_dir=image_dir,  # Directory containing input images
-        width=RESOLUTION,  # Stored image width
-        height=RESOLUTION,  # Stored image height
+        width=WIDTH,   # Stored image width
+        height=HEIGHT, # Stored image height
         dt_format="%Y%m%d_rgb.jpeg",  # Datetime pattern extracted from filename
         thumb_size=THUMB_RESOLUTION,  # Square thumbnail size in pixels
         batch_size=2048,  # Rows written to DB per transaction
