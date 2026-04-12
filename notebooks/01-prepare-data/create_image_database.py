@@ -78,30 +78,64 @@ def _(mo):
 
 @app.cell
 def _(Path, lancedb):
+    # ── Paths ────────────────────────────────────────────────────────────────
+    # Root directory containing all project data
     PROJECT_ROOT = Path("/Users/ncheruku/Documents/Work/sample_data")
 
-    IMG_RAW_TBL_NAME = "era5_sample_images"
-
-    db_dir = PROJECT_ROOT / "data" / "lancedb" / "shared_source"
-
+    # Folder holding the source images to ingest (change to processed_rgb_rect
+    # for rectangular images)
     image_dir = PROJECT_ROOT / "data" / "processed_rgb"
 
-    WIDTH = 256
+    # LanceDB storage directory
+    db_dir = PROJECT_ROOT / "data" / "lancedb" / "shared_source"
+
+    # ── Database ─────────────────────────────────────────────────────────────
+    # Name of the raw image table that will be created
+    IMG_RAW_TBL_NAME = "era5_sample_images"
+
+    # ── Image dimensions ─────────────────────────────────────────────────────
+    # Stored image width and height in pixels.
+    # Both must be multiples of 16 for DINO patch compatibility.
+    # For a 7:2 geographic aspect ratio (lon 70° × lat 20°) use WIDTH=896, HEIGHT=256.
+    WIDTH  = 256
     HEIGHT = 256
 
+    # Square thumbnail size stored alongside each image for quick previews
     THUMB_RESOLUTION = 64
 
+    # JPEG compression quality for the thumbnail blob (1–95)
     JPEG_QUALITY = 90
+
+    # ── Temporal extent ──────────────────────────────────────────────────────
+    # Date range covered by this dataset (ISO-8601, inclusive)
+    TEMPORAL_START = "2016-01-01"
+    TEMPORAL_END   = "2018-12-31"
+
+    # ── Filename format ───────────────────────────────────────────────────────
+    # strptime pattern used to parse the image timestamp from the filename.
+    # Must match the actual filenames in image_dir (e.g. "20160101_rgb.jpeg").
+    DT_FORMAT = "%Y%m%d_rgb.jpeg"
+
+    # ── Ingest performance ────────────────────────────────────────────────────
+    # Number of parallel worker processes for image decoding/resizing
+    WORKERS = 4
+    # Rows written to LanceDB per transaction (larger = fewer writes, more RAM)
+    BATCH_SIZE = 2048
 
     # Connect to DB
     db = lancedb.connect(str(db_dir))
     return (
+        BATCH_SIZE,
+        DT_FORMAT,
         IMG_RAW_TBL_NAME,
         JPEG_QUALITY,
         PROJECT_ROOT,
+        TEMPORAL_END,
+        TEMPORAL_START,
         THUMB_RESOLUTION,
         WIDTH,
         HEIGHT,
+        WORKERS,
         db,
         db_dir,
         image_dir,
@@ -117,7 +151,7 @@ def _(mo):
 
 
 @app.cell
-def _(HEIGHT, JPEG_QUALITY, THUMB_RESOLUTION, WIDTH, datetime, json, timezone):
+def _(HEIGHT, JPEG_QUALITY, TEMPORAL_END, TEMPORAL_START, THUMB_RESOLUTION, WIDTH, datetime, json, timezone):
     # 1. Define the metadata structure
 
     metadata_dict = {
@@ -154,8 +188,8 @@ def _(HEIGHT, JPEG_QUALITY, THUMB_RESOLUTION, WIDTH, datetime, json, timezone):
             "notes": "North Atlantic / Caribbean (approx 100W to 30W)",
         },
         "temporal_extent": {
-            "start": "2016-01-01",  # Updated Start
-            "end": "2018-12-31",  # Updated End
+            "start": TEMPORAL_START,
+            "end": TEMPORAL_END,
             "interval": "Daily",
         },
         # --- 5. PHYSICS & CHANNELS ---
@@ -270,27 +304,27 @@ def _():
     #     image_dir=image_dir,
     #     width=WIDTH,
     #     height=HEIGHT,
-    #     dt_format="%Y%m%d_rgb.jpeg",
+    #     dt_format=DT_FORMAT,
     #     thumb_size=THUMB_RESOLUTION,
-    #     batch_size=256
+    #     batch_size=BATCH_SIZE
     # )
     return
 
 
 @app.cell
-def _(HEIGHT, THUMB_RESOLUTION, WIDTH, image_dir, ingest_images_to_table, table):
+def _(BATCH_SIZE, DT_FORMAT, HEIGHT, THUMB_RESOLUTION, WIDTH, WORKERS, image_dir, ingest_images_to_table, table):
     # parallel workflow
 
     ingest_images_to_table(
-        table_obj=table,  # Open LanceDB table to write into
-        image_dir=image_dir,  # Directory containing input images
-        width=WIDTH,   # Stored image width
-        height=HEIGHT, # Stored image height
-        dt_format="%Y%m%d_rgb.jpeg",  # Datetime pattern extracted from filename
-        thumb_size=THUMB_RESOLUTION,  # Square thumbnail size in pixels
-        batch_size=2048,  # Rows written to DB per transaction
-        workers=31,  # Number of CPU processes for image processing
-        max_in_flight=31 * 16,  # Max images allowed in RAM at once (memory safety)
+        table_obj=table,
+        image_dir=image_dir,
+        width=WIDTH,
+        height=HEIGHT,
+        dt_format=DT_FORMAT,
+        thumb_size=THUMB_RESOLUTION,
+        batch_size=BATCH_SIZE,
+        workers=WORKERS,
+        max_in_flight=WORKERS * 16,
     )
     return
 
