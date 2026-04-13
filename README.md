@@ -91,6 +91,67 @@ git push -u origin <short-feature-name>
    - Why it changed
    - How you tested it
 
+## Running Marimo on NCAR Casper
+
+To access a Marimo notebook running on a Casper compute node from your local browser, follow these steps.
+
+### 1. Start Marimo on the Compute Node
+
+From your active session on a Casper node (e.g., `casper39`), start the Marimo server. You must use the `--host 0.0.0.0` flag to allow the SSH tunnel to connect.
+
+```bash
+uv run marimo edit --host 0.0.0.0 --port 2718
+```
+
+- **Note the Node ID:** Look at your terminal prompt (e.g., `user@casper39`).
+- **Note the Port:** Default is `2718`.
+- **Copy the Token:** Marimo will output a URL with an `access_token`.
+
+### 2. Create an SSH Tunnel (Local Machine)
+
+Open a new terminal window on your laptop and run the following command. This uses a "ProxyJump" to get through the NCAR login gateway to your specific compute node.
+
+```bash
+ssh -J <USER>@casper.hpc.ucar.edu -L 2718:localhost:2718 <USER>@<NODE_ID>.hpc.ucar.edu
+```
+
+- Replace `<USER>` with your NCAR username.
+- Replace `<NODE_ID>` with the specific node you are on (e.g., `casper39`).
+
+### 3. Open in Browser
+
+Once the tunnel is established, copy the link provided by Marimo in Step 1 and paste it into your browser. Ensure the URL starts with `localhost`:
+
+```
+http://localhost:2718?access_token=...
+```
+
+### Optional: Simplify with SSH Config
+
+To avoid typing long commands, add this to your local `~/.ssh/config` file:
+
+```
+Host casper-gateway
+    HostName casper.hpc.ucar.edu
+    User <USER>
+
+Host casper*
+    HostName %h.hpc.ucar.edu
+    User <USER>
+    ProxyJump casper-gateway
+```
+
+Now, the tunnel command becomes much shorter:
+
+```bash
+ssh -L 2718:localhost:2718 casper39
+```
+
+### Troubleshooting
+
+- **Address already in use:** If port `2718` is taken on your laptop, change the first number: `-L 9999:localhost:2718`. You would then visit `localhost:9999` in your browser.
+- **VPN:** Ensure you are connected to the NCAR VPN if working remotely.
+
 ## Development Tips
 
 - Keep dependencies updated with `uv lock` and `uv sync`.
