@@ -234,10 +234,14 @@ def _(
     BATCH_SIZE, IMG_HEIGHT, IMG_WIDTH, JPEG_QUALITY, N_WORKERS, OUT_ROOT,
     Path, ProcessPoolExecutor, as_completed, dask, pd, tqdm,
 ):
-    # save_rgb_worker lives in e5_helpers.py so ProcessPoolExecutor can
-    # pickle it — marimo compiles cells into isolated files, so module-level
-    # definitions inside the notebook are not visible to worker processes.
-    from e5_helpers import save_rgb_worker as _save_rgb_worker
+    # Workers and GPU utilities live in e5_helpers.py so ProcessPoolExecutor
+    # can pickle them — marimo compiles cells into isolated files, making
+    # notebook-level definitions unpicklable.
+    from e5_helpers import (
+        batch_resize_torch as _batch_resize_torch,
+        pick_device        as _pick_device,
+        save_jpeg_worker   as _save_jpeg_worker,
+    )
 
     def _ensure_dirs(root):
         root = Path(root)
@@ -258,37 +262,44 @@ def _(
         _ensure_dirs(out_root)
         rgb_dir = out_root / "rgb"
 
+        device  = _pick_device()
         times   = R.sel(time=slice(start, end)).time.values
         n_total = len(times)
+        print(f"Device: {device} | {n_total} frames | batch={batch_size} | workers={n_workers}")
 
         with ProcessPoolExecutor(max_workers=n_workers) as pool:
             with tqdm(total=n_total, desc="Saving RGB frames", unit="frame") as pbar:
                 for i in range(0, n_total, batch_size):
                     batch_times = times[i : i + batch_size]
 
-                    # --- Step 1: compute all three arrays together ---
+                    # --- Step 1: compute all three channel arrays in one dask call ---
                     R_np, G_np, B_np = dask.compute(
                         R.sel(time=batch_times),
                         G.sel(time=batch_times),
                         B.sel(time=batch_times),
                     )
 
-                    # --- Step 2: submit CPU-bound PIL work to process pool ---
+                    # --- Step 2: batch resize on GPU (one kernel for all frames) ---
+                    # resized_batch: numpy uint8 (B, height, width, 3)
+                    resized_batch = _batch_resize_torch(
+                        R_np.values, G_np.values, B_np.values,
+                        width, height, device,
+                    )
+
+                    # --- Step 3: submit JPEG encode to process pool ---
                     futures = [
                         pool.submit(
-                            _save_rgb_worker,
+                            _save_jpeg_worker,
                             (
-                                R_np.values[j],
-                                G_np.values[j],
-                                B_np.values[j],
+                                resized_batch[j],
                                 str(rgb_dir / f"{pd.Timestamp(t).strftime('%Y%m%d_%H')}_rgb.jpeg"),
-                                width, height, quality,
+                                quality,
                             ),
                         )
                         for j, t in enumerate(batch_times)
                     ]
 
-                    # --- Step 3: collect and update progress ---
+                    # --- Step 4: collect results and update progress bar ---
                     for fut in as_completed(futures):
                         try:
                             fut.result()
