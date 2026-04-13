@@ -88,8 +88,12 @@ def _(mo):
 def _(Path, project_root_input):
     PROJECT_ROOT = Path(project_root_input.value)
 
-    SOURCE_URI = PROJECT_ROOT / "data" / "lancedb" / "shared_source"
-    IMG_RAW_TBL_NAME = "era5_sample_images"
+    # Project folder name — must match the SOURCE_PROJECT used during ingest.
+    # This is the subfolder inside shared_source/ that holds the source LanceDB.
+    SOURCE_PROJECT = "era5_sample_images"
+
+    SOURCE_URI = PROJECT_ROOT / "data" / "lancedb" / "shared_source" / SOURCE_PROJECT
+    IMG_RAW_TBL_NAME = "images"
     DB_URI = PROJECT_ROOT / "data" / "lancedb" / "experiments" / "era5"
     AUTHOR = "Cherukuru. N. W"
 
@@ -105,6 +109,7 @@ def _(Path, project_root_input):
         IMAGE_W,
         IMG_RAW_TBL_NAME,
         PROJECT_ROOT,
+        SOURCE_PROJECT,
         SOURCE_URI,
     )
 

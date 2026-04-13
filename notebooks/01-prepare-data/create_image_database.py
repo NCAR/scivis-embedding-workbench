@@ -86,12 +86,17 @@ def _(Path, lancedb):
     # for rectangular images)
     image_dir = PROJECT_ROOT / "data" / "processed_rgb_rect"
 
-    # LanceDB storage directory
-    db_dir = PROJECT_ROOT / "data" / "lancedb" / "shared_source"
-
     # ── Database ─────────────────────────────────────────────────────────────
-    # Name of the raw image table that will be created
-    IMG_RAW_TBL_NAME = "era5_sample_images"
+    # Project name — used as the subfolder inside shared_source/ that holds
+    # this dataset's LanceDB database. Rename this to separate datasets.
+    SOURCE_PROJECT = "era5_sample_images"
+
+    # LanceDB storage directory — each project lives in its own subfolder
+    db_dir = PROJECT_ROOT / "data" / "lancedb" / "shared_source" / SOURCE_PROJECT
+
+    # Generic table name — the project folder already identifies the dataset,
+    # so the table itself can have a stable, renameable name.
+    IMG_RAW_TBL_NAME = "images"
 
     # ── Image dimensions ─────────────────────────────────────────────────────
     # Stored image width and height in pixels.
@@ -138,6 +143,7 @@ def _(Path, lancedb):
         INGEST_RESOLUTION,
         JPEG_QUALITY,
         PROJECT_ROOT,
+        SOURCE_PROJECT,
         TEMPORAL_END,
         TEMPORAL_START,
         THUMB_RESOLUTION,
