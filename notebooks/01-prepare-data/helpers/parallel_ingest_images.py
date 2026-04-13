@@ -86,13 +86,15 @@ def ingest_images_to_table(
     batch_size: int = 256,
     workers: Optional[int] = None,
     max_in_flight: int = 2048,
+    files: Optional[List[Path]] = None,
 ) -> int:
     """
     Parallelizes image processing; keeps DB writes single-threaded.
 
     workers: number of processes (defaults to os.cpu_count())
     max_in_flight: caps queued futures to avoid huge memory spikes
-
+    files: optional pre-filtered list of paths; if provided, image_dir
+           is not scanned (use to ingest a specific temporal subset)
 
     Example:
 
@@ -124,7 +126,7 @@ def ingest_images_to_table(
         )
     """
     image_dir = Path(image_dir)
-    paths = list_images_flat(image_dir)
+    paths = files if files is not None else list_images_flat(image_dir)
     if not paths:
         raise ValueError(f"No image files found in directory: {image_dir}")
 

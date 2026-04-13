@@ -116,6 +116,12 @@ def _(Path, lancedb):
     # Must match the actual filenames in image_dir (e.g. "20160101_rgb.jpeg").
     DT_FORMAT = "%Y%m%d_rgb.jpeg"
 
+    # ── Temporal subsampling ──────────────────────────────────────────────────
+    # If the source folder contains finer-grained data than you need, set this
+    # to a pandas freq string to ingest only the aligned subset.
+    # Examples: "3h" (every 3 hours), "6h", "12h", "D" (daily noon), None (all)
+    INGEST_RESOLUTION = None
+
     # ── Ingest performance ────────────────────────────────────────────────────
     # Number of parallel worker processes for image decoding/resizing
     WORKERS = 4
@@ -129,6 +135,7 @@ def _(Path, lancedb):
         DT_FORMAT,
         HEIGHT,
         IMG_RAW_TBL_NAME,
+        INGEST_RESOLUTION,
         JPEG_QUALITY,
         PROJECT_ROOT,
         TEMPORAL_END,
@@ -326,6 +333,7 @@ def _(
     BATCH_SIZE,
     DT_FORMAT,
     HEIGHT,
+    INGEST_RESOLUTION,
     THUMB_RESOLUTION,
     WIDTH,
     WORKERS,
@@ -333,7 +341,28 @@ def _(
     ingest_images_to_table,
     table,
 ):
-    # parallel workflow
+    from datetime import datetime
+    from pathlib import Path as _Path
+
+    import pandas as _pd
+
+    from helpers.parallel_ingest_images import list_images_flat
+
+    # Build file list, optionally filtered to a coarser temporal resolution.
+    # For example, INGEST_RESOLUTION="3h" keeps only files whose timestamp
+    # aligns to a 3-hour boundary (00, 03, 06, ... UTC), skipping the rest.
+    _all_files = list_images_flat(image_dir)
+    if INGEST_RESOLUTION is not None and DT_FORMAT is not None:
+        _files = [
+            p for p in _all_files
+            if (lambda dt: dt == dt.floor(INGEST_RESOLUTION))(
+                _pd.Timestamp(datetime.strptime(p.name, DT_FORMAT))
+            )
+        ]
+        print(f"Resolution filter '{INGEST_RESOLUTION}': {len(_files)}/{len(_all_files)} files selected")
+    else:
+        _files = _all_files
+        print(f"No resolution filter: ingesting all {len(_files)} files")
 
     ingest_images_to_table(
         table_obj=table,
@@ -345,6 +374,7 @@ def _(
         batch_size=BATCH_SIZE,
         workers=WORKERS,
         max_in_flight=WORKERS * 16,
+        files=_files,
     )
     return
 
