@@ -92,7 +92,21 @@ def _(Path, project_root_input):
     IMG_RAW_TBL_NAME = "era5_sample_images"
     DB_URI = PROJECT_ROOT / "data" / "lancedb" / "experiments" / "era5"
     AUTHOR = "Cherukuru. N. W"
-    return AUTHOR, DB_URI, IMG_RAW_TBL_NAME, PROJECT_ROOT, SOURCE_URI
+
+    # Target image dimensions passed to the embedding script.
+    # Both must be multiples of the model's patch size (16 for ViT-base-patch16).
+    # For the ERA5 7:2 geographic aspect ratio use IMAGE_H=256, IMAGE_W=896.
+    IMAGE_H = 256
+    IMAGE_W = 896
+    return (
+        AUTHOR,
+        DB_URI,
+        IMAGE_H,
+        IMAGE_W,
+        IMG_RAW_TBL_NAME,
+        PROJECT_ROOT,
+        SOURCE_URI,
+    )
 
 
 @app.cell
@@ -109,7 +123,7 @@ def _(mo):
 @app.cell
 def _(get_model_info):
     # Model-specific config — change this for a different model family
-    PROJECT_NAME = "dinov3"
+    PROJECT_NAME = "dinov3_rect"
     model_info = get_model_info(PROJECT_NAME)
 
     MODEL = model_info["default_model"]
@@ -167,6 +181,8 @@ def _(mo):
 @app.cell
 def _(
     BATCH,
+    IMAGE_H,
+    IMAGE_W,
     IMG_RAW_TBL_NAME,
     MODEL,
     SCAN_BATCH,
@@ -181,6 +197,7 @@ def _(
         SCRIPT, SOURCE_URI, IMG_RAW_TBL_NAME,
         experiment["exp_db_uri"], experiment["config_name"],
         MODEL, batch=BATCH, scan_batch=SCAN_BATCH, workers=WORKERS,
+        image_h=IMAGE_H, image_w=IMAGE_W,
     )
     return
 
@@ -188,6 +205,8 @@ def _(
 @app.cell
 def _(
     BATCH,
+    IMAGE_H,
+    IMAGE_W,
     IMG_RAW_TBL_NAME,
     MODEL,
     SCAN_BATCH,
@@ -202,6 +221,7 @@ def _(
         SCRIPT, SOURCE_URI, IMG_RAW_TBL_NAME,
         experiment["exp_db_uri"], experiment["config_name"],
         MODEL, batch=BATCH, scan_batch=SCAN_BATCH, workers=WORKERS,
+        image_h=IMAGE_H, image_w=IMAGE_W,
     )
     print(cmd)
     return
@@ -223,7 +243,7 @@ def _(experiment, load_config):
     # Inspect config after run completes (works for both Case 1 and Case 2)
     config = load_config(experiment["exp_db_uri"], experiment["config_name"])
     config
-    return
+    return (config,)
 
 
 @app.cell
@@ -262,12 +282,12 @@ def _(db, experiment):
 
 @app.cell
 def _(np, plt):
-    def preview_image_embedding(tbl, idx: int = 0) -> None:
+    def preview_image_embedding(tbl, idx: int = 0, spatial_h: int = None, spatial_w: int = None) -> None:
         """Preview a single row from the image embeddings table by index.
 
         Prints a column summary and renders two plots:
           - Left:  histogram of the embedding vector values
-          - Right: attention map reshaped to its spatial grid (e.g. 16×16)
+          - Right: attention map reshaped to its spatial grid (e.g. 16×56)
 
         Parameters
         ----------
@@ -275,6 +295,10 @@ def _(np, plt):
             The image embeddings table (must have columns: image_id, embedding, attention_map).
         idx : int
             Row index to inspect.
+        spatial_h : int
+            Number of patch rows (image_h // patch_size). Read from config["attention_spatial_h"].
+        spatial_w : int
+            Number of patch columns (image_w // patch_size). Read from config["attention_spatial_w"].
         """
         row = tbl.to_lance().take([idx]).to_pydict()
 
@@ -282,16 +306,14 @@ def _(np, plt):
         emb = np.array(row["embedding"][0], dtype=np.float32)
         attn = np.array(row["attention_map"][0], dtype=np.float32)
 
-        # Auto-detect spatial grid from attention map length
-        spatial = int(round(len(attn) ** 0.5))
-        attn_2d = attn.reshape(spatial, spatial)
+        attn_2d = attn.reshape(spatial_h, spatial_w)
 
         # ── Column summary ──────────────────────────────────────────────────
         print(f"idx         : {idx}")
         print(f"image_id    : {image_id}")
         print(f"embedding   : dim={len(emb)}, norm={np.linalg.norm(emb):.6f}, "
               f"min={emb.min():.4f}, max={emb.max():.4f}, mean={emb.mean():.4f}")
-        print(f"attention   : patches={len(attn)} ({spatial}×{spatial}), "
+        print(f"attention   : patches={len(attn)} ({spatial_h}×{spatial_w}), "
               f"min={attn.min():.4f}, max={attn.max():.4f}, sum={attn.sum():.4f}")
 
         # ── Plots ────────────────────────────────────────────────────────────
@@ -309,7 +331,7 @@ def _(np, plt):
 
         # Attention map heatmap
         im = axes[1].imshow(attn_2d, cmap="inferno", interpolation="nearest")
-        axes[1].set_title(f"Attention map  ({spatial}×{spatial})")
+        axes[1].set_title(f"Attention map  ({spatial_h}×{spatial_w})")
         axes[1].axis("off")
         plt.colorbar(im, ax=axes[1], fraction=0.046, pad=0.04)
 
@@ -320,8 +342,10 @@ def _(np, plt):
 
 
 @app.cell
-def _(img_tbl, preview_image_embedding):
-    preview_image_embedding(img_tbl, idx=789)
+def _(config, img_tbl, preview_image_embedding):
+    _spatial_h = int(config["attention_spatial_h"])
+    _spatial_w = int(config["attention_spatial_w"])
+    preview_image_embedding(img_tbl, idx=789, spatial_h=_spatial_h, spatial_w=_spatial_w)
     return
 
 
