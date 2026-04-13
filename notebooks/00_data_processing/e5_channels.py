@@ -1,14 +1,19 @@
 import marimo
 
 __generated_with = "0.10.0"
+
+
 app = marimo.App()
 
 
+# ---------------------------------------------------------------------------
+# Cell 1 — Imports
+# ---------------------------------------------------------------------------
 @app.cell
 def _():
+    import dask
     import glob
-    import threading
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
     from pathlib import Path
 
     import numpy as np
@@ -16,22 +21,27 @@ def _():
     import xarray as xr
     import matplotlib.pyplot as plt
     from PIL import Image
+    from tqdm import tqdm
 
     return (
-        Image, Path, ThreadPoolExecutor, as_completed,
-        glob, np, pd, plt, threading, xr,
+        Image, Path, ProcessPoolExecutor, ThreadPoolExecutor, as_completed,
+        dask, glob, np, pd, plt, tqdm, xr,
     )
 
 
+# ---------------------------------------------------------------------------
+# Cell 2 — Data-loading config
+# DEFAULT_CHUNKS["time"] = 24 aligns with BATCH_SIZE=24 so each batch
+# request maps to exactly one dask chunk — no wasted I/O or rechunking.
+# ---------------------------------------------------------------------------
 @app.cell
-def _(glob, pd, xr):
-    # ---------- config ----------
+def _(ThreadPoolExecutor, glob, pd, xr):
     DATA_ROOT = "/glade/campaign/collections/gdex/data/d633000/e5.oper.an.sfc"
-    DEFAULT_CHUNKS = {"time": 120, "latitude": -1, "longitude": -1}
+    DEFAULT_CHUNKS = {"time": 24, "latitude": -1, "longitude": -1}
 
     PATTERNS = {
-        "MSL":    f"{DATA_ROOT}" + "/{}/e5.oper.an.sfc.128_151_msl.ll025sc.*.nc",
-        "TCWV":   f"{DATA_ROOT}" + "/{}/e5.oper.an.sfc.128_137_tcwv.ll025sc.*.nc",
+        "MSL":     f"{DATA_ROOT}" + "/{}/e5.oper.an.sfc.128_151_msl.ll025sc.*.nc",
+        "TCWV":    f"{DATA_ROOT}" + "/{}/e5.oper.an.sfc.128_137_tcwv.ll025sc.*.nc",
         "VAR_10U": f"{DATA_ROOT}" + "/{}/e5.oper.an.sfc.128_165_10u.ll025sc.*.nc",
         "VAR_10V": f"{DATA_ROOT}" + "/{}/e5.oper.an.sfc.128_166_10v.ll025sc.*.nc",
     }
@@ -52,7 +62,7 @@ def _(glob, pd, xr):
 
     def _preproc(lat_min=None, lat_max=None, lon_min=None, lon_max=None):
         def _pp(ds):
-            # ERA5 latitude is descending (90→-90)
+            # ERA5 latitude is descending (90 → -90)
             if (lat_min is not None) and (lat_max is not None):
                 ds = ds.sel(latitude=slice(lat_max, lat_min))
             # ERA5 longitude is native 0..360 (no wrapping)
@@ -61,7 +71,8 @@ def _(glob, pd, xr):
             return ds
         return _pp
 
-    def _open_var(name, pattern, start, end, *, lat_min=None, lat_max=None, lon_min=None, lon_max=None):
+    def _open_var(name, pattern, start, end, *, lat_min=None, lat_max=None,
+                  lon_min=None, lon_max=None):
         ds = xr.open_mfdataset(
             _files(pattern, start, end),
             combine="by_coords", engine="h5netcdf", parallel=True,
@@ -74,50 +85,234 @@ def _(glob, pd, xr):
             raise ValueError(f"{name}: available {list(ds.data_vars)}")
         return ds[[var]].rename({var: name})
 
-    def open_four(start, end, *, lat_min=None, lat_max=None, lon_min=None, lon_max=None):
-        parts = []
-        for name, pat in PATTERNS.items():
-            parts.append(_open_var(name, pat, start, end,
-                                   lat_min=lat_min, lat_max=lat_max,
-                                   lon_min=lon_min, lon_max=lon_max))
+    def open_four(start, end, *, lat_min=None, lat_max=None,
+                  lon_min=None, lon_max=None, n_io_threads=4):
+        """Open all 4 ERA5 variables in parallel (I/O-bound → ThreadPoolExecutor)."""
+        def _open(item):
+            name, pat = item
+            return _open_var(name, pat, start, end,
+                             lat_min=lat_min, lat_max=lat_max,
+                             lon_min=lon_min, lon_max=lon_max)
+
+        with ThreadPoolExecutor(max_workers=n_io_threads) as ex:
+            parts = list(ex.map(_open, PATTERNS.items()))
+
         return xr.merge(parts, compat="override", join="override")
 
     return DATA_ROOT, DEFAULT_CHUNKS, PATTERNS, open_four
 
 
+# ---------------------------------------------------------------------------
+# Cell 3 — Pipeline config (all magic numbers in one place)
+# ---------------------------------------------------------------------------
 @app.cell
-def _(open_four):
-    # Atlantic box in native 0..360 longitudes (≈ -110..-10 in -180..180)
+def _(Path):
+    # --- domain ---
     LAT_MIN, LAT_MAX = 15.0, 35.0
     LON_MIN, LON_MAX = 260.0, 330.0
+    START, END = "2017-06-01", "2017-12-01"
 
-    ds = open_four(
-        "2017-06-01", "2017-12-01",
-        lat_min=LAT_MIN, lat_max=LAT_MAX,
-        lon_min=LON_MIN, lon_max=LON_MAX,
+    # --- channel encoding ---
+    R_RANGE     = (-20.0, 20.0)   # MSLP anomaly [hPa]
+    G_RANGE     = (0.0,   35.0)   # 10m wind speed [m/s]
+    B_RANGE     = (20.0,  70.0)   # TCWV [kg m^-2]
+    TCWV_NONLIN = "sqrt"          # None | "sqrt" | "log"
+
+    # --- output ---
+    OUT_ROOT     = Path("./openclip_ready_896x256")
+    IMG_WIDTH    = 896
+    IMG_HEIGHT   = 256
+    JPEG_QUALITY = 90
+
+    # --- parallelism ---
+    N_WORKERS    = 32   # dask threaded-scheduler workers AND ProcessPoolExecutor size
+    N_IO_THREADS = 4    # threads for opening the 4 ERA5 variables concurrently (I/O-bound)
+    BATCH_SIZE   = 24   # timesteps per dask.compute() call (= 1 day of hourly data)
+
+    return (
+        B_RANGE, BATCH_SIZE, END, G_RANGE, IMG_HEIGHT, IMG_WIDTH, JPEG_QUALITY,
+        LAT_MAX, LAT_MIN, LON_MAX, LON_MIN, N_IO_THREADS, N_WORKERS,
+        OUT_ROOT, R_RANGE, START, TCWV_NONLIN,
     )
-    return LAT_MAX, LAT_MIN, LON_MAX, LON_MIN, ds
 
 
+# ---------------------------------------------------------------------------
+# Cell 4 — Dask scheduler config
+# Uses the built-in threaded scheduler (no dask.distributed needed).
+# HDF5/h5netcdf releases the GIL during reads, so 32 threads run in parallel.
+# ---------------------------------------------------------------------------
 @app.cell
-def _(ds):
-    ds
-    return
+def _(N_WORKERS, dask):
+    dask.config.set(scheduler="threads", num_workers=N_WORKERS)
+    print(f"Dask: threaded scheduler, {N_WORKERS} workers")
+    return ()
 
 
+# ---------------------------------------------------------------------------
+# Cell 5 — Channel-encoding helpers + precompute_daily_channels
+# Private helpers (_get, _rescale01, _to_uint8_img) must live in the same
+# cell as any function that calls them — marimo treats _-prefixed names as
+# cell-private and will not export them across cell boundaries.
+# ---------------------------------------------------------------------------
+@app.cell
+def _(B_RANGE, G_RANGE, Image, R_RANGE, TCWV_NONLIN, np, xr):
+    def _get(ds, names):
+        for n in names:
+            if n in ds:
+                return ds[n]
+        raise KeyError(f"Vars {list(ds.data_vars)} do not include any of {names}")
+
+    def _rescale01(da, vmin, vmax, eps=1e-6, nonlin=None):
+        x = (da - vmin) / (vmax - vmin + eps)
+        x = x.clip(0, 1)
+        if nonlin == "sqrt":
+            x = xr.apply_ufunc(np.sqrt, x, dask="allowed")
+        elif nonlin == "log":
+            x = xr.apply_ufunc(lambda y: np.log1p(9 * y) / np.log(10), x, dask="allowed")
+        return x
+
+    def _to_uint8_img(arr01, width=896, height=256):
+        arr01 = np.clip(np.asarray(arr01), 0, 1)
+        if arr01.ndim == 2:
+            arr01 = np.stack([arr01, arr01, arr01], axis=-1)
+        img = Image.fromarray((arr01 * 255).astype(np.uint8))
+        return img.resize((width, height), resample=Image.BILINEAR)
+
+    def precompute_daily_channels(ds, mean_msl):
+        """
+        Compute R, G, B channel DataArrays (dask-backed, lazy).
+
+        R = inverted MSLP anomaly  (lows = bright red)
+        G = 10m wind speed magnitude
+        B = TCWV (optionally nonlinear)
+
+        Note: no rechunking to time:1 — save_batch_parallel uses batched
+        dask.compute() aligned to DEFAULT_CHUNKS["time"] = BATCH_SIZE = 24.
+        """
+        msl  = _get(ds, ["msl", "MSL", "mslp", "msl_hPa"])
+        u10  = _get(ds, ["u10", "VAR_10U"])
+        v10  = _get(ds, ["v10", "VAR_10V"])
+        tcwv = _get(ds, ["tcwv", "TCWV"])
+
+        if msl.attrs.get("units", "").lower() in ("pa", "pascal", "pascals"):
+            msl = msl / 100.0
+            msl.attrs["units"] = "hPa"
+
+        ws10 = xr.apply_ufunc(np.hypot, u10, v10, dask="parallelized",
+                               output_dtypes=[u10.dtype])
+
+        clim         = _get(mean_msl, ["MSL", "msl", "msl_mean", "msl_hPa"])
+        doy_index    = msl["time"].dt.dayofyear
+        clim_on_time = clim.sel(doy=doy_index).drop_vars("doy")
+        msl          = msl.transpose("time", "latitude", "longitude")
+        clim_on_time = clim_on_time.transpose("time", "latitude", "longitude")
+        msl_anom     = msl - clim_on_time
+
+        R = 1.0 - _rescale01(msl_anom, *R_RANGE)
+        G = _rescale01(ws10, *G_RANGE)
+        B = _rescale01(tcwv, *B_RANGE, nonlin=TCWV_NONLIN)
+
+        return R, G, B
+
+    return _to_uint8_img, precompute_daily_channels
+
+
+# ---------------------------------------------------------------------------
+# Cell 8 — save_batch_parallel
+#
+# Pipeline per batch:
+#   1. dask.compute(R_batch, G_batch, B_batch)  — one optimized graph traversal
+#      using N_WORKERS threads (h5netcdf releases GIL during reads)
+#   2. ProcessPoolExecutor.submit(_save_rgb_worker, ...)  — PIL resize + JPEG
+#      encode runs in real processes (no GIL), 24 frames/batch in parallel
+#
+# _ensure_dirs is defined here (not a separate cell) because it starts with _
+# and marimo treats such names as cell-private.
+# ---------------------------------------------------------------------------
+@app.cell
+def _(
+    BATCH_SIZE, IMG_HEIGHT, IMG_WIDTH, JPEG_QUALITY, N_WORKERS, OUT_ROOT,
+    Path, ProcessPoolExecutor, as_completed, dask, pd, tqdm,
+):
+    # save_rgb_worker lives in e5_helpers.py so ProcessPoolExecutor can
+    # pickle it — marimo compiles cells into isolated files, so module-level
+    # definitions inside the notebook are not visible to worker processes.
+    from e5_helpers import save_rgb_worker as _save_rgb_worker
+
+    def _ensure_dirs(root):
+        root = Path(root)
+        for sub in ("msl", "wmax", "tcwv", "rgb"):
+            (root / sub).mkdir(parents=True, exist_ok=True)
+
+    def save_batch_parallel(
+        R, G, B,
+        start, end,
+        out_root=OUT_ROOT,
+        width=IMG_WIDTH,
+        height=IMG_HEIGHT,
+        quality=JPEG_QUALITY,
+        batch_size=BATCH_SIZE,
+        n_workers=N_WORKERS,
+    ):
+        out_root = Path(out_root)
+        _ensure_dirs(out_root)
+        rgb_dir = out_root / "rgb"
+
+        times   = R.sel(time=slice(start, end)).time.values
+        n_total = len(times)
+
+        with ProcessPoolExecutor(max_workers=n_workers) as pool:
+            with tqdm(total=n_total, desc="Saving RGB frames", unit="frame") as pbar:
+                for i in range(0, n_total, batch_size):
+                    batch_times = times[i : i + batch_size]
+
+                    # --- Step 1: compute all three arrays together ---
+                    R_np, G_np, B_np = dask.compute(
+                        R.sel(time=batch_times),
+                        G.sel(time=batch_times),
+                        B.sel(time=batch_times),
+                    )
+
+                    # --- Step 2: submit CPU-bound PIL work to process pool ---
+                    futures = [
+                        pool.submit(
+                            _save_rgb_worker,
+                            (
+                                R_np.values[j],
+                                G_np.values[j],
+                                B_np.values[j],
+                                str(rgb_dir / f"{pd.Timestamp(t).strftime('%Y%m%d_%H')}_rgb.jpeg"),
+                                width, height, quality,
+                            ),
+                        )
+                        for j, t in enumerate(batch_times)
+                    ]
+
+                    # --- Step 3: collect and update progress ---
+                    for fut in as_completed(futures):
+                        try:
+                            fut.result()
+                        except Exception as e:
+                            print(f"\n[skip] {e}")
+                        pbar.update(1)
+
+        print(f"\nDone: {n_total} images -> {rgb_dir}")
+
+    return (save_batch_parallel,)
+
+
+# ---------------------------------------------------------------------------
+# Cell 10 — Visualization helper (unchanged)
+# ---------------------------------------------------------------------------
 @app.cell
 def _(plt):
     def show_rgb_and_channels(rgb_da, parts=None):
-        """
-        Show the combined RGB plus the three individual channels in a 2x2 grid.
-        Each subplot is square, and the image is stretched to fill (no empty space).
-        """
+        """Show the combined RGB plus three individual channels in a 2×2 grid."""
         arr = rgb_da.values  # (lat, lon, 3) in [0,1]
 
         fig, axes = plt.subplots(2, 2, figsize=(10, 10), constrained_layout=True)
         axes = axes.ravel()
 
-        # --- RGB composite ---
         axes[0].imshow(
             arr, origin="upper",
             extent=[float(rgb_da.longitude.min()), float(rgb_da.longitude.max()),
@@ -126,10 +321,8 @@ def _(plt):
         )
         axes[0].set_title("RGB composite")
 
-        # --- individual channels ---
         cmap_list = ["Reds", "Greens", "Blues"]
-        titles = ["R: -MSLP anomaly", "G: max ws10", "B: TCWV"]
-
+        titles    = ["R: -MSLP anomaly", "G: max ws10", "B: TCWV"]
         for i in range(3):
             axes[i + 1].imshow(
                 arr[:, :, i], origin="upper", cmap=cmap_list[i],
@@ -149,184 +342,54 @@ def _(plt):
     return (show_rgb_and_channels,)
 
 
+# ---------------------------------------------------------------------------
+# Cell 11 — Open dataset
+# ---------------------------------------------------------------------------
 @app.cell
-def _(Path):
-    # ---------------- image pipeline config ----------------
-    R_RANGE = (-20.0, 20.0)   # MSLP anomaly [hPa]
-    G_RANGE = (0.0, 35.0)     # 10m wind daily max [m/s]
-    B_RANGE = (20.0, 70.0)    # TCWV daily mean [kg m^-2]; set to (10,60) for mid-lats
-    TCWV_NONLIN = "sqrt"      # None | "sqrt" | "log"
-
-    OUT_ROOT = Path("./openclip_ready_512")
-    OUT_ROOT.mkdir(exist_ok=True)
-    (OUT_ROOT / "red").mkdir(exist_ok=True)
-    (OUT_ROOT / "green").mkdir(exist_ok=True)
-    (OUT_ROOT / "blue").mkdir(exist_ok=True)
-    (OUT_ROOT / "rgb").mkdir(exist_ok=True)
-
-    SAVE_SIZE = 512
-    JPEG_QUALITY = 90
-    N_WORKERS = 8  # threads for writing JPEGs (I/O bound)
-
-    return B_RANGE, G_RANGE, JPEG_QUALITY, N_WORKERS, OUT_ROOT, R_RANGE, SAVE_SIZE, TCWV_NONLIN
+def _(END, LAT_MAX, LAT_MIN, LON_MAX, LON_MIN, N_IO_THREADS, START, open_four):
+    ds = open_four(
+        START, END,
+        lat_min=LAT_MIN, lat_max=LAT_MAX,
+        lon_min=LON_MIN, lon_max=LON_MAX,
+        n_io_threads=N_IO_THREADS,
+    )
+    return (ds,)
 
 
+# ---------------------------------------------------------------------------
+# Cell 12 — Inspect dataset
+# ---------------------------------------------------------------------------
 @app.cell
-def _(
-    B_RANGE, G_RANGE, Image, JPEG_QUALITY, N_WORKERS, OUT_ROOT,
-    Path, R_RANGE, SAVE_SIZE, TCWV_NONLIN,
-    ThreadPoolExecutor, as_completed, np, pd, threading, xr,
-):
-    # ---------------- helpers ----------------
-    def _get(ds, names):
-        for n in names:
-            if n in ds:
-                return ds[n]
-        raise KeyError(f"Vars {list(ds.data_vars)} do not include any of {names}")
-
-    def _rescale01(da, vmin, vmax, eps=1e-6, nonlin=None):
-        x = (da - vmin) / (vmax - vmin + eps)
-        x = x.clip(0, 1)
-        if nonlin == "sqrt":
-            x = xr.apply_ufunc(np.sqrt, x, dask="allowed")
-        elif nonlin == "log":
-            x = xr.apply_ufunc(lambda y: np.log1p(9 * y) / np.log(10), x, dask="allowed")
-        return x
-
-    def _to_uint8_img(arr01, size=512):
-        arr01 = np.asarray(arr01)
-        arr01 = np.clip(arr01, 0, 1)
-        if arr01.ndim == 2:
-            arr01 = np.stack([arr01, arr01, arr01], axis=-1)
-        img = Image.fromarray((arr01 * 255).astype(np.uint8))
-        return img.resize((size, size), resample=Image.BILINEAR)
-
-    # ---------------- core: precompute once for whole period ----------------
-    def precompute_daily_channels(ds, mean_msl):
-        """
-        ds: Dataset with msl, u10, v10, tcwv (time, latitude, longitude), native 0–360 lon okay
-        mean_msl: Dataset with climatology on 'doy' (1..366) and same lat/lon
-        Returns daily DataArrays (time, lat, lon): R*, G*, B* in 0..1
-        """
-        msl  = _get(ds, ["msl", "MSL", "mslp", "msl_hPa"])
-        u10  = _get(ds, ["u10", "VAR_10U"])
-        v10  = _get(ds, ["v10", "VAR_10V"])
-        tcwv = _get(ds, ["tcwv", "TCWV"])
-
-        if msl.attrs.get("units", "").lower() in ("pa", "pascal", "pascals"):
-            msl = msl / 100.0
-            msl.attrs["units"] = "hPa"
-
-        ws10 = xr.apply_ufunc(np.hypot, u10, v10, dask="parallelized", output_dtypes=[u10.dtype])
-
-        msl_daymean  = msl.resample(time="1D").mean()
-        ws10_daymax  = ws10.resample(time="1D").max()
-        tcwv_daymean = tcwv.resample(time="1D").mean()
-
-        clim = _get(mean_msl, ["MSL", "msl", "msl_mean", "msl_hPa"])
-        doy_index = msl_daymean["time"].dt.dayofyear
-        clim_on_time = clim.sel(doy=doy_index).drop_vars("doy")
-        msl_daymean  = msl_daymean.transpose("time", "latitude", "longitude")
-        clim_on_time = clim_on_time.transpose("time", "latitude", "longitude")
-        msl_anom = msl_daymean - clim_on_time
-
-        R = 1.0 - _rescale01(msl_anom, *R_RANGE)                    # lows bright
-        G = _rescale01(ws10_daymax, *G_RANGE)                        # intensity
-        B = _rescale01(tcwv_daymean, *B_RANGE, nonlin=TCWV_NONLIN)  # moist footprint
-
-        R = R.chunk({"time": 1})
-        G = G.chunk({"time": 1})
-        B = B.chunk({"time": 1})
-
-        return R, G, B
-
-    def _ensure_dirs(root):
-        root = Path(root)
-        (root / "msl").mkdir(parents=True, exist_ok=True)
-        (root / "wmax").mkdir(parents=True, exist_ok=True)
-        (root / "tcwv").mkdir(parents=True, exist_ok=True)
-        (root / "rgb").mkdir(parents=True, exist_ok=True)
-
-    # ---------------- saver: iterate only to write files ----------------
-    def save_range_fast(R, G, B, start, end, out_root=OUT_ROOT, size=SAVE_SIZE, quality=JPEG_QUALITY):
-        out_root = Path(out_root)
-        _ensure_dirs(out_root)
-        dates = pd.date_range(start=start, end=end, freq="D")
-        total = len(dates)
-        counter = 0
-        lock = threading.Lock()
-
-        def _save_one(ts):
-            nonlocal counter
-            ymd = pd.to_datetime(ts).strftime("%Y%m%d")
-            try:
-                r = R.sel(time=[ts]).isel(time=0)
-                g = G.sel(time=[ts]).isel(time=0)
-                b = B.sel(time=[ts]).isel(time=0)
-                rgb = xr.concat([r, g, b], dim="channel").transpose("latitude", "longitude", "channel")
-                img_rgb = _to_uint8_img(rgb.values, size=size)
-                img_rgb.save(out_root / "rgb" / f"{ymd}_rgb.jpeg", "JPEG", quality=quality, optimize=True)
-            except Exception as e:
-                print(f"[skip] {ymd}: {e}")
-            finally:
-                with lock:
-                    counter += 1
-                    print(f"\r[{counter}/{total}] processed {ymd}", end="", flush=True)
-
-        with ThreadPoolExecutor(max_workers=N_WORKERS) as ex:
-            futures = [ex.submit(_save_one, t) for t in dates]
-            for f in as_completed(futures):
-                f.result()
-        print(f"\n✅ Finished writing {total} images to {out_root}/rgb/")
-
-    def save_range_fast_single(R, start, end, out_root=OUT_ROOT, size=SAVE_SIZE, quality=JPEG_QUALITY):
-        out_root = Path(out_root)
-        _ensure_dirs(out_root)
-        dates = pd.date_range(start=start, end=end, freq="D")
-
-        def _save_one(ts):
-            ymd = pd.to_datetime(ts).strftime("%Y%m%d")
-            try:
-                r = R.sel(time=[ts]).isel(time=0).values
-                H, W = r.shape
-                rgb = np.zeros((H, W, 3), dtype=np.float32)
-                rgb[..., 0] = r
-                img_rgb = _to_uint8_img(rgb, size=size)
-                img_rgb.save(out_root / "rgb" / f"{ymd}_rgb.jpeg", "JPEG", quality=quality, optimize=True)
-            except Exception as e:
-                print(f"[skip] {ymd}: {e}")
-
-        with ThreadPoolExecutor(max_workers=N_WORKERS) as ex:
-            futures = [ex.submit(_save_one, t) for t in dates]
-            for f in futures:
-                f.result()
-
-    return precompute_daily_channels, save_range_fast, save_range_fast_single
+def _(ds):
+    ds
+    return
 
 
+# ---------------------------------------------------------------------------
+# Cell 13 — Load DOY climatology (MSLP)
+# ---------------------------------------------------------------------------
 @app.cell
 def _(xr):
-    # DOY climatology (Zarr) for MSLP
     file_msl = "/glade/work/ncheruku/research/era5_climatology/era5_climatology_1991_2020/MSL_Mean_1991_2020.zarr"
     mean_msl = xr.open_dataset(file_msl, engine="zarr")
     return file_msl, mean_msl
 
 
+# ---------------------------------------------------------------------------
+# Cell 14 — Precompute channel DataArrays (lazy, dask-backed)
+# ---------------------------------------------------------------------------
 @app.cell
 def _(ds, mean_msl, precompute_daily_channels):
     R, G, B = precompute_daily_channels(ds, mean_msl)
     return B, G, R
 
 
+# ---------------------------------------------------------------------------
+# Cell 15 — Run the parallel save
+# ---------------------------------------------------------------------------
 @app.cell
-def _(B, G, R, save_range_fast):
-    save_range_fast(R, G, B, start="2017-06-01", end="2017-12-01")
-    return
-
-
-@app.cell
-def _():
-    # save_range_fast_single(R, start="2017-06-01", end="2017-11-30")
+def _(B, END, G, R, START, save_batch_parallel):
+    save_batch_parallel(R, G, B, start=START, end=END)
     return
 
 
