@@ -200,7 +200,7 @@ def _(
         "temporal_extent": {
             "start": TEMPORAL_START,
             "end": TEMPORAL_END,
-            "interval": "Daily",
+            "interval": "TBD",  # updated dynamically after ingestion
         },
         # --- 5. PHYSICS & CHANNELS ---
         "channels": {
@@ -228,7 +228,7 @@ def _(
             "coordinate_system": "degrees_north / degrees_east (negative for west)",
         },
         "hurricane_matching": {
-            "logic": "Per image date, find all storms in spatial domain; pick obs closest to 12Z per storm",
+            "logic": "TBD",  # updated dynamically after enrichment
             "columns": "hurricane_present, n_storms, max_wind_kts, max_category, storm_ids, storm_lats, storm_lons",
         },
         "saffir_simpson_scale": {
@@ -360,10 +360,12 @@ def _(mo):
 
 
 @app.cell
-def _(PROJECT_ROOT):
+def _(PROJECT_ROOT, TEMPORAL_END, TEMPORAL_START, table):
     from helpers.hurricane_metadata import (
-        build_daily_hurricane_lookup,
+        build_hurricane_lookup,
+        enrich_image_rows,
         filter_to_domain,
+        infer_temporal_resolution,
         load_ibtracs,
     )
 
@@ -372,8 +374,8 @@ def _(PROJECT_ROOT):
     # Load IBTrACS North Atlantic, filtered to our temporal range
     _ibtracs_raw = load_ibtracs(
         _ibtracs_path,
-        start_date="2016-01-01",
-        end_date="2018-12-31",
+        start_date=TEMPORAL_START,
+        end_date=TEMPORAL_END,
     )
 
     # Keep only observations inside the ERA5 spatial domain
@@ -385,29 +387,30 @@ def _(PROJECT_ROOT):
         lon_max=330.0,
     )
 
-    # One-row-per-storm-per-day → daily aggregate lookup
-    hurricane_lookup = build_daily_hurricane_lookup(_ibtracs_domain)
+    # Auto-detect temporal resolution from the image table
+    _scanner = table.to_lance().scanner(columns=["id", "dt"])
+    _id_dt = _scanner.to_table().to_pandas()
+    _freq = infer_temporal_resolution(_id_dt["dt"])
+
+    # Build IBTrACS lookup at detected resolution
+    hurricane_lookup = build_hurricane_lookup(_ibtracs_domain, freq=_freq)
 
     print(
         f"IBTrACS: {len(_ibtracs_raw)} obs loaded, "
         f"{len(_ibtracs_domain)} in domain, "
-        f"{len(hurricane_lookup)} unique days with storms"
+        f"{len(hurricane_lookup)} unique {_freq} buckets with storms"
     )
-    return (hurricane_lookup,)
+    return hurricane_lookup, _freq, _id_dt
 
 
 @app.cell
-def _(hurricane_lookup, json, table):
+def _(_freq, _id_dt, hurricane_lookup, json, table):
     import pyarrow as _pa
 
     from helpers.hurricane_metadata import enrich_image_rows
 
-    # Read lightweight columns (no blobs) via Lance scanner
-    _scanner = table.to_lance().scanner(columns=["id", "dt"])
-    _id_dt = _scanner.to_table().to_pandas()
-
-    # Compute hurricane columns for every image row
-    _hurricane_df = enrich_image_rows(_id_dt["dt"], hurricane_lookup)
+    # Compute hurricane columns for every image row at detected resolution
+    _hurricane_df = enrich_image_rows(_id_dt["dt"], hurricane_lookup, freq=_freq)
     _hurricane_df["id"] = _id_dt["id"].values
 
     # Build Arrow table with types matching the LanceDB table schema
@@ -420,18 +423,23 @@ def _(hurricane_lookup, json, table):
     # Merge hurricane columns into the table, matched on "id"
     table.merge_insert("id").when_matched_update_all().execute(_merge_tbl)
 
-    # Update row_count in schema metadata
+    # Update row_count, temporal interval, and matching logic in schema metadata
     _row_count = table.count_rows()
     _raw_meta = table.schema.metadata or {}
     _ds_info = json.loads(_raw_meta.get(b"dataset_info", b"{}"))
     _ds_info["row_count"] = _row_count
+    _ds_info["temporal_extent"]["interval"] = _freq
+    _ds_info["hurricane_matching"]["logic"] = (
+        f"Per image timestamp (freq={_freq}), find nearest IBTrACS obs "
+        f"in spatial domain; pick obs closest to bucket center per storm"
+    )
     _new_meta = {"dataset_info": json.dumps(_ds_info), "version": "1.0"}
     table.to_lance().replace_schema_metadata(_new_meta)
 
     _n_with = int(_hurricane_df["hurricane_present"].sum())
     print(
-        f"Hurricane enrichment complete: "
-        f"{_n_with}/{len(_hurricane_df)} days with storms, "
+        f"Hurricane enrichment complete ({_freq}): "
+        f"{_n_with}/{len(_hurricane_df)} timesteps with storms, "
         f"row_count metadata set to {_row_count}"
     )
     return
