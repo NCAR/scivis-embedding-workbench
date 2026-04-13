@@ -182,17 +182,10 @@ def precompute_daily_channels(ds, mean_msl, *, r_range, g_range, b_range,
 # ---------------------------------------------------------------------------
 # Save pipeline
 # ---------------------------------------------------------------------------
-def _ensure_dirs(root):
-    root = Path(root)
-    for sub in ("msl", "wmax", "tcwv", "rgb"):
-        (root / sub).mkdir(parents=True, exist_ok=True)
-
-
 def save_batch_parallel(R, G, B, start, end, *, out_root, width, height,
                         quality, batch_size, n_workers, device):
     out_root = Path(out_root)
-    _ensure_dirs(out_root)
-    rgb_dir = out_root / "rgb"
+    out_root.mkdir(parents=True, exist_ok=True)
 
     times   = R.sel(time=slice(start, end)).time.values
     n_total = len(times)
@@ -224,7 +217,7 @@ def save_batch_parallel(R, G, B, start, end, *, out_root, width, height,
                         save_jpeg_worker,
                         (
                             resized_batch[j],
-                            str(rgb_dir / f"{pd.Timestamp(t).strftime('%Y%m%d_%H')}_rgb.jpeg"),
+                            str(out_root / f"{pd.Timestamp(t).strftime('%Y%m%d_%H')}_rgb.jpeg"),
                             quality,
                         ),
                     )
@@ -239,7 +232,7 @@ def save_batch_parallel(R, G, B, start, end, *, out_root, width, height,
                         print(f"\n[skip] {e}", flush=True)
                     pbar.update(1)
 
-    print(f"\nDone: {n_total} images -> {rgb_dir}", flush=True)
+    print(f"\nDone: {n_total} images -> {out_root}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -268,7 +261,8 @@ def parse_args():
     p.add_argument("--tcwv-nonlin", default="sqrt", choices=["sqrt", "log", "none"],
                    help="Nonlinear transform for TCWV channel")
     # Output
-    p.add_argument("--out-root", default="./openclip_ready_896x256")
+    _default_out = str(Path(__file__).resolve().parents[2].parent / "openclip_ready_896x256")
+    p.add_argument("--out-root", default=_default_out)
     p.add_argument("--width",    type=int, default=896, help="Output image width px")
     p.add_argument("--height",   type=int, default=256, help="Output image height px")
     p.add_argument("--quality",  type=int, default=90,  help="JPEG quality (1-95)")
