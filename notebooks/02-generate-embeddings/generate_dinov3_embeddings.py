@@ -68,25 +68,18 @@ def _(mo):
     mo.md(r"""
     ## Configuration
 
-    Update the **Project data root** field to point to your LanceDB data directory.
-    Changing it here reactively updates all downstream path variables.
+    Set paths below. Update `PROJECT_ROOT` to switch between environments.
     """)
     return
 
 
 @app.cell
-def _(mo):
-    project_root_input = mo.ui.text(
-        value="/Users/ncheruku/Documents/Work/sample_data",
-        label="Project data root",
-        full_width=True,
-    )
-    return (project_root_input,)
+def _(Path):
+    # Local Mac (for reference):
+    # PROJECT_ROOT = Path("/Users/ncheruku/Documents/Work/sample_data")
 
-
-@app.cell
-def _(Path, project_root_input):
-    PROJECT_ROOT = Path(project_root_input.value)
+    # NCAR Casper
+    PROJECT_ROOT = Path("/glade/work/ncheruku/research/sample_data")
 
     # Project folder name — must match the SOURCE_PROJECT used during ingest.
     # This is the subfolder inside shared_source/ that holds the source LanceDB.
@@ -109,7 +102,6 @@ def _(Path, project_root_input):
         IMAGE_W,
         IMG_RAW_TBL_NAME,
         PROJECT_ROOT,
-        SOURCE_PROJECT,
         SOURCE_URI,
     )
 
@@ -133,9 +125,9 @@ def _(get_model_info):
 
     MODEL = model_info["default_model"]
     SCRIPT = model_info["script_path"]
-    BATCH = model_info["default_batch"]
-    WORKERS = model_info["default_workers"]
-    SCAN_BATCH = model_info.get("default_scan_batch", 1000)
+    BATCH = 256        # A100: override registry default (64)
+    WORKERS = 4       # A100: override registry default (5); half of 32 cores
+    SCAN_BATCH = 8192  # A100: override registry default (1000); 128 GB RAM
 
     print(f"Family: {PROJECT_NAME}")
     print(f"Script: {model_info['script']}")
@@ -401,7 +393,7 @@ def _(mo):
 
 @app.cell
 def _(patch_tbl):
-    patch_tbl.create_index(metric="cosine", index_type="IVF_PQ", num_partitions=128, num_sub_vectors=64, accelerator="mps", vector_column_name="embedding")
+    patch_tbl.create_index(metric="cosine", index_type="IVF_PQ", num_partitions=2048, num_sub_vectors=64, accelerator="cuda", vector_column_name="embedding")
     return
 
 
