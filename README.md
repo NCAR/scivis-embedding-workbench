@@ -1,7 +1,7 @@
 # SciVis Embeddings Workbench
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/NCAR/bams-ai-data-exploration/blob/main/notebooks/02-generate-embeddings/generate_dinov3_embeddings.ipynb)
-[![Tests](https://github.com/NCAR/bams-ai-data-exploration/actions/workflows/tests.yml/badge.svg)](https://github.com/NCAR/bams-ai-data-exploration/actions/workflows/tests.yml)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/NCAR/scivis-embedding-workbench/blob/main/notebooks/02-generate-embeddings/generate_dinov3_embeddings.ipynb)
+[![Tests](https://github.com/NCAR/scivis-embedding-workbench/actions/workflows/tests.yml/badge.svg)](https://github.com/NCAR/scivis-embedding-workbench/actions/workflows/tests.yml)
 [![Python 3.13](https://img.shields.io/badge/python-3.13-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/License-BSD_3--Clause-blue.svg)](https://opensource.org/licenses/BSD-3-Clause)
 [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
@@ -19,8 +19,8 @@ These steps are intended for someone running the project locally for the first t
 ### 2) Clone the repository
 
 ```bash
-git clone https://github.com/NCAR/bams-ai-data-exploration.git
-cd bams-ai-data-exploration
+git clone https://github.com/NCAR/scivis-embedding-workbench.git
+cd scivis-embedding-workbench
 ```
 
 ### 3) Install dependencies
