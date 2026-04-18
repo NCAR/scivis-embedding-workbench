@@ -5,6 +5,9 @@
 [![Python 3.13](https://img.shields.io/badge/python-3.13-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/License-BSD_3--Clause-blue.svg)](https://opensource.org/licenses/BSD-3-Clause)
 [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
+[![codecov](https://codecov.io/gh/NCAR/scivis-embedding-workbench/graph/badge.svg)](https://codecov.io/gh/NCAR/scivis-embedding-workbench)
+[![CodeQL](https://github.com/NCAR/scivis-embedding-workbench/actions/workflows/codeql.yml/badge.svg)](https://github.com/NCAR/scivis-embedding-workbench/actions/workflows/codeql.yml)
+[![Docs](https://img.shields.io/badge/docs-gh--pages-blue)](https://ncar.github.io/scivis-embedding-workbench/)
 
 ## Getting Started
 
