@@ -68,17 +68,22 @@ def test_limit_omitted_when_negative():
     assert "--limit" not in cmd
 
 
-# ── image_size ─────────────────────────────────────────────────────────────────
+# ── image_h / image_w ──────────────────────────────────────────────────────────
 
 def test_image_size_omitted_when_none():
-    cmd = build(image_size=None)
-    assert "--image_size" not in cmd
+    """When image_h and image_w are both None, no --image_h/--image_w flags appear."""
+    cmd = build(image_h=None, image_w=None)
+    assert "--image_h" not in cmd
+    assert "--image_w" not in cmd
 
 
 def test_image_size_included_when_set():
-    cmd = build(image_size=224)
-    assert "--image_size" in cmd
-    assert "224" in cmd
+    """When image_h and image_w are set, both flags appear in the command."""
+    cmd = build(image_h=256, image_w=896)
+    assert "--image_h" in cmd
+    assert "--image_w" in cmd
+    assert "256" in cmd
+    assert "896" in cmd
 
 
 # ── extra_args ─────────────────────────────────────────────────────────────────
