@@ -108,7 +108,8 @@ def build_cli_command(
     workers: int = 4,
     dtype: str = "fp16",
     limit: int = 0,
-    image_size=None,
+    image_h: Optional[int] = None,
+    image_w: Optional[int] = None,
     pretrained: Optional[str] = None,
     extra_args: dict = None,
 ) -> str:
@@ -147,8 +148,8 @@ def build_cli_command(
     if limit and limit > 0:
         parts.extend(["--limit", str(limit)])
 
-    if image_size is not None:
-        parts.extend(["--image_size", str(image_size)])
+    if image_h is not None and image_w is not None:
+        parts.extend(["--image_h", str(image_h), "--image_w", str(image_w)])
 
     if extra_args:
         for k, v in extra_args.items():
@@ -171,7 +172,8 @@ def run_experiment(
     workers: int = 4,
     dtype: str = "fp16",
     limit: int = 0,
-    image_size=None,
+    image_h: Optional[int] = None,
+    image_w: Optional[int] = None,
     pretrained: Optional[str] = None,
     extra_args: dict = None,
 ) -> int:
@@ -192,7 +194,8 @@ def run_experiment(
         workers=workers,
         dtype=dtype,
         limit=limit,
-        image_size=image_size,
+        image_h=image_h,
+        image_w=image_w,
         pretrained=pretrained,
         extra_args=extra_args,
     )

@@ -1,7 +1,7 @@
 # SciVis Embeddings Workbench
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/NCAR/bams-ai-data-exploration/blob/main/notebooks/02-generate-embeddings/generate_dinov3_embeddings.ipynb)
-[![Tests](https://github.com/NCAR/bams-ai-data-exploration/actions/workflows/tests.yml/badge.svg)](https://github.com/NCAR/bams-ai-data-exploration/actions/workflows/tests.yml)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/NCAR/scivis-embedding-workbench/blob/main/notebooks/02-generate-embeddings/generate_dinov3_embeddings.ipynb)
+[![Tests](https://github.com/NCAR/scivis-embedding-workbench/actions/workflows/tests.yml/badge.svg)](https://github.com/NCAR/scivis-embedding-workbench/actions/workflows/tests.yml)
 [![Python 3.13](https://img.shields.io/badge/python-3.13-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/License-BSD_3--Clause-blue.svg)](https://opensource.org/licenses/BSD-3-Clause)
 [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
@@ -19,8 +19,8 @@ These steps are intended for someone running the project locally for the first t
 ### 2) Clone the repository
 
 ```bash
-git clone https://github.com/NCAR/bams-ai-data-exploration.git
-cd bams-ai-data-exploration
+git clone https://github.com/NCAR/scivis-embedding-workbench.git
+cd scivis-embedding-workbench
 ```
 
 ### 3) Install dependencies
@@ -90,6 +90,67 @@ git push -u origin <short-feature-name>
    - What changed
    - Why it changed
    - How you tested it
+
+## Running Marimo on NCAR Casper
+
+To access a Marimo notebook running on a Casper compute node from your local browser, follow these steps.
+
+### 1. Start Marimo on the Compute Node
+
+From your active session on a Casper node (e.g., `casper39`), start the Marimo server. You must use the `--host 0.0.0.0` flag to allow the SSH tunnel to connect.
+
+```bash
+uv run marimo edit --host 0.0.0.0 --port 2718
+```
+
+- **Note the Node ID:** Look at your terminal prompt (e.g., `user@casper39`).
+- **Note the Port:** Default is `2718`.
+- **Copy the Token:** Marimo will output a URL with an `access_token`.
+
+### 2. Create an SSH Tunnel (Local Machine)
+
+Open a new terminal window on your laptop and run the following command. This uses a "ProxyJump" to get through the NCAR login gateway to your specific compute node.
+
+```bash
+ssh -J <USER>@casper.hpc.ucar.edu -L 2718:localhost:2718 <USER>@<NODE_ID>.hpc.ucar.edu
+```
+
+- Replace `<USER>` with your NCAR username.
+- Replace `<NODE_ID>` with the specific node you are on (e.g., `casper39`).
+
+### 3. Open in Browser
+
+Once the tunnel is established, copy the link provided by Marimo in Step 1 and paste it into your browser. Ensure the URL starts with `localhost`:
+
+```
+http://localhost:2718?access_token=...
+```
+
+### Optional: Simplify with SSH Config
+
+To avoid typing long commands, add this to your local `~/.ssh/config` file:
+
+```
+Host casper-gateway
+    HostName casper.hpc.ucar.edu
+    User <USER>
+
+Host casper*
+    HostName %h.hpc.ucar.edu
+    User <USER>
+    ProxyJump casper-gateway
+```
+
+Now, the tunnel command becomes much shorter:
+
+```bash
+ssh -L 2718:localhost:2718 casper39
+```
+
+### Troubleshooting
+
+- **Address already in use:** If port `2718` is taken on your laptop, change the first number: `-L 9999:localhost:2718`. You would then visit `localhost:9999` in your browser.
+- **VPN:** Ensure you are connected to the NCAR VPN if working remotely.
 
 ## Development Tips
 

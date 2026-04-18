@@ -78,28 +78,84 @@ def _(mo):
 
 @app.cell
 def _(Path, lancedb):
-    PROJECT_ROOT = Path("/Users/ncheruku/Documents/Work/sample_data")
+    # ── Paths ────────────────────────────────────────────────────────────────
+    # Root directory containing all project data
+    # Local Mac (for reference):
+    # PROJECT_ROOT = Path("/Users/ncheruku/Documents/Work/sample_data")
 
-    IMG_RAW_TBL_NAME = "era5_sample_images"
+    # NCAR Casper
+    PROJECT_ROOT = Path("/glade/work/ncheruku/research/sample_data")
 
-    db_dir = PROJECT_ROOT / "data" / "lancedb" / "shared_source"
+    # Folder holding the source images to ingest
+    # image_dir = PROJECT_ROOT / "data" / "processed_rgb_rect"  # local Mac / rectangular daily
+    image_dir = PROJECT_ROOT / "data" / "preprocessed_rgb_hourly"
 
-    image_dir = PROJECT_ROOT / "data" / "processed_rgb"
+    # ── Database ─────────────────────────────────────────────────────────────
+    # Project name — used as the subfolder inside shared_source/ that holds
+    # this dataset's LanceDB database. Rename this to separate datasets.
+    SOURCE_PROJECT = "era5_sample_images"
 
-    RESOLUTION = 256
+    # LanceDB storage directory — each project lives in its own subfolder
+    db_dir = PROJECT_ROOT / "data" / "lancedb" / "shared_source" / SOURCE_PROJECT
 
+    # Generic table name — the project folder already identifies the dataset,
+    # so the table itself can have a stable, renameable name.
+    IMG_RAW_TBL_NAME = "images"
+
+    # ── Image dimensions ─────────────────────────────────────────────────────
+    # Stored image width and height in pixels.
+    # Both must be multiples of 16 for DINO patch compatibility.
+    # For a 7:2 geographic aspect ratio (lon 70° × lat 20°) use WIDTH=896, HEIGHT=256.
+    WIDTH  = 896
+    HEIGHT = 256
+
+    # Square thumbnail size stored alongside each image for quick previews
     THUMB_RESOLUTION = 64
 
+    # JPEG compression quality for the thumbnail blob (1–95)
     JPEG_QUALITY = 90
+
+    # ── Temporal extent ──────────────────────────────────────────────────────
+    # Date range covered by this dataset (ISO-8601, inclusive)
+    TEMPORAL_START = "2016-01-01"
+    TEMPORAL_END   = "2018-12-31"
+
+    # ── Filename format ───────────────────────────────────────────────────────
+    # strptime pattern used to parse the image timestamp from the filename.
+    # Must match the actual filenames in image_dir.
+    # DT_FORMAT = "%Y%m%d_rgb.jpeg"      # daily: e.g. 20160101_rgb.jpeg
+    DT_FORMAT = "%Y%m%d_%H_rgb.jpeg"     # hourly: e.g. 20171222_16_rgb.jpeg
+
+    # ── Temporal subsampling ──────────────────────────────────────────────────
+    # If the source folder contains finer-grained data than you need, set this
+    # to a pandas freq string to ingest only the aligned subset.
+    # Examples: "3h" (every 3 hours), "6h", "12h", "D" (daily noon), None (all)
+    # INGEST_RESOLUTION = None           # ingest all files
+    INGEST_RESOLUTION = "3h"             # keep only timestamps aligned to 3-hour boundaries
+
+    # ── Ingest performance ────────────────────────────────────────────────────
+    # Number of parallel worker processes for image decoding/resizing
+    # Set to (total_cores - 4) to leave headroom for OS and main process
+    WORKERS = 28
+    # Rows written to LanceDB per transaction (larger = fewer writes, more RAM)
+    # 8192 is safe with 128GB RAM; reduces LanceDB commit overhead significantly
+    BATCH_SIZE = 8192
 
     # Connect to DB
     db = lancedb.connect(str(db_dir))
     return (
+        BATCH_SIZE,
+        DT_FORMAT,
+        HEIGHT,
         IMG_RAW_TBL_NAME,
+        INGEST_RESOLUTION,
         JPEG_QUALITY,
         PROJECT_ROOT,
-        RESOLUTION,
+        TEMPORAL_END,
+        TEMPORAL_START,
         THUMB_RESOLUTION,
+        WIDTH,
+        WORKERS,
         db,
         db_dir,
         image_dir,
@@ -115,13 +171,23 @@ def _(mo):
 
 
 @app.cell
-def _(JPEG_QUALITY, RESOLUTION, THUMB_RESOLUTION, datetime, json, timezone):
+def _(
+    HEIGHT,
+    JPEG_QUALITY,
+    TEMPORAL_END,
+    TEMPORAL_START,
+    THUMB_RESOLUTION,
+    WIDTH,
+    datetime,
+    json,
+    timezone,
+):
     # 1. Define the metadata structure
 
     metadata_dict = {
         # --- 1. CORE IDENTITY ---
         "dataset_name": "ERA5 Hurricane Training Data (RGB Composites)",
-        "description": "Daily weather composites (MSL Anomaly, Wind, TCWV) for hurricane detection.",
+        "description": "Hourly weather composites at 3h resolution (MSL Anomaly, Wind, TCWV) for hurricane detection.",
         "author": "cherukuru",
         "generated_by_script": "e5_channels.ipynb",
         "created_at": datetime.now(timezone.utc).isoformat(),  # Dynamic Timestamp
@@ -136,7 +202,7 @@ def _(JPEG_QUALITY, RESOLUTION, THUMB_RESOLUTION, datetime, json, timezone):
         },
         # --- 3. OUTPUT SPECIFICATIONS ---
         "image_specs": {
-            "resolution": [RESOLUTION, RESOLUTION],
+            "resolution": [WIDTH, HEIGHT],
             "thumb_resolution": [THUMB_RESOLUTION, THUMB_RESOLUTION],
             "format": "JPEG",
             "quality": JPEG_QUALITY,
@@ -152,9 +218,9 @@ def _(JPEG_QUALITY, RESOLUTION, THUMB_RESOLUTION, datetime, json, timezone):
             "notes": "North Atlantic / Caribbean (approx 100W to 30W)",
         },
         "temporal_extent": {
-            "start": "2016-01-01",  # Updated Start
-            "end": "2018-12-31",  # Updated End
-            "interval": "Daily",
+            "start": TEMPORAL_START,
+            "end": TEMPORAL_END,
+            "interval": "3h",  # updated dynamically after ingestion
         },
         # --- 5. PHYSICS & CHANNELS ---
         "channels": {
@@ -164,9 +230,9 @@ def _(JPEG_QUALITY, RESOLUTION, THUMB_RESOLUTION, datetime, json, timezone):
                 "unit": "hPa",
                 "logic": "Inverted (Low Pressure = Bright Red)",
             },
-            "green": {"variable": "10m Wind Speed (Daily Max)", "range": [0.0, 35.0], "unit": "m/s", "logic": "Linear"},
+            "green": {"variable": "10m Wind Speed (Hourly)", "range": [0.0, 35.0], "unit": "m/s", "logic": "Linear"},
             "blue": {
-                "variable": "Total Column Water Vapor (Daily Mean)",
+                "variable": "Total Column Water Vapor (Hourly)",
                 "range": [20.0, 70.0],
                 "unit": "kg/m^2",
                 "logic": "Square Root Scaled",
@@ -182,7 +248,7 @@ def _(JPEG_QUALITY, RESOLUTION, THUMB_RESOLUTION, datetime, json, timezone):
             "coordinate_system": "degrees_north / degrees_east (negative for west)",
         },
         "hurricane_matching": {
-            "logic": "Per image date, find all storms in spatial domain; pick obs closest to 12Z per storm",
+            "logic": "TBD",  # updated dynamically after enrichment
             "columns": "hurricane_present, n_storms, max_wind_kts, max_category, storm_ids, storm_lats, storm_lons",
         },
         "saffir_simpson_scale": {
@@ -266,29 +332,62 @@ def _():
     # ingest_images_to_table(
     #     table,
     #     image_dir=image_dir,
-    #     width=RESOLUTION,
-    #     height=RESOLUTION,
-    #     dt_format="%Y%m%d_rgb.jpeg",
+    #     width=WIDTH,
+    #     height=HEIGHT,
+    #     dt_format=DT_FORMAT,
     #     thumb_size=THUMB_RESOLUTION,
-    #     batch_size=256
+    #     batch_size=BATCH_SIZE
     # )
     return
 
 
 @app.cell
-def _(RESOLUTION, THUMB_RESOLUTION, image_dir, ingest_images_to_table, table):
-    # parallel workflow
+def _(
+    BATCH_SIZE,
+    DT_FORMAT,
+    HEIGHT,
+    INGEST_RESOLUTION,
+    THUMB_RESOLUTION,
+    WIDTH,
+    WORKERS,
+    datetime,
+    image_dir,
+    ingest_images_to_table,
+    table,
+):
+    from pathlib import Path as _Path
+
+    import pandas as _pd
+
+    from helpers.parallel_ingest_images import list_images_flat
+
+    # Build file list, optionally filtered to a coarser temporal resolution.
+    # For example, INGEST_RESOLUTION="3h" keeps only files whose timestamp
+    # aligns to a 3-hour boundary (00, 03, 06, ... UTC), skipping the rest.
+    _all_files = list_images_flat(image_dir)
+    if INGEST_RESOLUTION is not None and DT_FORMAT is not None:
+        _files = [
+            p for p in _all_files
+            if (lambda dt: dt == dt.floor(INGEST_RESOLUTION))(
+                _pd.Timestamp(datetime.strptime(p.name, DT_FORMAT))
+            )
+        ]
+        print(f"Resolution filter '{INGEST_RESOLUTION}': {len(_files)}/{len(_all_files)} files selected")
+    else:
+        _files = _all_files
+        print(f"No resolution filter: ingesting all {len(_files)} files")
 
     ingest_images_to_table(
-        table_obj=table,  # Open LanceDB table to write into
-        image_dir=image_dir,  # Directory containing input images
-        width=RESOLUTION,  # Stored image width
-        height=RESOLUTION,  # Stored image height
-        dt_format="%Y%m%d_rgb.jpeg",  # Datetime pattern extracted from filename
-        thumb_size=THUMB_RESOLUTION,  # Square thumbnail size in pixels
-        batch_size=2048,  # Rows written to DB per transaction
-        workers=31,  # Number of CPU processes for image processing
-        max_in_flight=31 * 16,  # Max images allowed in RAM at once (memory safety)
+        table_obj=table,
+        image_dir=image_dir,
+        width=WIDTH,
+        height=HEIGHT,
+        dt_format=DT_FORMAT,
+        thumb_size=THUMB_RESOLUTION,
+        batch_size=BATCH_SIZE,
+        workers=WORKERS,
+        max_in_flight=WORKERS * 16,
+        files=_files,
     )
     return
 
@@ -304,10 +403,12 @@ def _(mo):
 
 
 @app.cell
-def _(PROJECT_ROOT):
+def _(PROJECT_ROOT, TEMPORAL_END, TEMPORAL_START, table):
     from helpers.hurricane_metadata import (
-        build_daily_hurricane_lookup,
+        build_hurricane_lookup,
+        enrich_image_rows,
         filter_to_domain,
+        infer_temporal_resolution,
         load_ibtracs,
     )
 
@@ -316,8 +417,8 @@ def _(PROJECT_ROOT):
     # Load IBTrACS North Atlantic, filtered to our temporal range
     _ibtracs_raw = load_ibtracs(
         _ibtracs_path,
-        start_date="2016-01-01",
-        end_date="2018-12-31",
+        start_date=TEMPORAL_START,
+        end_date=TEMPORAL_END,
     )
 
     # Keep only observations inside the ERA5 spatial domain
@@ -329,30 +430,29 @@ def _(PROJECT_ROOT):
         lon_max=330.0,
     )
 
-    # One-row-per-storm-per-day → daily aggregate lookup
-    hurricane_lookup = build_daily_hurricane_lookup(_ibtracs_domain)
+    # Auto-detect temporal resolution from the image table
+    _scanner = table.to_lance().scanner(columns=["id", "dt"])
+    id_dt = _scanner.to_table().to_pandas()
+    freq = infer_temporal_resolution(id_dt["dt"])
+
+    # Build IBTrACS lookup at detected resolution
+    hurricane_lookup = build_hurricane_lookup(_ibtracs_domain, freq=freq)
 
     print(
         f"IBTrACS: {len(_ibtracs_raw)} obs loaded, "
         f"{len(_ibtracs_domain)} in domain, "
-        f"{len(hurricane_lookup)} unique days with storms"
+        f"{len(hurricane_lookup)} unique {freq} buckets with storms"
     )
-    return (hurricane_lookup,)
+    return enrich_image_rows, freq, hurricane_lookup, id_dt
 
 
 @app.cell
-def _(hurricane_lookup, json, table):
+def _(enrich_image_rows, freq, hurricane_lookup, id_dt, json, table):
     import pyarrow as _pa
 
-    from helpers.hurricane_metadata import enrich_image_rows
-
-    # Read lightweight columns (no blobs) via Lance scanner
-    _scanner = table.to_lance().scanner(columns=["id", "dt"])
-    _id_dt = _scanner.to_table().to_pandas()
-
-    # Compute hurricane columns for every image row
-    _hurricane_df = enrich_image_rows(_id_dt["dt"], hurricane_lookup)
-    _hurricane_df["id"] = _id_dt["id"].values
+    # Compute hurricane columns for every image row at detected resolution
+    _hurricane_df = enrich_image_rows(id_dt["dt"], hurricane_lookup, freq=freq)
+    _hurricane_df["id"] = id_dt["id"].values
 
     # Build Arrow table with types matching the LanceDB table schema
     # (pandas defaults to int64/double/large_string, but schema has int32/float/string)
@@ -364,18 +464,23 @@ def _(hurricane_lookup, json, table):
     # Merge hurricane columns into the table, matched on "id"
     table.merge_insert("id").when_matched_update_all().execute(_merge_tbl)
 
-    # Update row_count in schema metadata
+    # Update row_count, temporal interval, and matching logic in schema metadata
     _row_count = table.count_rows()
     _raw_meta = table.schema.metadata or {}
     _ds_info = json.loads(_raw_meta.get(b"dataset_info", b"{}"))
     _ds_info["row_count"] = _row_count
+    _ds_info["temporal_extent"]["interval"] = freq
+    _ds_info["hurricane_matching"]["logic"] = (
+        f"Per image timestamp (freq={freq}), find nearest IBTrACS obs "
+        f"in spatial domain; pick obs closest to bucket center per storm"
+    )
     _new_meta = {"dataset_info": json.dumps(_ds_info), "version": "1.0"}
     table.to_lance().replace_schema_metadata(_new_meta)
 
     _n_with = int(_hurricane_df["hurricane_present"].sum())
     print(
-        f"Hurricane enrichment complete: "
-        f"{_n_with}/{len(_hurricane_df)} days with storms, "
+        f"Hurricane enrichment complete ({freq}): "
+        f"{_n_with}/{len(_hurricane_df)} timesteps with storms, "
         f"row_count metadata set to {_row_count}"
     )
     return

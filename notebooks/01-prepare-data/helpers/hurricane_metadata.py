@@ -1,14 +1,16 @@
 """IBTrACS hurricane metadata helpers.
 
 Load, spatially filter, and temporally match IBTrACS storm observations
-to daily ERA5 image timestamps, producing per-image hurricane columns.
+to ERA5 image timestamps at any temporal resolution, producing per-image
+hurricane columns.
 
 Functions
 ---------
-load_ibtracs        – read & clean the IBTrACS CSV
-filter_to_domain    – spatial bounding-box filter
-build_daily_hurricane_lookup – one-row-per-storm-per-day → daily aggregate dict
-enrich_image_rows   – map image datetimes to hurricane column values
+load_ibtracs              – read & clean the IBTrACS CSV
+filter_to_domain          – spatial bounding-box filter
+infer_temporal_resolution – detect freq string from image dt column
+build_hurricane_lookup    – aggregate IBTrACS obs into a time-bucketed lookup dict
+enrich_image_rows         – map image datetimes to hurricane column values
 """
 
 from __future__ import annotations
@@ -138,55 +140,120 @@ def filter_to_domain(
 
 
 # ---------------------------------------------------------------------------
-# Daily lookup builder
+# Temporal resolution helpers
 # ---------------------------------------------------------------------------
 
-def build_daily_hurricane_lookup(df: pd.DataFrame) -> dict[str, dict]:
-    """Build a date-keyed lookup of aggregated hurricane columns.
+def infer_temporal_resolution(dt_series: pd.Series) -> str:
+    """Infer the temporal resolution of the image dataset from its timestamps.
 
-    For each calendar date, selects one representative observation per
-    storm (closest to 12 UTC, preferring obs with valid WMO_WIND),
+    Computes the median gap between consecutive sorted timestamps and maps
+    it to a pandas frequency string.
+
+    Parameters
+    ----------
+    dt_series : pd.Series[datetime64]
+        The ``dt`` column of the image LanceDB table.
+
+    Returns
+    -------
+    str
+        One of ``"h"``, ``"3h"``, ``"6h"``, ``"12h"``, or ``"D"``.
+    """
+    ts = pd.to_datetime(dt_series).sort_values().reset_index(drop=True)
+    if len(ts) < 2:
+        return "D"
+
+    median_gap = ts.diff().dropna().median()
+    hours = median_gap.total_seconds() / 3600.0
+
+    if hours <= 1:
+        return "h"
+    if hours <= 3:
+        return "3h"
+    if hours <= 6:
+        return "6h"
+    if hours <= 12:
+        return "12h"
+    return "D"
+
+
+def _bucket_key(ts: pd.Timestamp, freq: str) -> str:
+    """Floor *ts* to the freq bucket and return a string key."""
+    bucketed = ts.floor(freq)
+    if freq == "D":
+        return bucketed.strftime("%Y%m%d")
+    # minute-level freqs (future-proofing)
+    if bucketed.minute != 0:
+        return bucketed.strftime("%Y%m%d%H%M")
+    return bucketed.strftime("%Y%m%d%H")
+
+
+# ---------------------------------------------------------------------------
+# Generic lookup builder
+# ---------------------------------------------------------------------------
+
+def build_hurricane_lookup(df: pd.DataFrame, freq: str = "D") -> dict[str, dict]:
+    """Build a time-bucket-keyed lookup of aggregated hurricane columns.
+
+    For each time bucket, selects one representative observation per storm
+    (closest to the bucket center, preferring obs with valid WMO_WIND),
     then aggregates across storms.
 
     Parameters
     ----------
     df : pd.DataFrame
         IBTrACS data already filtered to domain and date range.
+    freq : str
+        Pandas frequency string controlling bucket size. Examples:
+        ``"D"`` (daily), ``"6h"`` (6-hourly), ``"3h"`` (3-hourly), ``"h"`` (hourly).
 
     Returns
     -------
     dict[str, dict]
-        ``{ "20170906": { "hurricane_present": True, ... }, ... }``
+        ``{ "20170906": { "hurricane_present": True, ... }, ... }``  (daily)
+        ``{ "2017090612": { ... }, ... }``  (sub-daily)
     """
     if df.empty:
         return {}
 
     df = df.copy()
-    df["date_str"] = df["ISO_TIME"].dt.strftime("%Y%m%d")
-    df["hours_from_noon"] = (
-        (df["ISO_TIME"].dt.hour - 12).abs()
-        + df["ISO_TIME"].dt.minute / 60.0
+
+    # Assign each obs to its freq bucket
+    df["bucket"] = df["ISO_TIME"].apply(lambda t: _bucket_key(pd.Timestamp(t), freq))
+
+    # Compute bucket center for "closest to center" ranking
+    freq_td = pd.tseries.frequencies.to_offset(freq).nanos / 1e9  # seconds
+    half_td = pd.Timedelta(seconds=freq_td / 2)
+
+    def _bucket_center(ts: pd.Timestamp) -> pd.Timestamp:
+        return ts.floor(freq) + half_td
+
+    df["bucket_center"] = df["ISO_TIME"].apply(
+        lambda t: _bucket_center(pd.Timestamp(t))
+    )
+    df["secs_from_center"] = (
+        (df["ISO_TIME"] - df["bucket_center"]).abs().dt.total_seconds()
     )
     df["has_wind"] = df["WMO_WIND"].notna()
 
-    # Sort so that for each (storm, day) the "best" observation comes first:
-    #   1. has wind data  (True > False when descending)
-    #   2. closest to noon
+    # Sort so best observation per (storm, bucket) comes first:
+    #   1. has valid wind data  (True > False → descending)
+    #   2. closest to bucket center (ascending)
     df.sort_values(
-        ["SID", "date_str", "has_wind", "hours_from_noon"],
+        ["SID", "bucket", "has_wind", "secs_from_center"],
         ascending=[True, True, False, True],
         inplace=True,
     )
-    # One row per storm per day
-    df.drop_duplicates(subset=["SID", "date_str"], keep="first", inplace=True)
+    # One row per storm per bucket
+    df.drop_duplicates(subset=["SID", "bucket"], keep="first", inplace=True)
 
     lookup: dict[str, dict] = {}
-    for date_str, grp in df.groupby("date_str"):
-        max_wind = grp["WMO_WIND"].max()  # NaN-safe (skips NaN)
+    for bucket_key, grp in df.groupby("bucket"):
+        max_wind = grp["WMO_WIND"].max()
         max_cat = wind_to_saffir_simpson(
             max_wind if not pd.isna(max_wind) else float("nan")
         )
-        lookup[date_str] = {
+        lookup[bucket_key] = {
             "hurricane_present": True,
             "n_storms": len(grp),
             "max_wind_kts": float(max_wind) if not pd.isna(max_wind) else None,
@@ -216,6 +283,7 @@ _DEFAULTS: dict[str, Any] = {
 def enrich_image_rows(
     dt_series: pd.Series,
     lookup: dict[str, dict],
+    freq: str = "D",
 ) -> pd.DataFrame:
     """Map a Series of image datetimes to hurricane-column values.
 
@@ -224,7 +292,9 @@ def enrich_image_rows(
     dt_series : pd.Series[datetime64]
         One entry per image row.
     lookup : dict
-        Output of :func:`build_daily_hurricane_lookup`.
+        Output of :func:`build_hurricane_lookup`.
+    freq : str
+        The same frequency string used when building *lookup*.
 
     Returns
     -------
@@ -233,10 +303,9 @@ def enrich_image_rows(
     """
     records = []
     for dt in dt_series:
-        key = pd.Timestamp(dt).strftime("%Y%m%d")
+        key = _bucket_key(pd.Timestamp(dt), freq)
         records.append(lookup.get(key, _DEFAULTS))
 
     out = pd.DataFrame(records)
-    # Ensure consistent column order
     out = out[list(_DEFAULTS.keys())]
     return out

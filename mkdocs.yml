@@ -1,0 +1,55 @@
+site_name: SciVis Embedding Workbench
+site_description: A research toolkit for generating and exploring patch-level embeddings from scientific imagery.
+site_url: https://NCAR.github.io/scivis-embedding-workbench/
+repo_url: https://github.com/NCAR/scivis-embedding-workbench
+repo_name: NCAR/scivis-embedding-workbench
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to system preference
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - content.code.annotate
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - attr_list
+
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - Pipeline:
+    - ERA5 Batch Processing: pipeline/data-processing.md
+    - Image Database: pipeline/prepare-data.md
+    - Embeddings: pipeline/embeddings.md
+    - Dashboard: pipeline/dashboard.md
+  - Examples: examples.md

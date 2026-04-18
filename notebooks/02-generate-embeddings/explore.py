@@ -26,8 +26,8 @@ def _(mo):
         full_width=True,
     )
     source_db_path = mo.ui.text(
-        value="/Users/ncheruku/Documents/Work/sample_data/data/lancedb/shared_source",
-        label="Source DB path",
+        value="/Users/ncheruku/Documents/Work/sample_data/data/lancedb/shared_source/era5_sample_images",
+        label="Source DB path (project folder)",
         full_width=True,
     )
     mo.vstack([embedding_db_path, source_db_path])
@@ -111,7 +111,7 @@ def _(embedding_db_path, experiment_selector, lancedb, source_db_path):
 
     _img_name = config.get("tbl_img_emb") or config.get("img_emb_table_current")
     _patch_name = config.get("tbl_patch_emb") or config.get("patch_emb_table_current")
-    _src_name = config.get("source", "era5_sample_images")
+    _src_name = config.get("source", "images")
 
     img_emb_tbl = _db.open_table(_img_name)
     patch_emb_tbl = _db.open_table(_patch_name)

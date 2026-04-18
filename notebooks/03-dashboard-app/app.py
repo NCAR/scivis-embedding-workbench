@@ -83,12 +83,11 @@ def resolve_source_path(experiments_db_path: str, source_path_from_config: str) 
 
 
 @app.function
-def make_extent_map(lat_min, lat_max, lon_min, lon_max, num_patch_tokens, patch_size=16, theme="light", experiment=""):
+def make_extent_map(lat_min, lat_max, lon_min, lon_max, spatial_h, spatial_w, patch_size=16, theme="light", experiment=""):
     """Cartopy map cropped to spatial extent with patch grid line overlay."""
     import matplotlib.pyplot as plt
     import cartopy.crs as ccrs
     import cartopy.feature as cfeature
-    import math
     colors = get_theme_colors(theme)
     proj = ccrs.PlateCarree()
     fig, ax = plt.subplots(figsize=(8, 5), subplot_kw={"projection": proj})
@@ -103,17 +102,18 @@ def make_extent_map(lat_min, lat_max, lon_min, lon_max, num_patch_tokens, patch_
     gl.right_labels = False
     gl.xlabel_style = {"color": colors["text"], "fontsize": 8}
     gl.ylabel_style = {"color": colors["text"], "fontsize": 8}
-    n_side = int(math.sqrt(num_patch_tokens))
-    img_size = n_side * patch_size
-    lat_step = (lat_max - lat_min) / n_side
-    lon_step = (lon_max - lon_min) / n_side
-    for i in range(1, n_side):
+    n_rows, n_cols = spatial_h, spatial_w
+    img_h = n_rows * patch_size
+    img_w = n_cols * patch_size
+    lat_step = (lat_max - lat_min) / n_rows
+    lon_step = (lon_max - lon_min) / n_cols
+    for i in range(1, n_rows):
         ax.plot([lon_min, lon_max], [lat_min + i * lat_step] * 2,
                 transform=proj, color=colors["grid"], linewidth=0.4, zorder=3)
-    for j in range(1, n_side):
+    for j in range(1, n_cols):
         ax.plot([lon_min + j * lon_step] * 2, [lat_min, lat_max],
                 transform=proj, color=colors["grid"], linewidth=0.4, zorder=3)
-    _title = f"{img_size}×{img_size}px  |  {n_side}×{n_side} patch grid ({num_patch_tokens} patches)"
+    _title = f"{img_w}×{img_h}px  |  {n_rows}×{n_cols} patch grid ({n_rows * n_cols} patches)"
     if experiment:
         _title = f"{experiment}  —  {_title}"
     ax.set_title(_title, color=colors["text"], fontsize=10)
@@ -400,11 +400,12 @@ def _(
 
         # Map sub-tab
         _ext = _dataset_info.get("spatial_extent", {})
-        if _ext and "num_patch_tokens" in config:
+        if _ext and "attention_spatial_h" in config and "attention_spatial_w" in config:
             _map_fig = make_extent_map(
                 lat_min=float(_ext["lat_min"]), lat_max=float(_ext["lat_max"]),
                 lon_min=float(_ext["lon_min"]), lon_max=float(_ext["lon_max"]),
-                num_patch_tokens=int(config["num_patch_tokens"]),
+                spatial_h=int(config["attention_spatial_h"]),
+                spatial_w=int(config["attention_spatial_w"]),
                 patch_size=int(config.get("patch_size", 16)),
                 theme="dark" if map_theme.value else "light",
                 experiment=experiment_selector.value,
@@ -412,7 +413,7 @@ def _(
             _map_subtab = mo.as_html(_map_fig)
             plt.close(_map_fig)
         else:
-            _map_subtab = mo.callout(mo.md("Spatial extent or `num_patch_tokens` not available."), kind="warn")
+            _map_subtab = mo.callout(mo.md("Spatial extent or `attention_spatial_h`/`attention_spatial_w` not available."), kind="warn")
 
         _data_tabs = mo.ui.tabs({"Source": _src_subtab, "Experiment": _exp_subtab})
         _t = f'<div style="flex:3 3 0;min-width:0;overflow:auto;">{_data_tabs.text}</div>'
@@ -1264,10 +1265,11 @@ def _(mo, pca_tab, umap_tab):
 @app.function
 def get_spatial_extent(src_img_tbl, config):
     """Read lat/lon bounds and patch grid size from table schema metadata + config."""
-    import json, math
+    import json
     lat_min, lat_max = 0.0, 10.0
     lon_min, lon_max = 0.0, 10.0
-    n_side = 16
+    n_rows = 14
+    n_cols = 14
     try:
         raw_meta = src_img_tbl.schema.metadata or {}
         ds_info = json.loads(raw_meta.get(b"dataset_info", "{}")) if raw_meta else {}
@@ -1277,22 +1279,23 @@ def get_spatial_extent(src_img_tbl, config):
             lat_max = float(ext["lat_max"])
             lon_min = float(ext["lon_min"])
             lon_max = float(ext["lon_max"])
-        npt = config.get("num_patch_tokens")
-        if npt:
-            n_side = int(math.sqrt(int(npt)))
+        if config.get("attention_spatial_h"):
+            n_rows = int(config["attention_spatial_h"])
+        if config.get("attention_spatial_w"):
+            n_cols = int(config["attention_spatial_w"])
     except Exception:
         pass
-    return lat_min, lat_max, lon_min, lon_max, n_side
+    return lat_min, lat_max, lon_min, lon_max, n_rows, n_cols
 
 
 @app.function
-def build_coastline_traces(lat_min, lat_max, lon_min, lon_max, n_side):
+def build_coastline_traces(lat_min, lat_max, lon_min, lon_max, n_rows, n_cols):
     """Return a list of go.Scatter coastline traces clipped to the given extent."""
     import numpy as np
     import plotly.graph_objects as go
 
-    lat_step = (lat_max - lat_min) / n_side
-    lon_step = (lon_max - lon_min) / n_side
+    lat_step = (lat_max - lat_min) / n_rows
+    lon_step = (lon_max - lon_min) / n_cols
     buffer = max(lat_step, lon_step)
 
     lon_offset = 360 if lon_min > 180 else 0
@@ -1346,16 +1349,16 @@ def build_coastline_traces(lat_min, lat_max, lon_min, lon_max, n_side):
 
 
 @app.function
-def make_patch_heatmap(lat_min, lat_max, lon_min, lon_max, n_side):
-    """Invisible N×N heatmap whose z values are flat patch indices (click target)."""
+def make_patch_heatmap(lat_min, lat_max, lon_min, lon_max, n_rows, n_cols):
+    """Invisible N×M heatmap whose z values are flat patch indices (click target)."""
     import numpy as np
     import plotly.graph_objects as go
 
-    lat_step = (lat_max - lat_min) / n_side
-    lon_step = (lon_max - lon_min) / n_side
-    z = np.arange(n_side * n_side).reshape(n_side, n_side)
-    hm_x = [lon_min + (c + 0.5) * lon_step for c in range(n_side)]
-    hm_y = [lat_max - (r + 0.5) * lat_step for r in range(n_side)]
+    lat_step = (lat_max - lat_min) / n_rows
+    lon_step = (lon_max - lon_min) / n_cols
+    z = np.arange(n_rows * n_cols).reshape(n_rows, n_cols)
+    hm_x = [lon_min + (c + 0.5) * lon_step for c in range(n_cols)]
+    hm_y = [lat_max - (r + 0.5) * lat_step for r in range(n_rows)]
     return go.Heatmap(
         z=z, x=hm_x, y=hm_y,
         opacity=0.01,
@@ -1366,14 +1369,14 @@ def make_patch_heatmap(lat_min, lat_max, lon_min, lon_max, n_side):
 
 
 @app.function
-def make_selection_shape(patch_idx, lat_min, lat_max, lon_min, lon_max, n_side):
+def make_selection_shape(patch_idx, lat_min, lat_max, lon_min, lon_max, n_rows, n_cols):
     """Return a red rectangle shape dict for the selected patch, or None."""
     if patch_idx is None:
         return None
-    lat_step = (lat_max - lat_min) / n_side
-    lon_step = (lon_max - lon_min) / n_side
-    p_row = patch_idx // n_side
-    p_col = patch_idx % n_side
+    lat_step = (lat_max - lat_min) / n_rows
+    lon_step = (lon_max - lon_min) / n_cols
+    p_row = patch_idx // n_cols
+    p_col = patch_idx % n_cols
     x0 = lon_min + p_col * lon_step
     y1 = lat_max - p_row * lat_step
     y0 = y1 - lat_step
@@ -1441,7 +1444,7 @@ def build_geo_patch_figure(
 
 
 @app.function
-def apply_similarity_overlay(image_blob, matched_patch_distances, n_side, alpha_min=0.08, bg_color=(0, 0, 0)):
+def apply_similarity_overlay(image_blob, matched_patch_distances, n_rows, n_cols, alpha_min=0.08, bg_color=(0, 0, 0)):
     """Fade non-matched patches toward bg_color; matched patches stay opaque."""
     import io
     import numpy as np
@@ -1450,16 +1453,16 @@ def apply_similarity_overlay(image_blob, matched_patch_distances, n_side, alpha_
     img = Image.open(io.BytesIO(image_blob)).convert("RGBA")
     iw, ih = img.size
 
-    alpha_grid = np.full((n_side, n_side), alpha_min, dtype=np.float32)
+    alpha_grid = np.full((n_rows, n_cols), alpha_min, dtype=np.float32)
     if matched_patch_distances:
         dists = np.array(list(matched_patch_distances.values()), dtype=np.float32)
         d_min, d_max = dists.min(), dists.max()
         for pidx, dist in matched_patch_distances.items():
-            row, col = int(pidx) // n_side, int(pidx) % n_side
+            row, col = int(pidx) // n_cols, int(pidx) % n_cols
             norm = (dist - d_min) / (d_max - d_min + 1e-8)
             alpha_grid[row, col] = 1.0 - norm * 0.5
 
-    ph, pw = ih // n_side, iw // n_side
+    ph, pw = ih // n_rows, iw // n_cols
     alpha_up = np.repeat(np.repeat(alpha_grid, ph, axis=0), pw, axis=1)
     pad_h, pad_w = ih - alpha_up.shape[0], iw - alpha_up.shape[1]
     if pad_h > 0 or pad_w > 0:
@@ -1527,15 +1530,15 @@ def render_basemap(lat_min, lat_max, lon_min, lon_max, target_w=512, theme="ligh
 
 
 @app.function
-def build_spatial_filter_shapes(selected_indices, lat_min, lat_max, lon_min, lon_max, n_side):
+def build_spatial_filter_shapes(selected_indices, lat_min, lat_max, lon_min, lon_max, n_rows, n_cols):
     """Return a list of Plotly rect shapes highlighting each selected patch."""
     if not selected_indices:
         return []
-    lat_step = (lat_max - lat_min) / n_side
-    lon_step = (lon_max - lon_min) / n_side
+    lat_step = (lat_max - lat_min) / n_rows
+    lon_step = (lon_max - lon_min) / n_cols
     shapes = []
     for idx in selected_indices:
-        row, col = idx // n_side, idx % n_side
+        row, col = idx // n_cols, idx % n_cols
         x0 = lon_min + col * lon_step
         x1 = x0 + lon_step
         y1 = lat_max - row * lat_step
@@ -1582,14 +1585,14 @@ def _(config, map_theme, mo, set_ss_init, src_img_tbl, ss_load_button):
         )
     else:
         _theme = "dark" if map_theme.value else "light"
-        _lat_min, _lat_max, _lon_min, _lon_max, _n_side = get_spatial_extent(src_img_tbl, config)
-        _coast = build_coastline_traces(_lat_min, _lat_max, _lon_min, _lon_max, _n_side)
-        _heatmap = make_patch_heatmap(_lat_min, _lat_max, _lon_min, _lon_max, _n_side)
+        _lat_min, _lat_max, _lon_min, _lon_max, _n_rows, _n_cols = get_spatial_extent(src_img_tbl, config)
+        _coast = build_coastline_traces(_lat_min, _lat_max, _lon_min, _lon_max, _n_rows, _n_cols)
+        _heatmap = make_patch_heatmap(_lat_min, _lat_max, _lon_min, _lon_max, _n_rows, _n_cols)
         _bmap = render_basemap(_lat_min, _lat_max, _lon_min, _lon_max, theme=_theme)
         ss_init = dict(
             lat_min=_lat_min, lat_max=_lat_max,
             lon_min=_lon_min, lon_max=_lon_max,
-            n_side=_n_side,
+            n_rows=_n_rows, n_cols=_n_cols,
             coast_traces=_coast,
             heatmap_trace=_heatmap,
             basemap=_bmap,
@@ -1705,7 +1708,7 @@ def _(get_ss_spatial_filter, mo, ss_init):
         _active = get_ss_spatial_filter() or []
         _fig_sf.update_layout(
             shapes=build_spatial_filter_shapes(
-                _active, _d["lat_min"], _d["lat_max"], _d["lon_min"], _d["lon_max"], _d["n_side"]
+                _active, _d["lat_min"], _d["lat_max"], _d["lon_min"], _d["lon_max"], _d["n_rows"], _d["n_cols"]
             ),
             uirevision="spatial_filter_map",
             dragmode="select",
@@ -1728,14 +1731,15 @@ def _(
             # Box select: convert lat/lon bounds → patch indices (replaces selection)
             _lon0, _lon1 = min(_rng["x"]), max(_rng["x"])
             _lat0, _lat1 = min(_rng["y"]), max(_rng["y"])
-            _ns   = _d["n_side"]
-            _lnst = (_d["lon_max"] - _d["lon_min"]) / _ns
-            _ltst = (_d["lat_max"] - _d["lat_min"]) / _ns
-            _c0 = max(0,     int((_lon0 - _d["lon_min"]) / _lnst))
-            _c1 = min(_ns-1, int((_lon1 - _d["lon_min"]) / _lnst))
-            _r0 = max(0,     int((_d["lat_max"] - _lat1) / _ltst))
-            _r1 = min(_ns-1, int((_d["lat_max"] - _lat0) / _ltst))
-            _new = [r * _ns + c for r in range(_r0, _r1+1) for c in range(_c0, _c1+1)]
+            _n_rows = _d["n_rows"]
+            _n_cols = _d["n_cols"]
+            _lnst = (_d["lon_max"] - _d["lon_min"]) / _n_cols
+            _ltst = (_d["lat_max"] - _d["lat_min"]) / _n_rows
+            _c0 = max(0,        int((_lon0 - _d["lon_min"]) / _lnst))
+            _c1 = min(_n_cols-1, int((_lon1 - _d["lon_min"]) / _lnst))
+            _r0 = max(0,        int((_d["lat_max"] - _lat1) / _ltst))
+            _r1 = min(_n_rows-1, int((_d["lat_max"] - _lat0) / _ltst))
+            _new = [r * _n_cols + c for r in range(_r0, _r1+1) for c in range(_c0, _c1+1)]
             set_ss_spatial_filter(_new if _new else None)
         else:
             # Single click: toggle the clicked patch in/out of selection
@@ -1772,7 +1776,7 @@ def _(get_ss_patch, mo, src_img_tbl, ss_init, ss_selected_img_id):
         )
         _img_arr = _np_ss.array(_Image_ss.open(_io_ss.BytesIO(_row["image_blob"])).convert("RGB"))
         _sel = get_ss_patch()
-        _shape = make_selection_shape(_sel, _d["lat_min"], _d["lat_max"], _d["lon_min"], _d["lon_max"], _d["n_side"])
+        _shape = make_selection_shape(_sel, _d["lat_min"], _d["lat_max"], _d["lon_min"], _d["lon_max"], _d["n_rows"], _d["n_cols"])
         _fig = build_geo_patch_figure(
             _img_arr, _d["lon_min"], _d["lon_max"], _d["lat_min"], _d["lat_max"],
             _d["coast_traces"], _d["heatmap_trace"], _shape, theme=_theme,
@@ -1940,8 +1944,8 @@ def _(
     else:
         _d = ss_init
         _MAX = int(ss_max_gallery.value)
-        _IMG_SIZE = 256
-        _PATCH_SIZE = _IMG_SIZE // _d["n_side"]
+        _n_rows = _d["n_rows"]
+        _n_cols = _d["n_cols"]
 
         _groups = (
             ss_top_df.groupby("image_id")
@@ -1980,25 +1984,26 @@ def _(
                     for p in _data["patch_index"]
                     if (_img_id, int(p)) in _patch_dists
                 }
-                _blob = apply_similarity_overlay(_r["image_blob"], _matched, _d["n_side"])
+                _blob = apply_similarity_overlay(_r["image_blob"], _matched, _n_rows, _n_cols)
             else:
                 _im = _Image_g.open(_io_g.BytesIO(_r["image_blob"])).convert("RGB")
                 _tw, _th = _im.size
-                _sx, _sy = _tw / _IMG_SIZE, _th / _IMG_SIZE
+                _patch_w = _tw // _n_cols
+                _patch_h = _th // _n_rows
                 _draw = _ImageDraw_g.Draw(_im)
                 for _p in map(int, _data["patch_index"]):
-                    _grid_w = _IMG_SIZE // _PATCH_SIZE
-                    _pr, _pc = _p // _grid_w, _p % _grid_w
-                    _bx = (_pc * _PATCH_SIZE, _pr * _PATCH_SIZE, (_pc + 1) * _PATCH_SIZE, (_pr + 1) * _PATCH_SIZE)
-                    _draw.rectangle(
-                        (int(_bx[0]*_sx), int(_bx[1]*_sy), int(_bx[2]*_sx), int(_bx[3]*_sy)),
-                        outline=(255, 80, 0), width=2,
-                    )
+                    _pr, _pc = _p // _n_cols, _p % _n_cols
+                    _bx = (_pc * _patch_w, _pr * _patch_h, (_pc + 1) * _patch_w, (_pr + 1) * _patch_h)
+                    _draw.rectangle(_bx, outline=(255, 80, 0), width=2)
                 _buf = _io_g.BytesIO()
                 _im.save(_buf, format="JPEG", quality=85)
                 _blob = _buf.getvalue()
 
-            _thumbs.append((f"{str(_r['dt'])[:10]}  ·  d={_data['_distance']:.2f}", _blob, _r["dt"]))
+            # Resize to display dimensions before base64-encoding to keep HTML output small
+            _im_t = _Image_g.open(_io_g.BytesIO(_blob)).resize((_thumb_w, _thumb_h), _Image_g.LANCZOS)
+            _buf_t = _io_g.BytesIO()
+            _im_t.save(_buf_t, format="JPEG", quality=82)
+            _thumbs.append((f"{str(_r['dt'])[:10]}  ·  d={_data['_distance']:.2f}", _buf_t.getvalue(), _r["dt"]))
 
         _theme = "dark" if map_theme.value else "light"
         _n_patches = len(ss_top_df)
