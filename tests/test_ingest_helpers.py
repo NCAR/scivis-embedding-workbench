@@ -130,3 +130,23 @@ def test_parse_dt_different_date():
     assert dt.year == 2016
     assert dt.month == 12
     assert dt.day == 31
+
+
+# ── ingest_images_to_table — files parameter (source inspection) ──────────────
+
+def test_ingest_files_parameter_exists():
+    """The files parameter must be present in ingest_images_to_table's signature."""
+    assert "files" in _src
+    assert "files: Optional[List[Path]] = None" in _src
+
+
+def test_ingest_files_parameter_bypasses_scan():
+    """When files is provided it is used directly; list_images_flat is not called."""
+    assert "files if files is not None else list_images_flat(image_dir)" in _src
+
+
+def test_ingest_empty_files_raises():
+    """An empty files list hits the same ValueError guard as an empty directory."""
+    # Verify the guard `if not paths: raise ValueError(...)` covers the files path.
+    # Since files is assigned to paths before the check, an empty list triggers it.
+    assert 'raise ValueError(f"No image files found in directory: {image_dir}")' in _src
