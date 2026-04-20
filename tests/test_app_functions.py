@@ -24,10 +24,28 @@ def _extract(fn_name: str):
     return ns[fn_name]
 
 
+def _extract_group(*fn_names: str) -> dict:
+    """Extract multiple functions into a shared namespace so they can call each
+    other (e.g. render_thumbnail_gallery calls get_theme_colors)."""
+    ns: dict = {}
+    for fn_name in fn_names:
+        m = re.search(
+            rf"(^def {fn_name}\b.*?)(?=^@app\.|^def |\Z)",
+            _APP_SRC,
+            re.MULTILINE | re.DOTALL,
+        )
+        assert m, f"{fn_name} not found in app.py"
+        exec(m.group(1), ns)  # noqa: S102
+    return ns
+
+
 list_experiments       = _extract("list_experiments")
 resolve_source_path    = _extract("resolve_source_path")
 compute_thumb_dimensions = _extract("compute_thumb_dimensions")
 apply_brush_filter     = _extract("apply_brush_filter")
+
+_gallery_ns = _extract_group("get_theme_colors", "render_thumbnail_gallery")
+render_thumbnail_gallery = _gallery_ns["render_thumbnail_gallery"]
 
 
 # ── list_experiments ──────────────────────────────────────────────────────────
@@ -200,3 +218,84 @@ def test_no_rows_match_returns_empty():
     data = {"x": np.array([1.0, 2.0, 3.0])}
     result = apply_brush_filter(data, {"x": {"range": [10.0, 20.0]}})
     assert result == []
+
+
+# ── render_thumbnail_gallery (click-to-zoom lightbox) ────────────────────────
+
+class _StubDt:
+    """Minimal stand-in for a pandas Timestamp (only strftime is used)."""
+    def strftime(self, fmt):
+        return "2017-09-06 14:00"
+
+
+def _make_thumbs(n: int = 2):
+    # 1 byte of "jpeg" payload is enough — the function only base64-encodes it.
+    return [(f"img_{i}.jpg", b"\xff\xd8\xff", _StubDt()) for i in range(n)]
+
+
+def test_render_no_full_blobs_has_no_lightbox():
+    """Default behavior (no full_blobs): no checkbox / overlay markup is emitted."""
+    _count, html = render_thumbnail_gallery(
+        _make_thumbs(2), n_filtered=2, max_display=10,
+    )
+    assert 'type="checkbox"' not in html
+    assert "<style>" not in html
+    assert ":checked" not in html
+    # Base thumbnails still render
+    assert html.count("<img ") == 2
+
+
+def test_render_with_full_blobs_emits_css_lightbox():
+    """When full_blobs is supplied, each thumb gets a hidden checkbox + overlay label."""
+    thumbs = _make_thumbs(2)
+    full_blobs = [b"\xff\xd8\xff\xe0\xaa", b"\xff\xd8\xff\xe0\xbb"]
+    _count, html = render_thumbnail_gallery(
+        thumbs, n_filtered=2, max_display=10, full_blobs=full_blobs,
+    )
+    # Exactly one hidden checkbox per zoomable thumb
+    assert html.count('type="checkbox"') == 2
+    # CSS sibling selector drives the open state (no JS at all)
+    assert ":checked ~" in html
+    assert "cursor: zoom-in" in html
+    assert "cursor: zoom-out" in html
+    # Style block is emitted exactly once, not per-thumb
+    assert html.count("<style>") == 1
+    # No inline JS handlers (marimo strips these anyway)
+    assert "onclick" not in html
+    assert "showModal" not in html
+    # Two <img> per slot (thumb + full-res inside overlay) = 4 total
+    assert html.count("<img ") == 4
+
+
+def test_render_lightbox_ids_are_unique_per_render():
+    """Each thumb's checkbox gets a distinct id so labels toggle the right slot."""
+    thumbs = _make_thumbs(3)
+    full_blobs = [b"\x01", b"\x02", b"\x03"]
+    _count, html = render_thumbnail_gallery(
+        thumbs, n_filtered=3, max_display=10, full_blobs=full_blobs,
+    )
+    ids = re.findall(r'id="lb-([^"]+)"', html)
+    assert len(ids) == 3
+    assert len(set(ids)) == 3, f"lightbox ids should be unique: {ids}"
+
+
+def test_render_mixed_full_blobs_some_none():
+    """If full_blobs has a None entry, that thumb falls back to non-zoomable."""
+    thumbs = _make_thumbs(2)
+    full_blobs = [b"\x01", None]   # first zoomable, second not
+    _count, html = render_thumbnail_gallery(
+        thumbs, n_filtered=2, max_display=10, full_blobs=full_blobs,
+    )
+    assert html.count('type="checkbox"') == 1
+    # Style block still emitted (at least one slot is zoomable)
+    assert html.count("<style>") == 1
+
+
+def test_render_all_full_blobs_none_emits_no_style():
+    """If full_blobs is provided but every entry is None, no style block / CSS emitted."""
+    thumbs = _make_thumbs(2)
+    _count, html = render_thumbnail_gallery(
+        thumbs, n_filtered=2, max_display=10, full_blobs=[None, None],
+    )
+    assert "<style>" not in html
+    assert 'type="checkbox"' not in html

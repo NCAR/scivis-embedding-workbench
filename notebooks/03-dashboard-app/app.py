@@ -667,33 +667,97 @@ def composite_attention_overlay(
 
 @app.function
 def render_thumbnail_gallery(thumbs, n_filtered, max_display, theme="light",
-                             thumb_w=192, thumb_h=192):
-    """Build HTML for a theme-aware thumbnail gallery with datetime labels."""
+                             thumb_w=192, thumb_h=192, full_blobs=None):
+    """Build HTML for a theme-aware thumbnail gallery with datetime labels.
+
+    If `full_blobs` is a list aligned with `thumbs`, each thumbnail becomes
+    clickable: clicking opens the corresponding full-resolution image in a
+    pure-CSS lightbox overlay (hidden-checkbox sibling-selector technique —
+    no JavaScript, so it survives marimo's HTML sanitizer). Click anywhere
+    on the overlay to close.
+    """
     import base64
+    import uuid
 
     _c = get_theme_colors(theme)
     bg, text, border = _c["gallery_bg"], _c["text"], _c["border"]
 
+    # Per-render id prefix keeps checkbox ids unique across re-renders / cells
+    _render_id = uuid.uuid4().hex[:8]
+    _cls = f"lbx-{_render_id}"   # scoped class to avoid global CSS collisions
+
+    _has_any_full = (
+        full_blobs is not None
+        and any(fb is not None for fb in full_blobs[: len(thumbs)])
+    )
+
     imgs = []
-    for fname, blob, dt in thumbs:
+    for _i, (fname, blob, dt) in enumerate(thumbs):
         b64 = base64.b64encode(blob).decode()
         dt_str = dt.strftime("%Y-%m-%d %H:%M") if hasattr(dt, "strftime") else str(dt)
-        imgs.append(
-            f'<div style="display:inline-block;margin:3px;text-align:center">'
-            f'<img src="data:image/jpeg;base64,{b64}" '
-            f'style="width:{thumb_w}px;height:{thumb_h}px;object-fit:fill;border:1px solid {border};'
-            f'border-radius:4px" title="{fname}"/>'
-            f'<div style="font-size:11px;color:{text};max-width:{thumb_w}px;'
-            f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
-            f'{dt_str}</div></div>'
-        )
+
+        _has_full = full_blobs is not None and _i < len(full_blobs) and full_blobs[_i] is not None
+        if _has_full:
+            _slot = f"{_render_id}-{_i}"
+            _full_b64 = base64.b64encode(full_blobs[_i]).decode()
+            # Order matters: <input> must come before label + overlay so the
+            # `.lbx-cb:checked ~ .lbx-overlay` sibling selector can match.
+            imgs.append(
+                f'<span class="{_cls}-slot" style="display:inline-block;margin:3px;text-align:center;position:relative">'
+                f'<input type="checkbox" class="{_cls}-cb" id="lb-{_slot}">'
+                f'<label for="lb-{_slot}" class="{_cls}-thumb" title="{fname} — click to zoom">'
+                f'<img src="data:image/jpeg;base64,{b64}" '
+                f'style="width:{thumb_w}px;height:{thumb_h}px;object-fit:fill;'
+                f'border:1px solid {border};border-radius:4px;display:block"/>'
+                f'</label>'
+                f'<div style="font-size:11px;color:{text};max-width:{thumb_w}px;'
+                f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
+                f'{dt_str}</div>'
+                f'<label for="lb-{_slot}" class="{_cls}-overlay">'
+                f'<img src="data:image/jpeg;base64,{_full_b64}"/>'
+                f'</label>'
+                f'</span>'
+            )
+        else:
+            imgs.append(
+                f'<div style="display:inline-block;margin:3px;text-align:center">'
+                f'<img src="data:image/jpeg;base64,{b64}" '
+                f'style="width:{thumb_w}px;height:{thumb_h}px;object-fit:fill;border:1px solid {border};'
+                f'border-radius:4px" title="{fname}"/>'
+                f'<div style="font-size:11px;color:{text};max-width:{thumb_w}px;'
+                f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
+                f'{dt_str}</div></div>'
+            )
 
     count_msg = f"Showing {len(thumbs)} of {n_filtered} selected"
     if n_filtered > max_display:
         count_msg += f" (capped at {max_display})"
 
+    # Inject CSS only when at least one thumb has a full-res blob
+    _style = ""
+    if _has_any_full:
+        _style = (
+            f'<style>'
+            f'.{_cls}-cb {{ display: none; }}'
+            f'.{_cls}-thumb {{ cursor: zoom-in; display: inline-block; }}'
+            f'.{_cls}-overlay {{ '
+            f'display: none; position: fixed; inset: 0; '
+            f'background: rgba(0,0,0,0.85); z-index: 2147483647; '
+            f'align-items: center; justify-content: center; '
+            f'cursor: zoom-out; '
+            f'}}'
+            f'.{_cls}-cb:checked ~ .{_cls}-overlay {{ display: flex; }}'
+            f'.{_cls}-overlay img {{ '
+            f'max-width: 95vw; max-height: 95vh; '
+            f'border-radius: 4px; '
+            f'box-shadow: 0 8px 32px rgba(0,0,0,0.5); '
+            f'}}'
+            f'</style>'
+        )
+
     gallery_html = (
-        f'<div style="display:flex;flex-wrap:wrap;gap:4px;align-content:flex-start;'
+        _style
+        + f'<div class="{_cls}" style="display:flex;flex-wrap:wrap;gap:4px;align-content:flex-start;'
         f'height:600px;overflow-y:auto;background:{bg};'
         f'border-radius:8px;padding:8px;border:1px solid {border}">'
         + "".join(imgs)
@@ -1966,6 +2030,7 @@ def _(
         }
 
         _thumbs = []
+        _full_blobs = []
         _date_map = {}
         for _img_id, _data in _groups.iterrows():
             _r = (
@@ -1994,7 +2059,7 @@ def _(
                 for _p in map(int, _data["patch_index"]):
                     _pr, _pc = _p // _n_cols, _p % _n_cols
                     _bx = (_pc * _patch_w, _pr * _patch_h, (_pc + 1) * _patch_w, (_pr + 1) * _patch_h)
-                    _draw.rectangle(_bx, outline=(255, 80, 0), width=2)
+                    _draw.rectangle(_bx, outline=(0, 0, 0), width=2)
                 _buf = _io_g.BytesIO()
                 _im.save(_buf, format="JPEG", quality=85)
                 _blob = _buf.getvalue()
@@ -2004,6 +2069,8 @@ def _(
             _buf_t = _io_g.BytesIO()
             _im_t.save(_buf_t, format="JPEG", quality=82)
             _thumbs.append((f"{str(_r['dt'])[:10]}  ·  d={_data['_distance']:.2f}", _buf_t.getvalue(), _r["dt"]))
+            # Keep the pre-resize (annotated) blob for the click-to-zoom lightbox
+            _full_blobs.append(_blob)
 
         _theme = "dark" if map_theme.value else "light"
         _n_patches = len(ss_top_df)
@@ -2025,6 +2092,7 @@ def _(
         _, _gallery_html = render_thumbnail_gallery(
             _thumbs, _n_shown, _MAX, theme=_theme,
             thumb_w=_thumb_w, thumb_h=_thumb_h,
+            full_blobs=_full_blobs,
         )
 
         _df_merged = (
