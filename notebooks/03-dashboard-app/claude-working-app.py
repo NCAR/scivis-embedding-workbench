@@ -2159,8 +2159,7 @@ def _(get_viz_ds, mo):
     if _meta is None:
         viz_timestep   = mo.ui.slider(start=0, stop=0,  value=0,  label="Timestep",        show_value=True)
         viz_depth      = mo.ui.slider(start=0, stop=0,  value=0,  label="Depth (z index)",  show_value=True)
-        viz_resolution = mo.ui.slider(start=0, stop=40, value=28, label="Base resolution", show_value=True)
-        viz_quality    = mo.ui.slider(start=-8, stop=0, value=-4, label="Detail (-8=fast preview, 0=full)", show_value=True)
+        viz_resolution = mo.ui.slider(start=0, stop=40, value=28, label="Resolution level", show_value=True)
         viz_x          = mo.ui.range_slider(start=0, stop=100, value=[40, 60], label="X range", show_value=True)
         viz_y          = mo.ui.range_slider(start=0, stop=100, value=[40, 60], label="Y range", show_value=True)
         viz_field      = mo.ui.dropdown(options=["(none)"], value="(none)", label="Field")
@@ -2190,11 +2189,7 @@ def _(get_viz_ds, mo):
         )
         viz_resolution = mo.ui.slider(
             start=0, stop=int(_maxres), value=min(28, int(_maxres)),
-            label="Base resolution", show_value=True,
-        )
-        viz_quality = mo.ui.slider(
-            start=-8, stop=0, value=-4,
-            label="Detail (-8=fast preview, 0=full)", show_value=True,
+            label="Resolution level", show_value=True,
         )
         viz_x = mo.ui.range_slider(
             start=0, stop=_nx, value=[_cx0, _cx1],
@@ -2215,7 +2210,6 @@ def _(get_viz_ds, mo):
         viz_colormap,
         viz_depth,
         viz_field,
-        viz_quality,
         viz_resolution,
         viz_timestep,
         viz_x,
@@ -2235,7 +2229,6 @@ def _(
     viz_depth,
     viz_field,
     viz_load_button,
-    viz_quality,
     viz_resolution,
     viz_timestep,
     viz_url,
@@ -2284,15 +2277,13 @@ def _(
         )
 
         _controls = mo.vstack([
-            mo.hstack([viz_field, viz_timestep, viz_depth, viz_colormap, viz_quality], justify="start"),
+            mo.hstack([viz_field, viz_timestep, viz_depth, viz_resolution, viz_colormap], justify="start"),
             mo.hstack([viz_x, viz_y], justify="start"),
-            mo.hstack([mo.md("**Base resolution:**"), viz_resolution], justify="start"),
         ])
 
         try:
             _ds  = _meta["ds"]
             _res = int(viz_resolution.value)
-            _q   = int(viz_quality.value)
             _z   = int(viz_depth.value)
             _x0, _x1 = int(viz_x.value[0]), int(viz_x.value[1])
             _y0, _y1 = int(viz_y.value[0]), int(viz_y.value[1])
@@ -2312,7 +2303,6 @@ def _(
                 field=viz_field.value,
                 time=int(viz_timestep.value),
                 max_resolution=_res,
-                quality=_q,
             )
 
             # read() may return a generator (num_refinements>1) or array directly
@@ -2334,17 +2324,13 @@ def _(
             _vmin = float(np.nanpercentile(_slice, 2))
             _vmax = float(np.nanpercentile(_slice, 98))
 
-            # Normalize to uint8 for faster matplotlib rendering
-            _range = _vmax - _vmin if _vmax > _vmin else 1.0
-            _slice_8 = np.clip((_slice - _vmin) / _range * 255, 0, 255).astype(np.uint8)
-
             _im = _ax.imshow(
-                _slice_8,
+                _slice,
                 origin="lower",
                 cmap=viz_colormap.value,
                 aspect="auto",
-                vmin=0,
-                vmax=255,
+                vmin=_vmin,
+                vmax=_vmax,
                 extent=[_x0, _x1, _y0, _y1],
             )
             _cbar = _fig.colorbar(_im, ax=_ax, fraction=0.03, pad=0.02)
@@ -2354,7 +2340,7 @@ def _(
 
             _ax.set_title(
                 f"{viz_field.value}  ·  t={viz_timestep.value}  ·  z={_z}  ·  "
-                f"x=[{_x0},{_x1}]  y=[{_y0},{_y1}]  ·  res={_res}  ·  q={_q}",
+                f"x=[{_x0},{_x1}]  y=[{_y0},{_y1}]  ·  res={_res}",
                 color=_txt,
             )
             _ax.set_xlabel("X", color=_txt)
