@@ -2160,21 +2160,20 @@ def _(get_viz_ds, mo):
     """Build controls once a dataset is loaded."""
     _meta = get_viz_ds()
     if _meta is None:
-        viz_timestep = mo.ui.slider(start=0, stop=0,   value=0, label="Timestep",       show_value=True)
-        viz_depth    = mo.ui.slider(start=0, stop=0,   value=0, label="Depth (z index)", show_value=True)
-        viz_x        = mo.ui.range_slider(start=0, stop=1, value=[0, 1], label="X range", show_value=True)
-        viz_y        = mo.ui.range_slider(start=0, stop=1, value=[0, 1], label="Y range", show_value=True)
-        viz_field    = mo.ui.dropdown(options=["(none)"], value="(none)", label="Field")
-        viz_colormap = mo.ui.dropdown(
+        viz_timestep   = mo.ui.slider(start=0, stop=0,  value=0,  label="Timestep",       show_value=True)
+        viz_depth      = mo.ui.slider(start=0, stop=0,  value=0,  label="Depth (z index)", show_value=True)
+        viz_resolution = mo.ui.slider(start=0, stop=21, value=6,  label="Resolution level",show_value=True)
+        viz_field      = mo.ui.dropdown(options=["(none)"], value="(none)", label="Field")
+        viz_colormap   = mo.ui.dropdown(
             options=["viridis","plasma","inferno","magma","cividis","RdBu_r","coolwarm","turbo"],
             value="viridis", label="Colormap",
         )
+        viz_run_button = mo.ui.run_button(label="▶ Render slice")
     else:
-        _steps = _meta["steps"]
-        _box   = _meta["box"]
-        _nx    = int(_box[1][0])
-        _ny    = int(_box[1][1])
-        _nz    = int(_box[1][2])
+        _steps  = _meta["steps"]
+        _box    = _meta["box"]
+        _maxres = _meta["maxres"]
+        _z_max  = max(0, _box[1][2] - 1)
         viz_timestep = mo.ui.slider(
             start=int(_steps[0]), stop=int(_steps[-1]),
             value=int(_steps[0]),
@@ -2182,16 +2181,12 @@ def _(get_viz_ds, mo):
             label="Timestep", show_value=True,
         )
         viz_depth = mo.ui.slider(
-            start=0, stop=max(0, _nz - 1), value=0,
+            start=0, stop=int(_z_max), value=0,
             label="Depth (z index)", show_value=True,
         )
-        viz_x = mo.ui.range_slider(
-            start=0, stop=_nx, value=[0, _nx],
-            label="X range", show_value=True,
-        )
-        viz_y = mo.ui.range_slider(
-            start=0, stop=_ny, value=[0, _ny],
-            label="Y range", show_value=True,
+        viz_resolution = mo.ui.slider(
+            start=0, stop=int(_maxres), value=min(6, int(_maxres)),
+            label="Resolution level", show_value=True,
         )
         viz_field = mo.ui.dropdown(
             options=_meta["fields"], value=_meta["fields"][0], label="Field",
@@ -2200,7 +2195,11 @@ def _(get_viz_ds, mo):
             options=["viridis","plasma","inferno","magma","cividis","RdBu_r","coolwarm","turbo"],
             value="viridis", label="Colormap",
         )
-    return viz_colormap, viz_depth, viz_field, viz_timestep, viz_x, viz_y
+        viz_run_button = mo.ui.run_button(label="▶ Render slice")
+    return (
+        viz_colormap, viz_depth, viz_field,
+        viz_resolution, viz_run_button, viz_timestep,
+    )
 
 
 @app.cell
@@ -2208,9 +2207,10 @@ def _(
     get_viz_ds, get_viz_err, map_theme,
     mo, np, plt,
     viz_colormap, viz_depth, viz_field,
-    viz_load_button, viz_timestep, viz_url, viz_x, viz_y,
+    viz_load_button, viz_resolution, viz_run_button,
+    viz_timestep, viz_url,
 ):
-    """Render a horizontal 2-D slice from the remote dataset — auto-updates on any control change."""
+    """Render a horizontal 2-D slice from the remote dataset."""
     _meta = get_viz_ds()
     _err  = get_viz_err()
     _theme = "dark" if map_theme.value else "light"
@@ -2251,100 +2251,99 @@ def _(
             f"**Max resolution:** {_maxres}"
         )
 
-        _controls = mo.vstack([
-            mo.hstack([viz_field, viz_timestep, viz_depth, viz_colormap], justify="start"),
-            mo.hstack([viz_x, viz_y], justify="start"),
-        ])
+        _controls = mo.hstack(
+            [viz_field, viz_timestep, viz_depth, viz_resolution, viz_colormap, viz_run_button],
+            justify="start",
+        )
 
-        try:
-            _ds  = _meta["ds"]
-            _z   = int(viz_depth.value)
-            _x0, _x1 = int(viz_x.value[0]), int(viz_x.value[1])
-            _y0, _y1 = int(viz_y.value[0]), int(viz_y.value[1])
-
-            # Clamp to valid range
-            _x0, _x1 = max(0, _x0), min(int(_nx), _x1)
-            _y0, _y1 = max(0, _y0), min(int(_ny), _y1)
-            if _x1 <= _x0: _x1 = _x0 + 1
-            if _y1 <= _y0: _y1 = _y0 + 1
-
-            _reader = _ds.db if hasattr(_ds, "db") and hasattr(_ds.db, "read") else _ds
-            if not hasattr(_reader, "read"):
-                raise AttributeError(
-                    f"Cannot find read() on {type(_ds).__name__}. "
-                    f"Available: {[m for m in dir(_ds) if not m.startswith('_')]}"
-                )
-
-            _data = _reader.read(
-                logic_box=[[_x0, _y0, _z], [_x1, _y1, _z + 1]],
-                field=viz_field.value,
-                time=int(viz_timestep.value),
-            )
-
-            # read() may return a generator; consume first result
-            if not isinstance(_data, np.ndarray):
-                _data = next(iter(_data))
-
-            # Squeeze size-1 z dimension: (1,y,x) -> (y,x)
-            while isinstance(_data, np.ndarray) and _data.ndim > 2 and _data.shape[0] == 1:
-                _data = _data[0]
-            _slice = _data
-
-            _bg  = _colors["bg"]
-            _txt = _colors["text"]
-
-            _fig, _ax = plt.subplots(figsize=(10, 5))
-            _fig.patch.set_facecolor(_bg)
-            _ax.set_facecolor(_bg)
-
-            _vmin = float(np.nanpercentile(_slice, 2))
-            _vmax = float(np.nanpercentile(_slice, 98))
-
-            _im = _ax.imshow(
-                _slice,
-                origin="lower",
-                cmap=viz_colormap.value,
-                aspect="auto",
-                vmin=_vmin,
-                vmax=_vmax,
-                extent=[_x0, _x1, _y0, _y1],
-            )
-            _cbar = _fig.colorbar(_im, ax=_ax, fraction=0.03, pad=0.02)
-            _cbar.ax.yaxis.set_tick_params(color=_txt)
-            plt.setp(_cbar.ax.yaxis.get_ticklabels(), color=_txt)
-            _cbar.set_label(viz_field.value, color=_txt)
-
-            _ax.set_title(
-                f"{viz_field.value}  ·  t={viz_timestep.value}  ·  z={_z}  ·  "
-                f"x=[{_x0},{_x1}]  y=[{_y0},{_y1}]",
-                color=_txt,
-            )
-            _ax.set_xlabel("X", color=_txt)
-            _ax.set_ylabel("Y", color=_txt)
-            _ax.tick_params(colors=_txt)
-            for _spine in _ax.spines.values():
-                _spine.set_edgecolor(_colors["border"])
-
-            _fig.tight_layout()
-            _plot_html = mo.as_html(_fig)
-            plt.close(_fig)
-
-            _shape_note = mo.md(
-                f"Slice shape: **{_slice.shape[1]} × {_slice.shape[0]}**  ·  "
-                f"min {float(np.nanmin(_slice)):.4g}  ·  "
-                f"max {float(np.nanmax(_slice)):.4g}  ·  "
-                f"mean {float(np.nanmean(_slice)):.4g}"
-            )
-
-            visualize_tab = mo.vstack([
-                _header, _info_md, _controls, _shape_note, _plot_html,
-            ])
-
-        except Exception as _render_err:
+        if not viz_run_button.value:
             visualize_tab = mo.vstack([
                 _header, _info_md, _controls,
-                mo.callout(mo.md(f"**Render error:** `{_render_err}`"), kind="danger"),
+                mo.callout(mo.md("Configure settings and click **▶ Render slice**."), kind="neutral"),
             ])
+        else:
+            try:
+                _ds = _meta["ds"]
+                _res = int(viz_resolution.value)
+                _z   = int(viz_depth.value)
+
+                # PelicanDataset wraps a PyDataset at .db — use whichever has read()
+                _reader = _ds.db if hasattr(_ds, "db") and hasattr(_ds.db, "read") else _ds
+                if not hasattr(_reader, "read"):
+                    raise AttributeError(
+                        f"Cannot find read() on {type(_ds).__name__}. "
+                        f"Available: {[m for m in dir(_ds) if not m.startswith('_')]}"
+                    )
+
+                _data = _reader.read(
+                    z=[_z, _z + 1],
+                    field=viz_field.value,
+                    time=int(viz_timestep.value),
+                    max_resolution=_res,
+                )
+
+                # read() may return a generator (num_refinements>1) or array directly
+                if not isinstance(_data, np.ndarray):
+                    _data = next(iter(_data))
+
+                # Squeeze any size-1 z dimension: (1,y,x) -> (y,x)
+                while isinstance(_data, np.ndarray) and _data.ndim > 2 and _data.shape[0] == 1:
+                    _data = _data[0]
+                _slice = _data
+
+                _bg = _colors["bg"]
+                _txt = _colors["text"]
+
+                _fig, _ax = plt.subplots(figsize=(10, 5))
+                _fig.patch.set_facecolor(_bg)
+                _ax.set_facecolor(_bg)
+
+                _vmin = float(np.nanpercentile(_slice, 2))
+                _vmax = float(np.nanpercentile(_slice, 98))
+
+                _im = _ax.imshow(
+                    _slice,
+                    origin="lower",
+                    cmap=viz_colormap.value,
+                    aspect="auto",
+                    vmin=_vmin,
+                    vmax=_vmax,
+                )
+                _cbar = _fig.colorbar(_im, ax=_ax, fraction=0.03, pad=0.02)
+                _cbar.ax.yaxis.set_tick_params(color=_txt)
+                plt.setp(_cbar.ax.yaxis.get_ticklabels(), color=_txt)
+                _cbar.set_label(viz_field.value, color=_txt)
+
+                _ax.set_title(
+                    f"{viz_field.value}  ·  t={viz_timestep.value}  ·  z={_z}  ·  res={_res}",
+                    color=_txt,
+                )
+                _ax.set_xlabel("X", color=_txt)
+                _ax.set_ylabel("Y", color=_txt)
+                _ax.tick_params(colors=_txt)
+                for _spine in _ax.spines.values():
+                    _spine.set_edgecolor(_colors["border"])
+
+                _fig.tight_layout()
+                _plot_html = mo.as_html(_fig)
+                plt.close(_fig)
+
+                _shape_note = mo.md(
+                    f"Slice shape: **{_slice.shape[1]} × {_slice.shape[0]}**  ·  "
+                    f"min {float(np.nanmin(_slice)):.4g}  ·  "
+                    f"max {float(np.nanmax(_slice)):.4g}  ·  "
+                    f"mean {float(np.nanmean(_slice)):.4g}"
+                )
+
+                visualize_tab = mo.vstack([
+                    _header, _info_md, _controls, _shape_note, _plot_html,
+                ])
+
+            except Exception as _render_err:
+                visualize_tab = mo.vstack([
+                    _header, _info_md, _controls,
+                    mo.callout(mo.md(f"**Render error:** `{_render_err}`"), kind="danger"),
+                ])
 
     return (visualize_tab,)
 
