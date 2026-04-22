@@ -299,3 +299,30 @@ def test_render_all_full_blobs_none_emits_no_style():
     )
     assert "<style>" not in html
     assert 'type="checkbox"' not in html
+
+
+# ── render_thumbnail_gallery (dt formatting) ──────────────────────────────────
+
+def test_render_shows_em_dash_for_none_dt():
+    """dt=None should render an em-dash, not the literal 'None'."""
+    thumbs = [("img_0.jpg", b"\xff\xd8\xff", None)]
+    _count, html = render_thumbnail_gallery(thumbs, n_filtered=1, max_display=10)
+    assert "—" in html
+    assert ">None<" not in html
+
+
+def test_render_shows_em_dash_for_nat_dt():
+    """dt=pd.NaT should render an em-dash, not the literal 'NaT'."""
+    import pandas as pd
+    thumbs = [("img_0.jpg", b"\xff\xd8\xff", pd.NaT)]
+    _count, html = render_thumbnail_gallery(thumbs, n_filtered=1, max_display=10)
+    assert "—" in html
+    assert "NaT" not in html
+
+
+def test_render_formats_normal_datetime():
+    """A real datetime should render in YYYY-MM-DD HH:MM format."""
+    from datetime import datetime
+    thumbs = [("img_0.jpg", b"\xff\xd8\xff", datetime(2017, 9, 6, 14, 0))]
+    _count, html = render_thumbnail_gallery(thumbs, n_filtered=1, max_display=10)
+    assert "2017-09-06 14:00" in html

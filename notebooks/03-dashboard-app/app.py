@@ -694,7 +694,20 @@ def render_thumbnail_gallery(thumbs, n_filtered, max_display, theme="light",
     imgs = []
     for _i, (fname, blob, dt) in enumerate(thumbs):
         b64 = base64.b64encode(blob).decode()
-        dt_str = dt.strftime("%Y-%m-%d %H:%M") if hasattr(dt, "strftime") else str(dt)
+
+        def _fmt_dt(_d):
+            if _d is None:
+                return "—"
+            if hasattr(_d, "strftime"):
+                try:
+                    _s = _d.strftime("%Y-%m-%d %H:%M")
+                except (ValueError, AttributeError):
+                    _s = str(_d)
+            else:
+                _s = str(_d)
+            return "—" if _s in ("", "NaT", "NaTType", "None") else _s
+
+        dt_str = _fmt_dt(dt)
 
         _has_full = full_blobs is not None and _i < len(full_blobs) and full_blobs[_i] is not None
         if _has_full:
@@ -2068,7 +2081,13 @@ def _(
             _im_t = _Image_g.open(_io_g.BytesIO(_blob)).resize((_thumb_w, _thumb_h), _Image_g.LANCZOS)
             _buf_t = _io_g.BytesIO()
             _im_t.save(_buf_t, format="JPEG", quality=82)
-            _thumbs.append((f"{str(_r['dt'])[:10]}  ·  d={_data['_distance']:.2f}", _buf_t.getvalue(), _r["dt"]))
+            _dt = _r["dt"]
+            _dt_label = (
+                _dt.strftime("%Y-%m-%d")
+                if (_dt is not None and hasattr(_dt, "strftime") and _pd_g.notna(_dt))
+                else "—"
+            )
+            _thumbs.append((f"{_dt_label}  ·  d={_data['_distance']:.2f}", _buf_t.getvalue(), _dt))
             # Keep the pre-resize (annotated) blob for the click-to-zoom lightbox
             _full_blobs.append(_blob)
 
@@ -2100,7 +2119,14 @@ def _(
             .agg(patch_indices=("patch_index", list), cosine_dists=("_distance", list))
             .reset_index()
         )
-        _df_merged["date"] = _df_merged["image_id"].map(lambda x: str(_date_map.get(x, ""))[:10])
+        def _fmt_date(x):
+            _d = _date_map.get(x)
+            if _d is None or (hasattr(_d, "__class__") and _d.__class__.__name__ == "NaTType"):
+                return "—"
+            _s = str(_d)[:10]
+            return "—" if _s in ("", "NaT", "None") else _s
+
+        _df_merged["date"] = _df_merged["image_id"].map(_fmt_date)
         _df_merged["best_dist"] = _df_merged["cosine_dists"].apply(min)
         _df_merged = (
             _df_merged[["date", "image_id", "patch_indices", "cosine_dists", "best_dist"]]
