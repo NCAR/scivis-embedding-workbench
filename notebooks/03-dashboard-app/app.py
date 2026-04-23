@@ -2042,19 +2042,29 @@ def _(
             for _, row in ss_top_df.iterrows()
         }
 
+        # Batch-fetch image_blob + dt for ALL unique image_ids in results upfront.
+        # Using the Lance scanner (not .search().where()) so every row is guaranteed
+        # to be found regardless of table fragment layout.
+        import pyarrow.compute as _pc_g
+        _all_img_ids = ss_top_df["image_id"].unique().tolist()
+        _src_batch = (
+            src_img_tbl.to_lance()
+            .scanner(
+                columns=["id", "image_blob", "dt"],
+                filter=_pc_g.field("id").isin(_all_img_ids),
+            )
+            .to_table()
+            .to_pandas()
+            .set_index("id")
+        )
+        # _date_map covers every matched image, not just the gallery-capped ones,
+        # so the Data sub-tab can show dates for all rows too.
+        _date_map = _src_batch["dt"].to_dict()
+
         _thumbs = []
         _full_blobs = []
-        _date_map = {}
         for _img_id, _data in _groups.iterrows():
-            _r = (
-                src_img_tbl.search()
-                .where(f"id = '{_img_id}'")
-                .select(["image_blob", "dt"])
-                .limit(1)
-                .to_pandas()
-                .iloc[0]
-            )
-            _date_map[_img_id] = _r["dt"]
+            _r = _src_batch.loc[_img_id]
 
             if ss_similarity_toggle.value:
                 _matched = {
