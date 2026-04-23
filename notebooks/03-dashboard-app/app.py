@@ -2042,29 +2042,42 @@ def _(
             for _, row in ss_top_df.iterrows()
         }
 
-        # Batch-fetch image_blob + dt for ALL unique image_ids in results upfront.
-        # Using the Lance scanner (not .search().where()) so every row is guaranteed
-        # to be found regardless of table fragment layout.
         import pyarrow.compute as _pc_g
+
+        # 1. Lightweight dt-only fetch for ALL results → complete date map for
+        #    the Data sub-tab without pulling any image blobs for non-gallery rows.
         _all_img_ids = ss_top_df["image_id"].unique().tolist()
-        _src_batch = (
+        _dt_batch = (
             src_img_tbl.to_lance()
             .scanner(
-                columns=["id", "image_blob", "dt"],
+                columns=["id", "dt"],
                 filter=_pc_g.field("id").isin(_all_img_ids),
             )
             .to_table()
             .to_pandas()
             .set_index("id")
         )
-        # _date_map covers every matched image, not just the gallery-capped ones,
-        # so the Data sub-tab can show dates for all rows too.
-        _date_map = _src_batch["dt"].to_dict()
+        _date_map = _dt_batch["dt"].to_dict()
+
+        # 2. Full blob fetch only for the gallery-capped images (≤ _MAX rows).
+        #    image_blob is ~190 KB each; fetching it for all results was the
+        #    over-fetch — only the gallery thumbnails ever use the blob.
+        _gallery_ids = list(_groups.index)
+        _blob_batch = (
+            src_img_tbl.to_lance()
+            .scanner(
+                columns=["id", "image_blob"],
+                filter=_pc_g.field("id").isin(_gallery_ids),
+            )
+            .to_table()
+            .to_pandas()
+            .set_index("id")
+        )
 
         _thumbs = []
         _full_blobs = []
         for _img_id, _data in _groups.iterrows():
-            _r = _src_batch.loc[_img_id]
+            _r = _blob_batch.loc[_img_id]
 
             if ss_similarity_toggle.value:
                 _matched = {
@@ -2091,7 +2104,7 @@ def _(
             _im_t = _Image_g.open(_io_g.BytesIO(_blob)).resize((_thumb_w, _thumb_h), _Image_g.LANCZOS)
             _buf_t = _io_g.BytesIO()
             _im_t.save(_buf_t, format="JPEG", quality=82)
-            _dt = _r["dt"]
+            _dt = _date_map.get(_img_id)
             _dt_label = (
                 _dt.strftime("%Y-%m-%d")
                 if (_dt is not None and hasattr(_dt, "strftime") and _pd_g.notna(_dt))
