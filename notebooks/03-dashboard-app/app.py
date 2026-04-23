@@ -1682,8 +1682,8 @@ def _(config, map_theme, mo, set_ss_init, src_img_tbl, ss_load_button):
 
 @app.cell
 def _(mo):
-    ss_n_similar_images = mo.ui.number(start=1, stop=50, step=1, value=50, label="Similar images")
-    ss_n_similar_patches = mo.ui.number(start=10, stop=500, step=200, value=100, label="Max patches")
+    ss_n_similar_images = mo.ui.number(start=1, stop=500, step=1, value=50, label="Similar images")
+    ss_n_similar_patches = mo.ui.number(start=10, stop=10000, step=10, value=100, label="Max patches")
     ss_max_gallery = mo.ui.number(start=4, stop=100, step=4, value=25, label="Gallery cap")
     ss_refine_factor = mo.ui.number(start=1, stop=50, step=1, value=20, label="Refine factor")
     ss_similarity_toggle = mo.ui.switch(label="Similarity overlay")
