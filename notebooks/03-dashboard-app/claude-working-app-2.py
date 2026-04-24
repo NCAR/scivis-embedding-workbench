@@ -2116,106 +2116,36 @@ def _(
 def _(mo):
     viz_url = mo.ui.text(
         value="pelican://osg-htc.org/nasa/nsdf/climate1/llc4320/idx/theta/theta_llc4320_x_y_depth.idx",
-        label="Remote URL or local file path (e.g. /data/file.nc)",
+        label="Dataset URL",
         full_width=True,
     )
-    viz_file = mo.ui.file(label="Or upload a local NetCDF file", kind="area")
     viz_load_button = mo.ui.run_button(label="▶ Load dataset")
-    return viz_file, viz_load_button, viz_url
+    return viz_load_button, viz_url
 
 
 @app.cell
-def _(mo, viz_file, viz_load_button, viz_url):
-    """Load dataset — supports remote OpenVisus URLs and local/uploaded NetCDF files."""
+def _(mo, viz_load_button, viz_url):
+    """Load the remote dataset and cache metadata in state."""
     get_viz_ds, set_viz_ds = mo.state(None)
     get_viz_err, set_viz_err = mo.state(None)
 
-    if viz_load_button.value:
+    if viz_load_button.value and viz_url.value.strip():
         try:
-            import xarray as _xr
-            import tempfile as _tmp
-            import os as _os
-
-            _url = viz_url.value.strip()
-            _uploaded = viz_file.value  # list of file objects or None
-
-            # ── Determine source ────────────────────────────────────────────
-            _is_netcdf = False
-            _nc_path   = None
-
-            if _uploaded:
-                # User uploaded a file via the file picker
-                _f = _uploaded[0]
-                _suffix = _os.path.splitext(_f.name)[1] or ".nc"
-                _tmp_file = _tmp.NamedTemporaryFile(delete=False, suffix=_suffix)
-                _tmp_file.write(_f.contents)
-                _tmp_file.flush()
-                _nc_path   = _tmp_file.name
-                _is_netcdf = True
-            elif _url and (_url.endswith(".nc") or _url.endswith(".nc4")
-                           or _url.endswith(".netcdf") or _os.path.exists(_url)):
-                # Local file path typed in the URL box
-                _nc_path   = _url
-                _is_netcdf = True
-
-            if _is_netcdf:
-                # ── NetCDF via xarray ────────────────────────────────────────
-                _nc = _xr.open_dataset(_nc_path, engine="netcdf4")
-                _data_vars = list(_nc.data_vars)
-                _dims      = dict(_nc.dims)
-
-                # Identify x, y, z, time dimensions heuristically
-                def _find_dim(candidates, dims):
-                    for c in candidates:
-                        for d in dims:
-                            if c in d.lower():
-                                return d
-                    return None
-
-                _xdim = _find_dim(["lon","x","nx"], _dims)
-                _ydim = _find_dim(["lat","y","ny"], _dims)
-                _zdim = _find_dim(["depth","lev","z","nz","alt"], _dims)
-                _tdim = _find_dim(["time","t"], _dims)
-
-                _nx = int(_dims[_xdim]) if _xdim else 1
-                _ny = int(_dims[_ydim]) if _ydim else 1
-                _nz = int(_dims[_zdim]) if _zdim else 1
-                _nt = int(_dims[_tdim]) if _tdim else 1
-
-                set_viz_ds({
-                    "kind":   "netcdf",
-                    "ds":     _nc,
-                    "path":   _nc_path,
-                    "url":    _nc_path,
-                    "fields": _data_vars,
-                    "steps":  list(range(_nt)),
-                    "box":    [[0, 0, 0], [_nx, _ny, _nz]],
-                    "maxres": 32,  # not used for netcdf but kept for UI consistency
-                    "dims":   {"x": _xdim, "y": _ydim, "z": _zdim, "t": _tdim},
-                })
-                set_viz_err(None)
-
-            elif _url:
-                # ── Remote OpenVisus dataset ─────────────────────────────────
-                import openvisuspy as _ovp_viz
-                _ds = _ovp_viz.LoadDataset(_url)
-                _box   = _ds.getLogicBox()
-                _steps = _ds.getTimesteps()
-                _raw_fields = _ds.getFields()
-                _fields = [f.name if hasattr(f, "name") else str(f) for f in _raw_fields]
-                set_viz_ds({
-                    "kind":   "ovp",
-                    "ds":     _ds,
-                    "url":    _url,
-                    "box":    _box,
-                    "steps":  _steps,
-                    "fields": _fields,
-                    "maxres": _ds.getMaxResolution(),
-                })
-                set_viz_err(None)
-            else:
-                set_viz_err("Please enter a URL or upload a file.")
-
+            import openvisuspy as _ovp_viz
+            _ds = _ovp_viz.LoadDataset(viz_url.value.strip())
+            _box   = _ds.getLogicBox()
+            _steps = _ds.getTimesteps()
+            _raw_fields = _ds.getFields()
+            _fields = [f.name if hasattr(f, "name") else str(f) for f in _raw_fields]
+            set_viz_ds({
+                "ds":     _ds,
+                "url":    viz_url.value.strip(),
+                "box":    _box,          # [[x0,y0,z0],[x1,y1,z1]]
+                "steps":  _steps,
+                "fields": _fields,
+                "maxres": _ds.getMaxResolution(),
+            })
+            set_viz_err(None)
         except Exception as _e:
             set_viz_ds(None)
             set_viz_err(str(_e))
@@ -2304,7 +2234,6 @@ def _(
     viz_colormap,
     viz_depth,
     viz_field,
-    viz_file,
     viz_load_button,
     viz_quality,
     viz_resolution,
@@ -2319,10 +2248,7 @@ def _(
     _theme = "dark" if map_theme.value else "light"
     _colors = get_theme_colors(_theme)
 
-    _header = mo.vstack([
-        mo.hstack([viz_url, viz_load_button], justify="start"),
-        viz_file,
-    ])
+    _header = mo.hstack([viz_url, viz_load_button], justify="start")
 
     if _err is not None:
         visualize_tab = mo.vstack([
@@ -2350,77 +2276,53 @@ def _(
         _maxres = _meta["maxres"]
         _nx, _ny, _nz = _box[1][0], _box[1][1], _box[1][2]
 
-        _kind = _meta.get("kind", "ovp")
         _info_md = mo.md(
             f"**Dimensions:** {_nx} × {_ny} × {_nz}  ·  "
             f"**Timesteps:** {len(_steps)}  ·  "
-            f"**Fields:** {', '.join(_fields)}"
-            + (f"  ·  **Max resolution:** {_maxres}" if _kind == "ovp" else
-               f"  ·  **Source:** NetCDF  ·  **Dims:** {_meta['dims']}")
+            f"**Fields:** {', '.join(_fields)}  ·  "
+            f"**Max resolution:** {_maxres}"
         )
 
-        if _kind == "netcdf":
-            _controls = mo.vstack([
-                mo.hstack([viz_field, viz_timestep, viz_depth, viz_colormap, viz_quality], justify="start"),
-                mo.hstack([viz_x, viz_y], justify="start"),
-            ])
-        else:
-            _controls = mo.vstack([
-                mo.hstack([viz_field, viz_timestep, viz_depth, viz_colormap, viz_quality], justify="start"),
-                mo.hstack([viz_x, viz_y], justify="start"),
-                mo.hstack([mo.md("**Base resolution:**"), viz_resolution], justify="start"),
-            ])
+        _controls = mo.vstack([
+            mo.hstack([viz_field, viz_timestep, viz_depth, viz_colormap, viz_quality], justify="start"),
+            mo.hstack([viz_x, viz_y], justify="start"),
+            mo.hstack([mo.md("**Base resolution:**"), viz_resolution], justify="start"),
+        ])
 
         try:
-            _ds   = _meta["ds"]
-            _kind = _meta.get("kind", "ovp")
-            _res  = int(viz_resolution.value)
-            _q    = int(viz_quality.value)
-            _z    = int(viz_depth.value)
+            _ds  = _meta["ds"]
+            _res = int(viz_resolution.value)
+            _q   = int(viz_quality.value)
+            _z   = int(viz_depth.value)
             _x0, _x1 = int(viz_x.value[0]), int(viz_x.value[1])
             _y0, _y1 = int(viz_y.value[0]), int(viz_y.value[1])
             if _x1 <= _x0: _x1 = _x0 + 1
             if _y1 <= _y0: _y1 = _y0 + 1
 
-            if _kind == "netcdf":
-                # ── NetCDF slice via xarray ──────────────────────────────────
-                _dims  = _meta["dims"]
-                _var   = _ds[viz_field.value]
-                _sel   = {}
-                if _dims["t"]:
-                    _sel[_dims["t"]] = int(viz_timestep.value)
-                if _dims["z"]:
-                    _sel[_dims["z"]] = _z
-                _var2d = _var.isel(**_sel) if _sel else _var
-                # Subset x/y by index
-                if _dims["y"]:
-                    _var2d = _var2d.isel({_dims["y"]: slice(_y0, _y1)})
-                if _dims["x"]:
-                    _var2d = _var2d.isel({_dims["x"]: slice(_x0, _x1)})
-                _slice = _var2d.values.squeeze()
-                # Downsample to approximate quality level (each -1 halves resolution)
-                _step = max(1, 2 ** (-_q))
-                _slice = _slice[::_step, ::_step]
-            else:
-                # ── Remote OpenVisus dataset ─────────────────────────────────
-                _reader = _ds.db if hasattr(_ds, "db") and hasattr(_ds.db, "read") else _ds
-                if not hasattr(_reader, "read"):
-                    raise AttributeError(
-                        f"Cannot find read() on {type(_ds).__name__}. "
-                        f"Available: {[m for m in dir(_ds) if not m.startswith('_')]}"
-                    )
-                _data = _reader.read(
-                    logic_box=[[_x0, _y0, _z], [_x1, _y1, _z + 1]],
-                    field=viz_field.value,
-                    time=int(viz_timestep.value),
-                    max_resolution=_res,
-                    quality=_q,
+            # PelicanDataset wraps a PyDataset at .db — use whichever has read()
+            _reader = _ds.db if hasattr(_ds, "db") and hasattr(_ds.db, "read") else _ds
+            if not hasattr(_reader, "read"):
+                raise AttributeError(
+                    f"Cannot find read() on {type(_ds).__name__}. "
+                    f"Available: {[m for m in dir(_ds) if not m.startswith('_')]}"
                 )
-                if not isinstance(_data, np.ndarray):
-                    _data = next(iter(_data))
-                while isinstance(_data, np.ndarray) and _data.ndim > 2 and _data.shape[0] == 1:
-                    _data = _data[0]
-                _slice = _data
+
+            _data = _reader.read(
+                logic_box=[[_x0, _y0, _z], [_x1, _y1, _z + 1]],
+                field=viz_field.value,
+                time=int(viz_timestep.value),
+                max_resolution=_res,
+                quality=_q,
+            )
+
+            # read() may return a generator (num_refinements>1) or array directly
+            if not isinstance(_data, np.ndarray):
+                _data = next(iter(_data))
+
+            # Squeeze any size-1 z dimension: (1,y,x) -> (y,x)
+            while isinstance(_data, np.ndarray) and _data.ndim > 2 and _data.shape[0] == 1:
+                _data = _data[0]
+            _slice = _data
 
             _bg = _colors["bg"]
             _txt = _colors["text"]
