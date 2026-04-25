@@ -1,0 +1,57 @@
+#!/bin/bash
+#PBS -N ground_truth_v100
+#PBS -A NVST0001
+#PBS -l select=1:ncpus=4:mem=250GB:ngpus=1:gpu_type=v100
+#PBS -l walltime=04:00:00
+#PBS -q nvgpu
+#PBS -j oe
+
+set -e
+
+echo "========================================="
+echo "=== Starting Ground Truth Generation  ==="
+echo "========================================="
+echo "[START TIME] $(date)"
+echo ""
+
+echo "--- [DIAGNOSTICS: HARDWARE] ---"
+echo "Assigned Node  : $(hostname)"
+echo "Available RAM  :"
+free -h
+echo ""
+echo "GPU Status     :"
+nvidia-smi
+echo "-------------------------------"
+echo ""
+
+WORK_DIR="/glade/work/ncheruku/research/scivis-embedding-workbench/"
+echo "[INFO] Navigating to $WORK_DIR"
+cd $WORK_DIR
+
+# --- NEW DATA STAGING SECTION ---
+GLADE_SRC="/glade/work/ncheruku/research/sample_data/data/lancedb/experiments/era5"
+NVME_DEST="/local_scratch/pbs.$PBS_JOBID/era5"
+
+export NVME_DB_DIR="$NVME_DEST"
+echo "[INFO] Exported NVME_DB_DIR=$NVME_DB_DIR"
+
+echo "[INFO] Staging full dataset from GLADE to local NVMe..."
+mkdir -p $NVME_DEST
+rsync -av --info=progress2 $GLADE_SRC/ $NVME_DEST/
+echo "[INFO] Data staging complete."
+echo "----------------------------------"
+
+echo "[INFO] Verifying 'uv' environment..."
+uv run python --version
+
+echo ""
+echo "========================================="
+echo "=== Executing Python Script           ==="
+echo "========================================="
+time uv run python notebooks/04-benchmarking/01_generate_ground_truth.py --chunk-size 2000000
+
+echo ""
+echo "========================================="
+echo "=== Ground Truth Generation Complete! ==="
+echo "========================================="
+echo "[END TIME] $(date)"

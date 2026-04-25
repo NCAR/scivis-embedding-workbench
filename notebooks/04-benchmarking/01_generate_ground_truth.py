@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import pickle
 import time
 from pathlib import Path
@@ -60,7 +61,12 @@ PROJECT_ROOT = Path("/glade/work/ncheruku/research/sample_data")
 # Local Mac (uncomment to switch):
 # PROJECT_ROOT = Path("/Users/ncheruku/Documents/Work/sample_data")
 
-DB_URI = PROJECT_ROOT / "data" / "lancedb" / "experiments" / "era5"
+if "NVME_DB_DIR" in os.environ:
+    DB_URI = Path(os.environ["NVME_DB_DIR"])
+    print(f"[INFO] NVME_DB_DIR detected. Using local NVMe storage: {DB_URI}")
+else:
+    DB_URI = PROJECT_ROOT / "data" / "lancedb" / "experiments" / "era5"
+    print(f"[INFO] Defaulting to network GLADE storage: {DB_URI}")
 
 # Experiments — same order as the benchmark script.
 EXPERIMENTS = [
