@@ -41,6 +41,7 @@ Usage
 
 from __future__ import annotations
 
+import argparse
 import math
 import pickle
 import time
@@ -238,7 +239,7 @@ def compute_topk_cosine_gpu(
 
 # ── MAIN ──────────────────────────────────────────────────────────────────────
 
-def main() -> None:
+def main(chunk_size: int = CHUNK_SIZE) -> None:
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
     # ── GPU check ─────────────────────────────────────────────────────────────
@@ -288,10 +289,10 @@ def main() -> None:
 
         # Exact top-k on GPU (normalization happens per-chunk on the GPU)
         print(f"  Computing exact top-{TOP_K} on GPU "
-              f"(chunk_size={CHUNK_SIZE:,}) …")
+              f"(chunk_size={chunk_size:,}) …")
         t0 = time.perf_counter()
         top_row_idxs = compute_topk_cosine_gpu(
-            db_embs, q_norm, TOP_K, CHUNK_SIZE, device,
+            db_embs, q_norm, TOP_K, chunk_size, device,
         )                              # (1000, 10) global row indices
         elapsed = time.perf_counter() - t0
         print(f"  GPU search done in {elapsed:.1f}s  "
@@ -324,4 +325,18 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Generate ANN ground truth.")
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=CHUNK_SIZE,
+        help=(
+            "Number of DB rows per GPU matmul call. "
+            "Lower this to fit smaller GPUs. "
+            "Suggested values: V100-16GB→500000, V100-32GB→2000000, "
+            "L40-48GB→3000000. Result is identical regardless of value. "
+            f"(default: {CHUNK_SIZE:,})"
+        ),
+    )
+    args = parser.parse_args()
+    main(chunk_size=args.chunk_size)
