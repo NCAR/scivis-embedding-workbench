@@ -275,9 +275,20 @@ def main(chunk_size: int = CHUNK_SIZE) -> None:
     del q_tensor
 
     # ── Step 2: ground truth per experiment ───────────────────────────────────
-    ground_truth: dict[str, dict[int, set[str]]] = {}
+
+    # Load any previously saved progress so a re-run skips finished experiments.
+    if GROUND_TRUTH_PKL.exists():
+        with open(GROUND_TRUTH_PKL, "rb") as f:
+            ground_truth: dict[str, dict[int, set[str]]] = pickle.load(f)
+        print(f"Resuming from existing ground truth: {list(ground_truth.keys())}")
+    else:
+        ground_truth = {}
 
     for freq, project in EXPERIMENTS:
+        if project in ground_truth:
+            print(f"  Skipping {project} — already in ground truth.")
+            continue
+
         print("=" * 64)
         print(f"  Experiment : {project}  ({freq})")
 
@@ -310,12 +321,16 @@ def main(chunk_size: int = CHUNK_SIZE) -> None:
         # Free CPU and GPU memory before next experiment
         del db_embs, patch_ids, patch_ids_arr, gt_ids, top_row_idxs
         torch.cuda.empty_cache()
+
+        # Save incrementally so a crash on a later experiment doesn't lose this.
+        with open(GROUND_TRUTH_PKL, "wb") as f:
+            pickle.dump(ground_truth, f, protocol=pickle.HIGHEST_PROTOCOL)
+        print(f"  Ground truth saved → {GROUND_TRUTH_PKL}  "
+              f"(experiments so far: {list(ground_truth.keys())})")
         print()
 
-    # ── Step 3: save ground truth ─────────────────────────────────────────────
-    with open(GROUND_TRUTH_PKL, "wb") as f:
-        pickle.dump(ground_truth, f, protocol=pickle.HIGHEST_PROTOCOL)
-    print(f"Ground truth saved → {GROUND_TRUTH_PKL}")
+    # ── Step 3: final confirmation ────────────────────────────────────────────
+    print(f"Ground truth complete → {GROUND_TRUTH_PKL}")
 
     # Quick sanity check
     sample_exp   = EXPERIMENTS[0][1]
