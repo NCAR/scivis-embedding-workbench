@@ -49,12 +49,14 @@ from __future__ import annotations
 
 import csv
 import math
+import os
 import pickle
 import time
 from pathlib import Path
 
 import lancedb
 import numpy as np
+from tqdm import tqdm
 
 # ── CONFIGURATION ─────────────────────────────────────────────────────────────
 
@@ -63,7 +65,14 @@ PROJECT_ROOT = Path("/glade/work/ncheruku/research/sample_data")
 # Local Mac (uncomment to switch):
 # PROJECT_ROOT = Path("/Users/ncheruku/Documents/Work/sample_data")
 
-DB_URI = PROJECT_ROOT / "data" / "lancedb" / "experiments" / "era5"
+if "NVME_DB_DIR" in os.environ:
+    DB_URI = Path(os.environ["NVME_DB_DIR"])
+    print("[INFO] NVME_DB_DIR environment variable detected.")
+    print(f"[INFO] Routing database connections to local NVMe storage: {DB_URI}")
+else:
+    DB_URI = PROJECT_ROOT / "data" / "lancedb" / "experiments" / "era5"
+    print("[INFO] NVME_DB_DIR not found in environment.")
+    print(f"[INFO] Defaulting to network GLADE storage: {DB_URI}")
 
 EXPERIMENTS = [
     ("24h", "dinov3_rect_24h"),
@@ -137,7 +146,7 @@ def run_benchmark(
 
     # ── Warm-up: fill page cache, prime internal LanceDB caches ──────────────
     warmup_idx = rng.choice(len(query_vectors), size=n_warmup, replace=False)
-    for i in warmup_idx:
+    for i in tqdm(warmup_idx, desc="Warm-up queries", leave=False):
         tbl.search(query_vectors[i]).nprobes(nprobes).limit(TOP_K).to_arrow()
 
     # ── Timed queries ─────────────────────────────────────────────────────────
@@ -147,16 +156,21 @@ def run_benchmark(
 
     loop_start = time.perf_counter()
 
-    for k, i in enumerate(test_idx):
+    for k, i in enumerate(tqdm(test_idx, desc="Timed queries", leave=False)):
         # ── Timer strictly wraps only the ANN search call ────────────────────
         t0     = time.perf_counter()
-        result = tbl.search(query_vectors[i]).nprobes(nprobes).limit(TOP_K).to_arrow()
+        result = (tbl.search(query_vectors[i])
+                  .nprobes(nprobes)
+                  .refine_factor(10)
+                  .select(["patch_id"])
+                  .limit(TOP_K)
+                  .to_pandas())
         latencies_ms[k] = (time.perf_counter() - t0) * 1_000.0
         # ── Recall computed outside the timer ─────────────────────────────────
         # patch_id is the globally unique per-row identifier.
         # patch_index (0-895) is only unique within an image, not across the
         # table — using it for set intersection would produce false matches.
-        ann_ids   = set(result.column("patch_id").to_pylist())
+        ann_ids   = set(result["patch_id"].tolist())
         truth_ids = ground_truth[int(i)]
         recalls[k] = len(ann_ids & truth_ids) / TOP_K
 
@@ -207,20 +221,15 @@ def main() -> None:
         size_gib = dir_size_gib(exp_path) if exp_path.exists() else float("nan")
 
         if project not in ground_truth_all:
-            print(f"  ⚠️  No ground truth for {project} — skipping.")
+            print(f"  [WARNING] No ground truth for {project} -- skipping.")
             continue
 
         print("=" * 64)
         print(f"  Experiment : {project}  ({freq})")
         print(f"  DB size    : {size_gib:.1f} GiB")
         print()
-        print(
-            "  ⚠️  Please clear the OS page cache before proceeding.\n"
-            "     Open a NEW terminal and run:\n\n"
-            "         sudo purge\n\n"
-            "     Then press Enter here to start the benchmark."
-        )
-        input("  [Press Enter when ready] ")
+        print("  [INFO] Running in batch mode. Relying on strict RAM limits for out-of-core pressure.")
+        print("  [INFO] Bypassing manual OS cache purge.")
         print()
 
         db        = lancedb.connect(str(exp_path))
