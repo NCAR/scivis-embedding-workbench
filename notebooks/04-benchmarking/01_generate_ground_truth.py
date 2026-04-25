@@ -63,11 +63,11 @@ DB_URI = PROJECT_ROOT / "data" / "lancedb" / "experiments" / "era5"
 
 # Experiments — same order as the benchmark script.
 EXPERIMENTS = [
-    ("24h", "dinov3_rect_24h"),
-    ("12h", "dinov3_rect_12h"),
-    ("6h",  "dinov3_rect_6h"),
-    ("3h",  "dinov3_rect_3h"),
-    ("1h",  "dinov3_rect_1h"),
+    ("24h", "dinov3_24h"),
+    ("12h", "dinov3_12h"),
+    ("6h",  "dinov3_6h"),
+    ("3h",  "dinov3_3h"),
+    ("1h",  "dinov3_1h"),
 ]
 
 N_QUERY_VECTORS = 1_000    # universal query set size
@@ -256,9 +256,9 @@ def main() -> None:
     # ── Step 1: universal query vectors ───────────────────────────────────────
     print("=" * 64)
     print("Step 1 — Sampling universal query vectors …")
-    _base_db    = lancedb.connect(str(DB_URI / "dinov3_rect_1h"))
+    _base_db    = lancedb.connect(str(DB_URI / "dinov3_1h"))
     _base_patch = _base_db.open_table("patch_embeddings")
-    _24h_db     = lancedb.connect(str(DB_URI / "dinov3_rect_24h"))
+    _24h_db     = lancedb.connect(str(DB_URI / "dinov3_24h"))
     _24h_img    = _24h_db.open_table("image_embeddings")
 
     query_vectors = sample_intersection_vectors(
