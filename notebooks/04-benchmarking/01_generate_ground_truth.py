@@ -175,7 +175,7 @@ def load_patch_table(
 
 
 def compute_topk_cosine_gpu(
-    db_embs_norm: np.ndarray,
+    db_embs: np.ndarray,
     query_norm: torch.Tensor,
     k: int,
     chunk_size: int,
@@ -185,17 +185,17 @@ def compute_topk_cosine_gpu(
 
     Parameters
     ----------
-    db_embs_norm : CPU numpy array (N, D), already L2-normalised float32
-    query_norm   : GPU tensor (Q, D), already L2-normalised float32
-    k            : number of nearest neighbours to return
-    chunk_size   : number of DB rows per GPU matmul call
-    device       : CUDA device
+    db_embs    : CPU numpy array (N, D), raw (unnormalized) float32
+    query_norm : GPU tensor (Q, D), already L2-normalised float32
+    k          : number of nearest neighbours to return
+    chunk_size : number of DB rows per GPU matmul call
+    device     : CUDA device
 
     Returns
     -------
-    np.ndarray of shape (Q, k) — row indices into db_embs_norm
+    np.ndarray of shape (Q, k) — row indices into db_embs
     """
-    n_db   = db_embs_norm.shape[0]
+    n_db   = db_embs.shape[0]
     n_q    = query_norm.shape[0]
     n_chunks = math.ceil(n_db / chunk_size)
 
@@ -208,8 +208,9 @@ def compute_topk_cosine_gpu(
         c_start = c * chunk_size
         c_end   = min(c_start + chunk_size, n_db)
 
-        # Stream chunk to GPU
-        chunk = torch.from_numpy(db_embs_norm[c_start:c_end]).to(device)
+        # Stream chunk to GPU and normalize there
+        chunk = torch.from_numpy(db_embs[c_start:c_end]).to(device)
+        chunk = F.normalize(chunk, dim=1)
         sims  = torch.matmul(query_norm, chunk.T)       # (Q, chunk_size)
 
         k_eff = min(k, c_end - c_start)
@@ -285,16 +286,7 @@ def main() -> None:
         # Load full table to CPU RAM
         db_embs, patch_ids = load_patch_table(patch_tbl)
 
-        # Normalise on CPU (in-place to avoid a second full-size copy)
-        print("  Normalising embeddings on CPU …")
-        t0    = time.perf_counter()
-        norms = np.linalg.norm(db_embs, axis=1, keepdims=True)
-        np.clip(norms, a_min=1e-12, a_max=None, out=norms)
-        db_embs /= norms
-        del norms
-        print(f"  Normalised in {time.perf_counter() - t0:.1f}s")
-
-        # Exact top-k on GPU
+        # Exact top-k on GPU (normalization happens per-chunk on the GPU)
         print(f"  Computing exact top-{TOP_K} on GPU "
               f"(chunk_size={CHUNK_SIZE:,}) …")
         t0 = time.perf_counter()
