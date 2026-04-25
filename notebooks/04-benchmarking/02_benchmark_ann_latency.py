@@ -75,11 +75,11 @@ else:
     print(f"[INFO] Defaulting to network GLADE storage: {DB_URI}")
 
 EXPERIMENTS = [
-    ("24h", "dinov3_rect_24h"),
-    ("12h", "dinov3_rect_12h"),
-    ("6h",  "dinov3_rect_6h"),
-    ("3h",  "dinov3_rect_3h"),
-    ("1h",  "dinov3_rect_1h"),
+    ("24h", "dinov3_24h"),
+    ("12h", "dinov3_12h"),
+    ("6h",  "dinov3_6h"),
+    ("3h",  "dinov3_3h"),
+    ("1h",  "dinov3_1h"),
 ]
 
 N_WARMUP     = 100
