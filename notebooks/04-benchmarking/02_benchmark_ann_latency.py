@@ -51,6 +51,7 @@ import csv
 import math
 import os
 import pickle
+import resource
 import time
 from pathlib import Path
 
@@ -98,6 +99,11 @@ PLOT_PNG         = RESULTS_DIR / "search_latency.png"
 
 # ── HELPERS ───────────────────────────────────────────────────────────────────
 
+def rss_gib() -> float:
+    """Current process RSS in GiB (Linux: ru_maxrss is in KiB)."""
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024**2
+
+
 def get_num_partitions(tbl: lancedb.table.Table) -> int:
     """Return the IVF partition count used when the index was built.
 
@@ -117,7 +123,7 @@ def run_benchmark(
     nprobes: int,
     n_warmup: int = N_WARMUP,
     n_test: int   = N_TEST,
-) -> tuple[np.ndarray, np.ndarray, float]:
+) -> tuple[np.ndarray, np.ndarray, float, float, float]:
     """Run warm-up then timed ANN queries; return latencies, recalls, and QPS.
 
     The perf_counter timer strictly wraps the LanceDB search call only.
@@ -137,8 +143,12 @@ def run_benchmark(
     latencies_ms : np.ndarray of shape (n_test,) — per-query latency in ms
     recalls      : np.ndarray of shape (n_test,) — per-query Recall@10 in [0,1]
     qps          : float — queries per second (wall-clock over full test loop)
+    rss_before_gib : float — process RSS before warmup (GiB)
+    rss_after_gib  : float — process RSS after all timed queries (GiB)
     """
     rng = np.random.default_rng(0)
+
+    rss_before_gib = rss_gib()
 
     # ── Warm-up: fill page cache, prime internal LanceDB caches ──────────────
     warmup_idx = rng.choice(len(query_vectors), size=n_warmup, replace=False)
@@ -172,8 +182,9 @@ def run_benchmark(
 
     total_time_s = time.perf_counter() - loop_start
     qps = n_test / total_time_s
+    rss_after_gib = rss_gib()
 
-    return latencies_ms, recalls, qps
+    return latencies_ms, recalls, qps, rss_before_gib, rss_after_gib
 
 
 def dir_size_gib(path: Path) -> float:
@@ -245,7 +256,7 @@ def main() -> None:
         print(f"  nprobes (5%)   : {nprobes}")
         print(f"  Running {N_WARMUP} warm-up + {N_TEST} timed queries …")
 
-        latencies, recalls, qps = run_benchmark(
+        latencies, recalls, qps, rss_before, rss_after = run_benchmark(
             patch_tbl,
             query_vectors,
             ground_truth_all[project],
@@ -267,6 +278,8 @@ def main() -> None:
         print(f"  Max          : {max_ms:8.2f} ms")
         print(f"  QPS          : {qps:8.1f} q/s")
         print(f"  Recall@10    : {mean_recall:8.4f}  ({mean_recall*100:.2f}%)")
+        print(f"  RSS before   : {rss_before:8.2f} GiB")
+        print(f"  RSS after    : {rss_after:8.2f} GiB")
         print()
 
         records.append({
@@ -285,6 +298,8 @@ def main() -> None:
             "max_ms":         round(max_ms, 3),
             "qps":            round(qps, 1),
             "mean_recall":    round(mean_recall, 6),
+            "rss_before_gib": round(rss_before, 3),
+            "rss_after_gib":  round(rss_after, 3),
         })
 
     if not records:
@@ -322,21 +337,28 @@ def _make_plot(records: list[dict]) -> None:
         "figure.dpi":        200,
     })
 
-    freqs     = [r["resolution"] for r in records]
-    x_vals    = np.array([r["n_patches"]   for r in records], dtype=float)
-    means     = np.array([r["mean_ms"]     for r in records])
-    p95s      = np.array([r["p95_ms"]      for r in records])
-    p99s      = np.array([r["p99_ms"]      for r in records])
-    recalls   = np.array([r["mean_recall"] for r in records])
-    nprobes_l = [r["nprobes"]              for r in records]
+    freqs      = [r["resolution"]    for r in records]
+    x_vals     = np.array([r["n_patches"]    for r in records], dtype=float)
+    means      = np.array([r["mean_ms"]      for r in records])
+    p95s       = np.array([r["p95_ms"]       for r in records])
+    p99s       = np.array([r["p99_ms"]       for r in records])
+    recalls    = np.array([r["mean_recall"]  for r in records])
+    nprobes_l  = [r["nprobes"]               for r in records]
+    rss_before = np.array([r.get("rss_before_gib", float("nan")) for r in records])
+    rss_after  = np.array([r.get("rss_after_gib",  float("nan")) for r in records])
+    raw_gib    = x_vals * 768 * 4 / 1024**3   # uncompressed float32 size
 
     # ── Colours ───────────────────────────────────────────────────────────────
     LATENCY_COLOR = "#2166ac"   # blue
     P95_COLOR     = "#2166ac"
     P99_COLOR     = "#b2182b"   # red
     RECALL_COLOR  = "#1a9641"   # green
+    RSS_COLOR     = "#762a83"   # purple
 
-    fig, ax_lat = plt.subplots(figsize=(7.5, 4.2))
+    fig, (ax_lat, ax_rss) = plt.subplots(
+        2, 1, figsize=(7.5, 7.0),
+        gridspec_kw={"height_ratios": [3, 1.6], "hspace": 0.38},
+    )
 
     # ── Latency: shaded envelopes + mean line ─────────────────────────────────
     ax_lat.fill_between(x_vals, p95s,  p99s,  alpha=0.18, color=P99_COLOR,
@@ -405,6 +427,38 @@ def _make_plot(records: list[dict]) -> None:
         "1 000 queries per experiment)",
         pad=10,
     )
+
+    # ── RSS subplot ───────────────────────────────────────────────────────────
+    ax_rss.fill_between(x_vals, rss_before, rss_after, alpha=0.25,
+                        color=RSS_COLOR, label="RSS range (before → after queries)")
+    ax_rss.plot(x_vals, rss_after,  "^-", color=RSS_COLOR, lw=2, ms=7,
+                zorder=5, label="Peak RSS (after queries)")
+    ax_rss.plot(x_vals, rss_before, "v--", color=RSS_COLOR, lw=1.4, ms=6,
+                alpha=0.6, zorder=4, label="Baseline RSS (before queries)")
+    ax_rss.plot(x_vals, raw_gib, ":", color="#aaaaaa", lw=1.5,
+                zorder=3, label="Raw float32 index size")
+
+    # 16 GiB workstation RAM reference line
+    ax_rss.axhline(16, color="#d6604d", lw=1.2, ls="--", zorder=2)
+    ax_rss.text(x_vals[-1], 16, "  16 GiB RAM", va="bottom",
+                fontsize=8, color="#d6604d")
+
+    ax_rss.set_xscale("log")
+    ax_rss.set_xticks(x_vals)
+    ax_rss.xaxis.set_major_formatter(
+        ticker.FuncFormatter(lambda v, _: _fmt_patches(int(v)))
+    )
+    ax_rss.xaxis.set_minor_locator(ticker.NullLocator())
+    ax_rss.set_xlabel("Patches in Index")
+    ax_rss.set_ylabel("Memory (GiB)", color=RSS_COLOR)
+    ax_rss.tick_params(axis="y", colors=RSS_COLOR)
+    ax_rss.yaxis.label.set_color(RSS_COLOR)
+    ax_rss.spines["left"].set_color(RSS_COLOR)
+    ax_rss.spines["top"].set_visible(False)
+    ax_rss.set_ylim(bottom=0)
+    ax_rss.grid(axis="both", linestyle="--", linewidth=0.5, alpha=0.4, zorder=0)
+    ax_rss.legend(loc="upper left", framealpha=0.88)
+    ax_rss.set_title("Process RSS vs. Index Size  (mmap out-of-core access)", pad=6)
 
     fig.tight_layout()
     fig.savefig(PLOT_PDF, bbox_inches="tight")

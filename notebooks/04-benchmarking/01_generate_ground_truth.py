@@ -286,13 +286,21 @@ def main(chunk_size: int = CHUNK_SIZE) -> None:
     if GROUND_TRUTH_PKL.exists():
         with open(GROUND_TRUTH_PKL, "rb") as f:
             ground_truth: dict[str, dict[int, set[str]]] = pickle.load(f)
-        print(f"Resuming from existing ground truth: {list(ground_truth.keys())}")
+        print(f"[RESUME] Found existing ground truth: {GROUND_TRUTH_PKL}")
+        print(f"[RESUME] Completed experiments ({len(ground_truth)}):")
+        for exp_name, gt_dict in ground_truth.items():
+            print(f"  • {exp_name}  ({len(gt_dict):,} queries stored)")
+        remaining = [p for _, p in EXPERIMENTS if p not in ground_truth]
+        print(f"[RESUME] Remaining : {remaining if remaining else 'none — all done'}")
+        print()
     else:
         ground_truth = {}
+        print("[RESUME] No existing ground truth found — starting fresh.\n")
 
     for freq, project in EXPERIMENTS:
         if project in ground_truth:
-            print(f"  Skipping {project} — already in ground truth.")
+            n_stored = len(ground_truth[project])
+            print(f"[SKIP] {project} ({freq}) — {n_stored:,} queries already in ground truth.")
             continue
 
         print("=" * 64)

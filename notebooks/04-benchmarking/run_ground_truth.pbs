@@ -45,11 +45,13 @@ echo "----------------------------------"
 echo "[INFO] Verifying 'uv' environment..."
 uv run python --version
 
+export PYTHONUNBUFFERED=1
+
 echo ""
 echo "========================================="
 echo "=== Executing Python Script           ==="
 echo "========================================="
-time uv run python notebooks/04-benchmarking/01_generate_ground_truth.py --chunk-size 5000000
+time uv run python -u notebooks/04-benchmarking/01_generate_ground_truth.py --chunk-size 5000000
 
 echo ""
 echo "========================================="
