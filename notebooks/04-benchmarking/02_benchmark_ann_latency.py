@@ -235,12 +235,15 @@ def main() -> None:
         db        = lancedb.connect(str(exp_path))
         patch_tbl = db.open_table("patch_embeddings")
         n_patches = patch_tbl.count_rows()
-        n_images  = db.open_table("image_embeddings").count_rows()
+        try:
+            n_images = db.open_table("image_embeddings").count_rows()
+        except Exception:
+            n_images = None
 
         num_partitions = get_num_partitions(patch_tbl)
         nprobes        = max(1, int(num_partitions * NPROBES_FRAC))
 
-        print(f"  n_images       : {n_images:,}")
+        print(f"  n_images       : {f'{n_images:,}' if n_images is not None else 'N/A'}")
         print(f"  n_patches      : {n_patches:,}")
         print(f"  num_partitions : {num_partitions}")
         print(f"  nprobes (5%)   : {nprobes}")
