@@ -237,17 +237,22 @@ def main(chunk_size: int = CHUNK_SIZE) -> None:
 
     # ── Step 1: universal query vectors ───────────────────────────────────────
     print("=" * 64)
-    print("Step 1 — Sampling universal query vectors …")
-    _base_db    = lancedb.connect(str(DB_URI / "dinov3_1h"))
-    _base_patch = _base_db.open_table("patch_embeddings")
-    _24h_db     = lancedb.connect(str(DB_URI / "dinov3_24h"))
-    _24h_img    = _24h_db.open_table("image_embeddings")
+    print("Step 1 — Universal query vectors …")
+    if QUERIES_NPY.exists():
+        query_vectors = np.load(QUERIES_NPY)
+        print(f"[SKIP] Query vectors already exist — loading: {QUERIES_NPY}")
+        print(f"  shape={query_vectors.shape}  (skipping re-sample to preserve consistency)")
+    else:
+        _base_db    = lancedb.connect(str(DB_URI / "dinov3_1h"))
+        _base_patch = _base_db.open_table("patch_embeddings")
+        _24h_db     = lancedb.connect(str(DB_URI / "dinov3_24h"))
+        _24h_img    = _24h_db.open_table("image_embeddings")
 
-    query_vectors = sample_intersection_vectors(
-        _base_patch, _24h_img, N_QUERY_VECTORS, RANDOM_SEED,
-    )
-    np.save(QUERIES_NPY, query_vectors)
-    print(f"  Saved → {QUERIES_NPY}")
+        query_vectors = sample_intersection_vectors(
+            _base_patch, _24h_img, N_QUERY_VECTORS, RANDOM_SEED,
+        )
+        np.save(QUERIES_NPY, query_vectors)
+        print(f"  Saved → {QUERIES_NPY}")
     print()
 
     # Normalise queries once; keep on GPU throughout all experiments
