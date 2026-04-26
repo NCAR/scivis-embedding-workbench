@@ -44,7 +44,6 @@ def _():
         np,
         plt,
         print_table_sizes,
-        run_experiment,
         setup_experiment,
     )
 
@@ -83,7 +82,7 @@ def _(Path):
 
     # Project folder name — must match the SOURCE_PROJECT used during ingest.
     # This is the subfolder inside shared_source/ that holds the source LanceDB.
-    SOURCE_PROJECT = "era5_sample_images"
+    SOURCE_PROJECT = "era5_hrly_2016_2018_images"
 
     SOURCE_URI = PROJECT_ROOT / "data" / "lancedb" / "shared_source" / SOURCE_PROJECT
     IMG_RAW_TBL_NAME = "images"
@@ -120,12 +119,12 @@ def _(mo):
 @app.cell
 def _(get_model_info):
     # Model-specific config — change this for a different model family
-    PROJECT_NAME = "dinov3_rect"
-    model_info = get_model_info(PROJECT_NAME)
+    PROJECT_NAME = "dinov3_1h"
+    model_info = get_model_info("dinov3_rect")
 
     MODEL = model_info["default_model"]
     SCRIPT = model_info["script_path"]
-    BATCH = 256        # A100: override registry default (64)
+    BATCH = 128        # A100: override registry default (64)
     WORKERS = 4       # A100: override registry default (5); half of 32 cores
     SCAN_BATCH = 8192  # A100: override registry default (1000); 128 GB RAM
 
@@ -176,26 +175,14 @@ def _(mo):
 
 
 @app.cell
-def _(
-    BATCH,
-    IMAGE_H,
-    IMAGE_W,
-    IMG_RAW_TBL_NAME,
-    MODEL,
-    SCAN_BATCH,
-    SCRIPT,
-    SOURCE_URI,
-    WORKERS,
-    experiment,
-    run_experiment,
-):
-    # Case 1: Run inline (interactive notebook workflow)
-    run_experiment(
-        SCRIPT, SOURCE_URI, IMG_RAW_TBL_NAME,
-        experiment["exp_db_uri"], experiment["config_name"],
-        MODEL, batch=BATCH, scan_batch=SCAN_BATCH, workers=WORKERS,
-        image_h=IMAGE_H, image_w=IMAGE_W,
-    )
+def _():
+    # # Case 1: Run inline (interactive notebook workflow)
+    # run_experiment(
+    #     SCRIPT, SOURCE_URI, IMG_RAW_TBL_NAME,
+    #     experiment["exp_db_uri"], experiment["config_name"],
+    #     MODEL, batch=BATCH, scan_batch=SCAN_BATCH, workers=WORKERS,
+    #     image_h=IMAGE_H, image_w=IMAGE_W,
+    # )
     return
 
 
@@ -393,7 +380,7 @@ def _(mo):
 
 @app.cell
 def _(patch_tbl):
-    patch_tbl.create_index(metric="cosine", index_type="IVF_PQ", num_partitions=2048, num_sub_vectors=64, accelerator="cuda", vector_column_name="embedding")
+    patch_tbl.create_index(metric="cosine", index_type="IVF_PQ", num_partitions=4096, num_sub_vectors=96, accelerator="cuda", vector_column_name="embedding")
     return
 
 

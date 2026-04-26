@@ -19,8 +19,6 @@ def _(mo):
     return
 
 
-# ── Imports ───────────────────────────────────────────────────────────────────
-
 @app.cell
 def _():
     import math
@@ -36,10 +34,8 @@ def _():
     from rich.table import Table
 
     console = Console()
-    return Console, Path, Table, UTC, console, datetime, lancedb, math, pa, pc, pd, sys
+    return Path, Table, UTC, console, datetime, lancedb, math, pa, pc, pd, sys
 
-
-# ── Configuration ─────────────────────────────────────────────────────────────
 
 @app.cell
 def _(Path, sys):
@@ -50,17 +46,17 @@ def _(Path, sys):
     # PROJECT_ROOT = Path("/Users/ncheruku/Documents/Work/sample_data")
 
     # Name of the 1 h base experiment subfolder inside DB_URI
-    BASE_EXPERIMENT = "dinov3_rect_1h"
+    BASE_EXPERIMENT = "dinov3_1h"
 
     # LanceDB root holding all experiments
     DB_URI = PROJECT_ROOT / "data" / "lancedb" / "experiments" / "era5"
 
     # Temporal resolutions to generate: list of (pandas_freq_str, output_name)
     RESOLUTIONS = [
-        ("3h",  "dinov3_rect_3h"),
-        ("6h",  "dinov3_rect_6h"),
-        ("12h", "dinov3_rect_12h"),
-        ("24h", "dinov3_rect_24h"),
+        ("3h",  "dinov3_3h"),
+        ("6h",  "dinov3_6h"),
+        ("12h", "dinov3_12h"),
+        ("24h", "dinov3_24h"),
     ]
 
     # Expose the embedding_experiment helpers without a package install
@@ -69,11 +65,8 @@ def _(Path, sys):
     )
     if _helpers_dir not in sys.path:
         sys.path.insert(0, _helpers_dir)
+    return BASE_EXPERIMENT, DB_URI, RESOLUTIONS
 
-    return BASE_EXPERIMENT, DB_URI, PROJECT_ROOT, RESOLUTIONS
-
-
-# ── Load base experiment ───────────────────────────────────────────────────────
 
 @app.cell
 def _(BASE_EXPERIMENT, DB_URI, lancedb):
@@ -90,11 +83,8 @@ def _(BASE_EXPERIMENT, DB_URI, lancedb):
     print(f"  image_embeddings : {base_img_tbl.count_rows():,} rows")
     print(f"  patch_embeddings : {base_patch_tbl.count_rows():,} rows")
     print(f"  config keys      : {len(base_config)}")
-
     return base_config, base_img_tbl, base_patch_tbl, load_config
 
-
-# ── Build image_id → dt map from source table ─────────────────────────────────
 
 @app.cell
 def _(DB_URI, base_config, console, lancedb):
@@ -140,11 +130,8 @@ def _(DB_URI, base_config, console, lancedb):
 
     console.print(f"Source table    : {_source_path}")
     console.print(f"Total timesteps : {len(id_to_dt):,}")
-
     return (id_to_dt,)
 
-
-# ── Temporal alignment helper ─────────────────────────────────────────────────
 
 @app.cell
 def _(id_to_dt, pd):
@@ -180,11 +167,8 @@ def _(id_to_dt, pd):
         _n = len(aligned_ids(id_to_dt, _freq))
         print(f"  {_freq:>4s} → {_n:,} images  "
               f"(~1/{len(id_to_dt) // max(_n, 1)} of base)")
-
     return (aligned_ids,)
 
-
-# ── Generation loop ───────────────────────────────────────────────────────────
 
 @app.cell
 def _(
@@ -293,8 +277,6 @@ def _(
     console.print("\n[bold green]All experiments generated.[/bold green]")
     return
 
-
-# ── Verification ──────────────────────────────────────────────────────────────
 
 @app.cell
 def _(DB_URI, RESOLUTIONS, Table, console, lancedb, load_config):

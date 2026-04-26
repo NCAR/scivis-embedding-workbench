@@ -1,0 +1,38 @@
+#!/bin/bash
+#PBS -N benchmark_phase2
+#PBS -A NVST0001
+#PBS -l select=1:ncpus=4:mem=16GB
+#PBS -l walltime=06:00:00
+#PBS -q casper
+#PBS -j oe
+
+echo "=== Starting Phase 2 Benchmark ==="
+date
+
+# 1. Define Paths
+GLADE_SRC="/glade/work/ncheruku/research/sample_data/data/lancedb/experiments/era5"
+NVME_DEST="/local_scratch/pbs.$PBS_JOBID/era5"
+
+# 2. Export the environment variable for your Python script
+export NVME_DB_DIR="$NVME_DEST"
+echo "[INFO] Exported NVME_DB_DIR=$NVME_DB_DIR"
+
+# 3. Copy the data to the local NVMe
+echo "[INFO] Staging data from GLADE to local NVMe..."
+echo "[INFO] Excluding image_embeddings to save transfer time."
+mkdir -p $NVME_DEST
+
+# Using --info=progress2 gives a clean, overall percentage and speed
+rsync -av --info=progress2 --exclude="image_embeddings.lance" $GLADE_SRC/ $NVME_DEST/
+
+echo "[INFO] Data staging complete!"
+echo "[INFO] Current NVMe contents:"
+ls -lh $NVME_DEST
+
+# 4. Run the Python Script
+echo "[INFO] Running the latency benchmark..."
+cd /glade/work/ncheruku/research/scivis-embedding-workbench/
+uv run python notebooks/04-benchmarking/02_benchmark_ann_latency.py
+
+echo "=== Benchmark Complete! ==="
+date
