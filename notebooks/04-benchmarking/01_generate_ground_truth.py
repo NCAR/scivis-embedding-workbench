@@ -146,101 +146,76 @@ def sample_intersection_vectors(
     return vecs
 
 
-def load_patch_table(
+def compute_topk_cosine_streaming(
     patch_tbl: lancedb.table.Table,
-) -> tuple[np.ndarray, list[str]]:
-    """Load embedding and patch_id columns from a LanceDB patch table.
-
-    Returns
-    -------
-    embs      : np.ndarray of shape (N, 768), dtype float32
-    patch_ids : list of N patch_id strings (globally unique per row)
-
-    Note
-    ----
-    patch_index (0-895) is the within-image patch position and is NOT
-    globally unique — patch 42 from image A ≠ patch 42 from image B.
-    patch_id is the correct unique identifier for recall computation.
-    """
-    n_rows = patch_tbl.count_rows()
-    mem_gb = n_rows * 768 * 4 / 1024**3
-    print(f"  Loading {n_rows:,} rows  (~{mem_gb:.1f} GB RAM) …")
-
-    t0 = time.perf_counter()
-    arrow_tbl = (
-        patch_tbl.to_lance()
-        .scanner(columns=["patch_id", "embedding"])
-        .to_table()
-    )
-    patch_ids = arrow_tbl.column("patch_id").to_pylist()
-    embs = np.array(
-        arrow_tbl.column("embedding").to_pylist(), dtype=np.float32
-    )
-    del arrow_tbl
-    print(f"  Table loaded in {time.perf_counter() - t0:.1f}s")
-    return embs, patch_ids
-
-
-def compute_topk_cosine_gpu(
-    db_embs: np.ndarray,
     query_norm: torch.Tensor,
     k: int,
     chunk_size: int,
     device: torch.device,
-) -> np.ndarray:
-    """Exact top-k cosine similarity via chunked GPU matmul.
+) -> tuple[np.ndarray, list[str]]:
+    """Stream the patch table in batches and compute exact top-k cosine similarity.
 
-    Parameters
-    ----------
-    db_embs    : CPU numpy array (N, D), raw (unnormalized) float32
-    query_norm : GPU tensor (Q, D), already L2-normalised float32
-    k          : number of nearest neighbours to return
-    chunk_size : number of DB rows per GPU matmul call
-    device     : CUDA device
+    Reads chunk_size rows at a time directly into the GPU computation instead
+    of loading the full embedding matrix into CPU RAM first.  For the 1h dataset
+    (23.6M rows), the old approach called .to_pylist() on the embedding column,
+    materialising 23.6M × 768 Python float objects (~435 GB) before numpy even
+    ran — easily OOM on a 350 GB node.  This function keeps peak RAM at roughly
+    chunk_size × 768 × 4 bytes (≈ 15 GB at chunk_size=5M).
 
     Returns
     -------
-    np.ndarray of shape (Q, k) — row indices into db_embs
+    top_row_idxs : np.ndarray (Q, k) — global row indices in Lance scan order
+    patch_ids    : list[str] of length N, in the same scan order
     """
-    n_db   = db_embs.shape[0]
-    n_q    = query_norm.shape[0]
+    n_db     = patch_tbl.count_rows()
+    n_q      = query_norm.shape[0]
     n_chunks = math.ceil(n_db / chunk_size)
 
-    # Initialise running best with sentinel similarity of -2.0
-    # (cosine similarity is bounded in [-1, 1])
-    best_sims = torch.full((n_q, k), fill_value=-2.0, device=device)
-    best_idxs = torch.zeros((n_q, k), dtype=torch.long, device=device)
+    best_sims     = torch.full((n_q, k), fill_value=-2.0, device=device)
+    best_idxs     = torch.zeros((n_q, k), dtype=torch.long, device=device)
+    patch_ids: list[str] = []
+    global_offset = 0
 
-    for c in range(n_chunks):
-        c_start = c * chunk_size
-        c_end   = min(c_start + chunk_size, n_db)
+    scanner = patch_tbl.to_lance().scanner(
+        columns=["patch_id", "embedding"],
+        batch_size=chunk_size,
+    )
 
-        # Stream chunk to GPU and normalize there
-        chunk = torch.from_numpy(db_embs[c_start:c_end]).to(device)
-        chunk = F.normalize(chunk, dim=1)
-        sims  = torch.matmul(query_norm, chunk.T)       # (Q, chunk_size)
+    for c, batch in enumerate(scanner.to_batches()):
+        n_rows = len(batch)
 
-        k_eff = min(k, c_end - c_start)
+        patch_ids.extend(batch.column("patch_id").to_pylist())
+
+        # Flatten the FixedSizeList buffer directly to a numpy array —
+        # avoids the ~435 GB intermediate Python list that .to_pylist() creates
+        flat     = batch.column("embedding").values   # Float32Array, len = n_rows*768
+        chunk_np = flat.to_numpy(zero_copy_only=False).reshape(n_rows, -1)
+
+        chunk_gpu = torch.from_numpy(chunk_np).to(device)
+        chunk_gpu = F.normalize(chunk_gpu, dim=1)
+        sims      = torch.matmul(query_norm, chunk_gpu.T)   # (Q, n_rows)
+
+        k_eff        = min(k, n_rows)
         c_top_vals, c_top_local = torch.topk(sims, k=k_eff, dim=1)
-        c_top_global = c_top_local + c_start
+        c_top_global = c_top_local + global_offset
 
-        # Merge chunk candidates with running best
         cat_vals = torch.cat([best_sims, c_top_vals],   dim=1)
         cat_idxs = torch.cat([best_idxs, c_top_global], dim=1)
         merged   = torch.topk(cat_vals, k=k, dim=1)
         best_sims = merged.values
         best_idxs = cat_idxs.gather(1, merged.indices)
 
-        del chunk, sims, c_top_vals, c_top_local, c_top_global
-        del cat_vals, cat_idxs, merged
+        del chunk_gpu, sims, c_top_vals, c_top_local, c_top_global
+        del cat_vals, cat_idxs, merged, flat, chunk_np
         torch.cuda.empty_cache()
 
+        global_offset += n_rows
         if (c + 1) % 5 == 0 or c == n_chunks - 1:
-            pct = 100 * (c + 1) / n_chunks
+            pct = 100 * global_offset / n_db
             print(f"    chunk {c+1:3d}/{n_chunks}  "
-                  f"({c_end:,}/{n_db:,} rows, {pct:.0f}%)")
+                  f"({global_offset:,}/{n_db:,} rows, {pct:.0f}%)")
 
-    return best_idxs.cpu().numpy()   # (Q, k) global row indices into db
+    return best_idxs.cpu().numpy(), patch_ids
 
 
 # ── MAIN ──────────────────────────────────────────────────────────────────────
@@ -308,16 +283,17 @@ def main(chunk_size: int = CHUNK_SIZE) -> None:
 
         db        = lancedb.connect(str(DB_URI / project))
         patch_tbl = db.open_table("patch_embeddings")
+        n_rows    = patch_tbl.count_rows()
+        mem_gb    = n_rows * 768 * 4 / 1024**3
+        print(f"  Rows : {n_rows:,}  (embeddings ~{mem_gb:.1f} GB if fully loaded)")
 
-        # Load full table to CPU RAM
-        db_embs, patch_ids = load_patch_table(patch_tbl)
-
-        # Exact top-k on GPU (normalization happens per-chunk on the GPU)
-        print(f"  Computing exact top-{TOP_K} on GPU "
+        # Stream table in chunks: reads chunk_size rows at a time directly into
+        # the GPU kernel — never holds the full embedding matrix in CPU RAM.
+        print(f"  Computing exact top-{TOP_K} on GPU streaming "
               f"(chunk_size={chunk_size:,}) …")
         t0 = time.perf_counter()
-        top_row_idxs = compute_topk_cosine_gpu(
-            db_embs, q_norm, TOP_K, chunk_size, device,
+        top_row_idxs, patch_ids = compute_topk_cosine_streaming(
+            patch_tbl, q_norm, TOP_K, chunk_size, device,
         )                              # (1000, 10) global row indices
         elapsed = time.perf_counter() - t0
         print(f"  GPU search done in {elapsed:.1f}s  "
@@ -333,7 +309,7 @@ def main(chunk_size: int = CHUNK_SIZE) -> None:
         print(f"  Ground truth stored for {N_QUERY_VECTORS} queries  ✓")
 
         # Free CPU and GPU memory before next experiment
-        del db_embs, patch_ids, patch_ids_arr, gt_ids, top_row_idxs
+        del top_row_idxs, patch_ids, patch_ids_arr, gt_ids
         torch.cuda.empty_cache()
 
         # Save incrementally so a crash on a later experiment doesn't lose this.
