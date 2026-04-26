@@ -82,10 +82,11 @@ EXPERIMENTS = [
     ("1h",  "dinov3_1h"),
 ]
 
-N_WARMUP     = 100
-N_TEST       = 1_000
-TOP_K        = 10
-NPROBES_FRAC = 0.05
+N_WARMUP      = 100
+N_TEST        = 1_000
+TOP_K         = 10
+NPROBES_FRAC  = 0.05
+REFINE_FACTOR = 50
 
 RESULTS_DIR      = Path(__file__).parent / "results"
 QUERIES_NPY      = RESULTS_DIR / "universal_queries.npy"
@@ -98,18 +99,13 @@ PLOT_PNG         = RESULTS_DIR / "search_latency.png"
 # ── HELPERS ───────────────────────────────────────────────────────────────────
 
 def get_num_partitions(tbl: lancedb.table.Table) -> int:
-    """Read IVF partition count from the live index metadata.
+    """Return the IVF partition count used when the index was built.
 
-    Falls back to 2^round(log2(N/4096)) if metadata is unavailable —
-    the same formula used when the index was built.
+    LanceDB's IndexStatistics.num_indices is the number of Lance sub-index
+    segments (always 1 for a freshly built, unfragmented index), not the IVF
+    cluster count, so it cannot be used here. The index was built with
+    2^round(log2(N/4096)), so we derive the partition count the same way.
     """
-    try:
-        for idx_cfg in tbl.list_indices():
-            stats = tbl.index_stats(idx_cfg.name)
-            if stats is not None and stats.num_indices is not None:
-                return int(stats.num_indices)
-    except Exception:
-        pass
     n = tbl.count_rows()
     return max(1, 2 ** round(math.log2(n / 4096)))
 
@@ -161,7 +157,7 @@ def run_benchmark(
         t0     = time.perf_counter()
         result = (tbl.search(query_vectors[i])
                   .nprobes(nprobes)
-                  .refine_factor(10)
+                  .refine_factor(REFINE_FACTOR)
                   .select(["patch_id"])
                   .limit(TOP_K)
                   .to_pandas())
@@ -281,6 +277,7 @@ def main() -> None:
             "db_size_gib":    round(size_gib, 2),
             "num_partitions": num_partitions,
             "nprobes":        nprobes,
+            "refine_factor":  REFINE_FACTOR,
             "mean_ms":        round(mean_ms, 3),
             "p50_ms":         round(p50_ms, 3),
             "p95_ms":         round(p95_ms, 3),
