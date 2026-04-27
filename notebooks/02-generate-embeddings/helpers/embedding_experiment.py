@@ -79,7 +79,13 @@ def setup_experiment(
         {"key": "tbl_patch_emb", "value": patch_emb_name},
     ]
 
-    config_tbl = db.create_table(config_name, data=config_data, mode="overwrite")
+    if config_name in db.table_names():
+        raise RuntimeError(
+            f"Config table '{config_name}' already exists at {exp_db_uri}. "
+            "Delete the experiment folder manually before re-running setup, "
+            "or use upsert_config() to add/update individual keys."
+        )
+    config_tbl = db.create_table(config_name, data=config_data)
 
     console.print(f"[green]Config table[/green] [bold]{config_name}[/bold] created with {len(config_data)} keys.")
     console.print(f"  Image embeddings  → [cyan]{img_emb_name}[/cyan]")
