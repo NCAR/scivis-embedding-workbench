@@ -2119,42 +2119,29 @@ def _(mo):
         label="Remote URL or local file path (e.g. /data/file.nc)",
         full_width=True,
     )
-    viz_file = mo.ui.file(label="Or upload a local NetCDF file", kind="area")
     viz_load_button = mo.ui.run_button(label="▶ Load dataset")
-    return viz_file, viz_load_button, viz_url
+    return viz_load_button, viz_url
 
 
 @app.cell
-def _(mo, viz_file, viz_load_button, viz_url):
-    """Load dataset — supports remote OpenVisus URLs and local/uploaded NetCDF files."""
+def _(mo, viz_load_button, viz_url):
+    """Load dataset — supports remote OpenVisus URLs and local NetCDF file paths."""
     get_viz_ds, set_viz_ds = mo.state(None)
     get_viz_err, set_viz_err = mo.state(None)
 
     if viz_load_button.value:
         try:
             import xarray as _xr
-            import tempfile as _tmp
             import os as _os
 
             _url = viz_url.value.strip()
-            _uploaded = viz_file.value  # list of file objects or None
 
             # ── Determine source ────────────────────────────────────────────
             _is_netcdf = False
             _nc_path   = None
 
-            if _uploaded:
-                # User uploaded a file via the file picker
-                _f = _uploaded[0]
-                _suffix = _os.path.splitext(_f.name)[1] or ".nc"
-                _tmp_file = _tmp.NamedTemporaryFile(delete=False, suffix=_suffix)
-                _tmp_file.write(_f.contents)
-                _tmp_file.flush()
-                _nc_path   = _tmp_file.name
-                _is_netcdf = True
-            elif _url and (_url.endswith(".nc") or _url.endswith(".nc4")
-                           or _url.endswith(".netcdf") or _os.path.exists(_url)):
-                # Local file path typed in the URL box
+            if _url and (_url.endswith(".nc") or _url.endswith(".nc4")
+                         or _url.endswith(".netcdf") or _os.path.exists(_url)):
                 _nc_path   = _url
                 _is_netcdf = True
 
@@ -2163,6 +2150,7 @@ def _(mo, viz_file, viz_load_button, viz_url):
                 _nc = _xr.open_dataset(_nc_path, engine="netcdf4")
                 _data_vars = list(_nc.data_vars)
                 _dims      = dict(_nc.dims)
+                _coords    = dict(_nc.coords)
 
                 # Identify x, y, z, time dimensions heuristically
                 def _find_dim(candidates, dims):
@@ -2182,16 +2170,30 @@ def _(mo, viz_file, viz_load_button, viz_url):
                 _nz = int(_dims[_zdim]) if _zdim else 1
                 _nt = int(_dims[_tdim]) if _tdim else 1
 
+                # Extract 1-D lat/lon coordinate arrays if available
+                _lon_coord = _find_dim(["lon","longitude","x"], _coords)
+                _lat_coord = _find_dim(["lat","latitude","y"], _coords)
+                _lon_vals = _nc[_lon_coord].values if _lon_coord else None
+                _lat_vals = _nc[_lat_coord].values if _lat_coord else None
+
+                # Flatten to 1-D if needed (some files store 2-D coords)
+                if _lon_vals is not None and _lon_vals.ndim > 1:
+                    _lon_vals = _lon_vals[0]  # take first row
+                if _lat_vals is not None and _lat_vals.ndim > 1:
+                    _lat_vals = _lat_vals[:, 0]  # take first column
+
                 set_viz_ds({
-                    "kind":   "netcdf",
-                    "ds":     _nc,
-                    "path":   _nc_path,
-                    "url":    _nc_path,
-                    "fields": _data_vars,
-                    "steps":  list(range(_nt)),
-                    "box":    [[0, 0, 0], [_nx, _ny, _nz]],
-                    "maxres": 32,  # not used for netcdf but kept for UI consistency
-                    "dims":   {"x": _xdim, "y": _ydim, "z": _zdim, "t": _tdim},
+                    "kind":     "netcdf",
+                    "ds":       _nc,
+                    "path":     _nc_path,
+                    "url":      _nc_path,
+                    "fields":   _data_vars,
+                    "steps":    list(range(_nt)),
+                    "box":      [[0, 0, 0], [_nx, _ny, _nz]],
+                    "maxres":   32,
+                    "dims":     {"x": _xdim, "y": _ydim, "z": _zdim, "t": _tdim},
+                    "lon_vals": _lon_vals,  # 1-D array or None
+                    "lat_vals": _lat_vals,  # 1-D array or None
                 })
                 set_viz_err(None)
 
@@ -2266,14 +2268,37 @@ def _(get_viz_ds, mo):
             start=-8, stop=0, value=-4,
             label="Detail (-8=fast preview, 0=full)", show_value=True,
         )
-        viz_x = mo.ui.range_slider(
-            start=0, stop=_nx, value=[_cx0, _cx1],
-            label="X range", show_value=True,
-        )
-        viz_y = mo.ui.range_slider(
-            start=0, stop=_ny, value=[_cy0, _cy1],
-            label="Y range", show_value=True,
-        )
+        _lon_vals = _meta.get("lon_vals")
+        _lat_vals = _meta.get("lat_vals")
+        _kind_ctrl = _meta.get("kind", "ovp")
+        if _kind_ctrl == "netcdf" and _lon_vals is not None and _lat_vals is not None:
+            _lon_min, _lon_max = float(_lon_vals.min()), float(_lon_vals.max())
+            _lat_min, _lat_max = float(_lat_vals.min()), float(_lat_vals.max())
+            _lon_c0 = round(_lon_min + (_lon_max - _lon_min) * 0.4, 4)
+            _lon_c1 = round(_lon_min + (_lon_max - _lon_min) * 0.6, 4)
+            _lat_c0 = round(_lat_min + (_lat_max - _lat_min) * 0.4, 4)
+            _lat_c1 = round(_lat_min + (_lat_max - _lat_min) * 0.6, 4)
+            viz_x = mo.ui.range_slider(
+                start=round(_lon_min, 4), stop=round(_lon_max, 4),
+                value=[_lon_c0, _lon_c1],
+                step=round((_lon_max - _lon_min) / _nx, 4),
+                label="Longitude range", show_value=True,
+            )
+            viz_y = mo.ui.range_slider(
+                start=round(_lat_min, 4), stop=round(_lat_max, 4),
+                value=[_lat_c0, _lat_c1],
+                step=round((_lat_max - _lat_min) / _ny, 4),
+                label="Latitude range", show_value=True,
+            )
+        else:
+            viz_x = mo.ui.range_slider(
+                start=0, stop=_nx, value=[_cx0, _cx1],
+                label="X range", show_value=True,
+            )
+            viz_y = mo.ui.range_slider(
+                start=0, stop=_ny, value=[_cy0, _cy1],
+                label="Y range", show_value=True,
+            )
         viz_field = mo.ui.dropdown(
             options=_meta["fields"], value=_meta["fields"][0], label="Field",
         )
@@ -2304,7 +2329,6 @@ def _(
     viz_colormap,
     viz_depth,
     viz_field,
-    viz_file,
     viz_load_button,
     viz_quality,
     viz_resolution,
@@ -2319,10 +2343,7 @@ def _(
     _theme = "dark" if map_theme.value else "light"
     _colors = get_theme_colors(_theme)
 
-    _header = mo.vstack([
-        mo.hstack([viz_url, viz_load_button], justify="start"),
-        viz_file,
-    ])
+    _header = mo.hstack([viz_url, viz_load_button], justify="start")
 
     if _err is not None:
         visualize_tab = mo.vstack([
@@ -2384,23 +2405,44 @@ def _(
 
             if _kind == "netcdf":
                 # ── NetCDF slice via xarray ──────────────────────────────────
-                _dims  = _meta["dims"]
-                _var   = _ds[viz_field.value]
-                _sel   = {}
+                _dims     = _meta["dims"]
+                _lon_vals = _meta.get("lon_vals")
+                _lat_vals = _meta.get("lat_vals")
+                _var      = _ds[viz_field.value]
+                _sel      = {}
                 if _dims["t"]:
                     _sel[_dims["t"]] = int(viz_timestep.value)
                 if _dims["z"]:
                     _sel[_dims["z"]] = _z
                 _var2d = _var.isel(**_sel) if _sel else _var
-                # Subset x/y by index
+
+                # Convert lon/lat slider values back to index ranges
+                if _lon_vals is not None and _lat_vals is not None:
+                    _xi0 = int(np.searchsorted(_lon_vals, viz_x.value[0]))
+                    _xi1 = int(np.searchsorted(_lon_vals, viz_x.value[1]))
+                    _yi0 = int(np.searchsorted(_lat_vals, viz_y.value[0]))
+                    _yi1 = int(np.searchsorted(_lat_vals, viz_y.value[1]))
+                else:
+                    _xi0, _xi1 = _x0, _x1
+                    _yi0, _yi1 = _y0, _y1
+
                 if _dims["y"]:
-                    _var2d = _var2d.isel({_dims["y"]: slice(_y0, _y1)})
+                    _var2d = _var2d.isel({_dims["y"]: slice(_yi0, _yi1)})
                 if _dims["x"]:
-                    _var2d = _var2d.isel({_dims["x"]: slice(_x0, _x1)})
+                    _var2d = _var2d.isel({_dims["x"]: slice(_xi0, _xi1)})
                 _slice = _var2d.values.squeeze()
+
                 # Downsample to approximate quality level (each -1 halves resolution)
                 _step = max(1, 2 ** (-_q))
                 _slice = _slice[::_step, ::_step]
+
+                # Coordinate arrays for this slice, downsampled to match
+                if _lon_vals is not None and _lat_vals is not None:
+                    _plot_lon = _lon_vals[_xi0:_xi1][::_step]
+                    _plot_lat = _lat_vals[_yi0:_yi1][::_step]
+                else:
+                    _plot_lon = None
+                    _plot_lat = None
             else:
                 # ── Remote OpenVisus dataset ─────────────────────────────────
                 _reader = _ds.db if hasattr(_ds, "db") and hasattr(_ds.db, "read") else _ds
@@ -2432,19 +2474,34 @@ def _(
             _vmin = float(np.nanpercentile(_slice, 2))
             _vmax = float(np.nanpercentile(_slice, 98))
 
-            # Normalize to uint8 for faster matplotlib rendering
-            _range = _vmax - _vmin if _vmax > _vmin else 1.0
-            _slice_8 = np.clip((_slice - _vmin) / _range * 255, 0, 255).astype(np.uint8)
+            if _kind == "netcdf" and _plot_lon is not None and _plot_lat is not None:
+                # pcolormesh with real lat/lon axes
+                _im = _ax.pcolormesh(
+                    _plot_lon, _plot_lat, _slice,
+                    cmap=viz_colormap.value,
+                    vmin=_vmin, vmax=_vmax,
+                    shading="auto",
+                )
+                _ax.set_xlabel("Longitude", color=_txt)
+                _ax.set_ylabel("Latitude", color=_txt)
+                _title_loc = (f"lon=[{viz_x.value[0]:.2f},{viz_x.value[1]:.2f}]  "
+                              f"lat=[{viz_y.value[0]:.2f},{viz_y.value[1]:.2f}]")
+            else:
+                # Normalize to uint8 for faster matplotlib rendering
+                _range = _vmax - _vmin if _vmax > _vmin else 1.0
+                _slice_8 = np.clip((_slice - _vmin) / _range * 255, 0, 255).astype(np.uint8)
+                _im = _ax.imshow(
+                    _slice_8,
+                    origin="lower",
+                    cmap=viz_colormap.value,
+                    aspect="auto",
+                    vmin=0, vmax=255,
+                    extent=[_x0, _x1, _y0, _y1],
+                )
+                _ax.set_xlabel("X", color=_txt)
+                _ax.set_ylabel("Y", color=_txt)
+                _title_loc = f"x=[{_x0},{_x1}]  y=[{_y0},{_y1}]"
 
-            _im = _ax.imshow(
-                _slice_8,
-                origin="lower",
-                cmap=viz_colormap.value,
-                aspect="auto",
-                vmin=0,
-                vmax=255,
-                extent=[_x0, _x1, _y0, _y1],
-            )
             _cbar = _fig.colorbar(_im, ax=_ax, fraction=0.03, pad=0.02)
             _cbar.ax.yaxis.set_tick_params(color=_txt)
             plt.setp(_cbar.ax.yaxis.get_ticklabels(), color=_txt)
@@ -2452,11 +2509,9 @@ def _(
 
             _ax.set_title(
                 f"{viz_field.value}  ·  t={viz_timestep.value}  ·  z={_z}  ·  "
-                f"x=[{_x0},{_x1}]  y=[{_y0},{_y1}]  ·  res={_res}  ·  q={_q}",
+                f"{_title_loc}  ·  q={_q}",
                 color=_txt,
             )
-            _ax.set_xlabel("X", color=_txt)
-            _ax.set_ylabel("Y", color=_txt)
             _ax.tick_params(colors=_txt)
             for _spine in _ax.spines.values():
                 _spine.set_edgecolor(_colors["border"])

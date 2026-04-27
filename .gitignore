@@ -1,5 +1,6 @@
 # ---- Ignore specific folder ----
 data/
+__Versions
 
 # ---- Jupyter / Python notebooks ----
 .ipynb_checkpoints/
