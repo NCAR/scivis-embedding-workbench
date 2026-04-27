@@ -2115,8 +2115,8 @@ def _(
 @app.cell
 def _(mo):
     viz_url = mo.ui.text(
-        value="pelican://osg-htc.org/nasa/nsdf/climate1/llc4320/idx/theta/theta_llc4320_x_y_depth.idx",
-        label="Remote URL or local file path (e.g. /data/file.nc)",
+        value="",
+        placeholder="pelican://... or /path/to/file.nc",
         full_width=True,
     )
     viz_load_button = mo.ui.run_button(label="▶ Load dataset")
@@ -2125,11 +2125,12 @@ def _(mo):
 
 @app.cell
 def _(mo, viz_load_button, viz_url):
-    """Load dataset — supports remote OpenVisus URLs and local NetCDF file paths."""
+    """Load dataset — triggers on button click or Enter in the URL field."""
     get_viz_ds, set_viz_ds = mo.state(None)
     get_viz_err, set_viz_err = mo.state(None)
 
-    if viz_load_button.value:
+    # mo.ui.text submits (re-runs dependents) on Enter, same as button click
+    if viz_load_button.value or viz_url.value.strip():
         try:
             import xarray as _xr
             import os as _os
@@ -2229,16 +2230,16 @@ def _(get_viz_ds, mo):
     """Build controls once a dataset is loaded."""
     _meta = get_viz_ds()
     if _meta is None:
-        viz_timestep   = mo.ui.slider(start=0, stop=0,  value=0,  label="Timestep",        show_value=True)
-        viz_depth      = mo.ui.slider(start=0, stop=0,  value=0,  label="Depth (z index)",  show_value=True)
-        viz_resolution = mo.ui.slider(start=0, stop=40, value=28, label="Base resolution", show_value=True)
-        viz_quality    = mo.ui.slider(start=-8, stop=0, value=-4, label="Detail (-8=fast preview, 0=full)", show_value=True)
-        viz_x          = mo.ui.range_slider(start=0, stop=100, value=[40, 60], label="X range", show_value=True)
-        viz_y          = mo.ui.range_slider(start=0, stop=100, value=[40, 60], label="Y range", show_value=True)
-        viz_field      = mo.ui.dropdown(options=["(none)"], value="(none)", label="Field")
+        viz_timestep   = mo.ui.slider(start=0, stop=0,  value=0,        show_value=True)
+        viz_depth      = mo.ui.slider(start=0, stop=0,  value=0,  show_value=True)
+        viz_resolution = mo.ui.slider(start=0, stop=40, value=28, show_value=True)
+        viz_quality    = mo.ui.slider(start=-8, stop=0, value=-1, show_value=True)
+        viz_x          = mo.ui.range_slider(start=0, stop=100, value=[40, 60], show_value=True)
+        viz_y          = mo.ui.range_slider(start=0, stop=100, value=[40, 60], show_value=True)
+        viz_field      = mo.ui.dropdown(options=["(none)"], value="(none)")
         viz_colormap   = mo.ui.dropdown(
             options=["viridis","plasma","inferno","magma","cividis","RdBu_r","coolwarm","turbo"],
-            value="viridis", label="Colormap",
+            value="magma",
         )
     else:
         _steps  = _meta["steps"]
@@ -2253,20 +2254,16 @@ def _(get_viz_ds, mo):
         viz_timestep = mo.ui.slider(
             start=int(_steps[0]), stop=int(_steps[-1]),
             value=int(_steps[0]),
-            step=int(_steps[1] - _steps[0]) if len(_steps) > 1 else 1,
-            label="Timestep", show_value=True,
+            step=int(_steps[1] - _steps[0]) if len(_steps) > 1 else 1, show_value=True,
         )
         viz_depth = mo.ui.slider(
-            start=0, stop=int(_z_max), value=0,
-            label="Depth (z index)", show_value=True,
+            start=0, stop=int(_z_max), value=0, show_value=True,
         )
         viz_resolution = mo.ui.slider(
-            start=0, stop=int(_maxres), value=min(28, int(_maxres)),
-            label="Base resolution", show_value=True,
+            start=0, stop=int(_maxres), value=min(28, int(_maxres)), show_value=True,
         )
         viz_quality = mo.ui.slider(
-            start=-8, stop=0, value=-4,
-            label="Detail (-8=fast preview, 0=full)", show_value=True,
+            start=-8, stop=0, value=-1, show_value=True,
         )
         _lon_vals = _meta.get("lon_vals")
         _lat_vals = _meta.get("lat_vals")
@@ -2274,37 +2271,41 @@ def _(get_viz_ds, mo):
         if _kind_ctrl == "netcdf" and _lon_vals is not None and _lat_vals is not None:
             _lon_min, _lon_max = float(_lon_vals.min()), float(_lon_vals.max())
             _lat_min, _lat_max = float(_lat_vals.min()), float(_lat_vals.max())
-            _lon_c0 = round(_lon_min + (_lon_max - _lon_min) * 0.4, 4)
-            _lon_c1 = round(_lon_min + (_lon_max - _lon_min) * 0.6, 4)
-            _lat_c0 = round(_lat_min + (_lat_max - _lat_min) * 0.4, 4)
-            _lat_c1 = round(_lat_min + (_lat_max - _lat_min) * 0.6, 4)
+            _lon_step = max(round((_lon_max - _lon_min) / _nx, 4), 0.0001)
+            _lat_step = max(round((_lat_max - _lat_min) / _ny, 4), 0.0001)
+            _lon_c0 = max(_lon_min, 260)
+            _lon_c1 = min(_lon_max, 330)
+            if _lon_c1 <= _lon_c0:
+                _lon_c0 = _lon_min + (_lon_max - _lon_min) * 0.4
+                _lon_c1 = _lon_min + (_lon_max - _lon_min) * 0.6
+            _lat_c0 = max(_lat_min, 10)
+            _lat_c1 = min(_lat_max, 40)
+            if _lat_c1 <= _lat_c0:
+                _lat_c0 = _lat_min + (_lat_max - _lat_min) * 0.4
+                _lat_c1 = _lat_min + (_lat_max - _lat_min) * 0.6
             viz_x = mo.ui.range_slider(
                 start=round(_lon_min, 4), stop=round(_lon_max, 4),
-                value=[_lon_c0, _lon_c1],
-                step=round((_lon_max - _lon_min) / _nx, 4),
-                label="Longitude range", show_value=True,
+                value=[round(_lon_c0, 4), round(_lon_c1, 4)],
+                step=_lon_step, show_value=True,
             )
             viz_y = mo.ui.range_slider(
                 start=round(_lat_min, 4), stop=round(_lat_max, 4),
-                value=[_lat_c0, _lat_c1],
-                step=round((_lat_max - _lat_min) / _ny, 4),
-                label="Latitude range", show_value=True,
+                value=[round(_lat_c0, 4), round(_lat_c1, 4)],
+                step=_lat_step, show_value=True,
             )
         else:
             viz_x = mo.ui.range_slider(
-                start=0, stop=_nx, value=[_cx0, _cx1],
-                label="X range", show_value=True,
+                start=0, stop=_nx, value=[_cx0, _cx1], show_value=True,
             )
             viz_y = mo.ui.range_slider(
-                start=0, stop=_ny, value=[_cy0, _cy1],
-                label="Y range", show_value=True,
+                start=0, stop=_ny, value=[_cy0, _cy1], show_value=True,
             )
         viz_field = mo.ui.dropdown(
-            options=_meta["fields"], value=_meta["fields"][0], label="Field",
+            options=_meta["fields"], value=_meta["fields"][0],
         )
         viz_colormap = mo.ui.dropdown(
             options=["viridis","plasma","inferno","magma","cividis","RdBu_r","coolwarm","turbo"],
-            value="viridis", label="Colormap",
+            value="magma",
         )
     return (
         viz_colormap,
@@ -2316,6 +2317,32 @@ def _(get_viz_ds, mo):
         viz_x,
         viz_y,
     )
+
+
+@app.cell
+def _(get_viz_ds, mo, np, viz_field):
+    """Compute default min/max when field changes; store in state so number fields can update."""
+    get_viz_vmin, set_viz_vmin = mo.state(0.0)
+    get_viz_vmax, set_viz_vmax = mo.state(1.0)
+
+    _meta = get_viz_ds()
+    if _meta is not None and _meta.get("kind") == "netcdf":
+        try:
+            _da = _meta["ds"][viz_field.value]
+            _vals = _da.values
+            set_viz_vmin(round(float(np.nanpercentile(_vals, 2)), 4))
+            set_viz_vmax(round(float(np.nanpercentile(_vals, 98)), 4))
+        except Exception:
+            pass
+    return get_viz_vmax, get_viz_vmin
+
+
+@app.cell
+def _(get_viz_vmax, get_viz_vmin, mo):
+    """Number fields initialised from state; user edits trigger re-render."""
+    viz_vmin = mo.ui.number(value=get_viz_vmin(), label="Min")
+    viz_vmax = mo.ui.number(value=get_viz_vmax(), label="Max")
+    return viz_vmax, viz_vmin
 
 
 @app.cell
@@ -2334,6 +2361,8 @@ def _(
     viz_resolution,
     viz_timestep,
     viz_url,
+    viz_vmax,
+    viz_vmin,
     viz_x,
     viz_y,
 ):
@@ -2355,7 +2384,7 @@ def _(
             _header,
             mo.callout(
                 mo.md(
-                    "Enter a remote dataset URL above and click **▶ Load dataset**.\n\n"
+                    "Enter a remote Pelican dataset URL or a pathway to a local NetCDF file.\n\n"
                     "**Example datasets:**\n"
                     "- `pelican://osg-htc.org/nasa/nsdf/climate1/llc4320/idx/theta/theta_llc4320_x_y_depth.idx` — Temperature\n"
                     "- `pelican://osg-htc.org/nasa/nsdf/climate1/llc4320/idx/salt/salt_llc4320_x_y_depth.idx` — Salinity\n"
@@ -2380,16 +2409,47 @@ def _(
                f"  ·  **Source:** NetCDF  ·  **Dims:** {_meta['dims']}")
         )
 
+        def _labeled(label, widget):
+            return mo.vstack([mo.md(f"**{label}**"), widget], gap=0)
+
         if _kind == "netcdf":
             _controls = mo.vstack([
-                mo.hstack([viz_field, viz_timestep, viz_depth, viz_colormap, viz_quality], justify="start"),
-                mo.hstack([viz_x, viz_y], justify="start"),
+                mo.hstack([
+                    _labeled("Variable", viz_field),
+                    _labeled("Timestep", viz_timestep),
+                    _labeled("Colormap", viz_colormap),
+                    _labeled("Detail", viz_quality),
+                ], justify="start"),
+                mo.hstack([
+                    _labeled("Longitude range", viz_x),
+                    _labeled("Latitude range", viz_y),
+                    _labeled("Depth (z)", viz_depth),
+                ], justify="start"),
+                mo.hstack([
+                    _labeled("Min value", viz_vmin),
+                    _labeled("Max value", viz_vmax),
+                ], justify="start"),
             ])
         else:
             _controls = mo.vstack([
-                mo.hstack([viz_field, viz_timestep, viz_depth, viz_colormap, viz_quality], justify="start"),
-                mo.hstack([viz_x, viz_y], justify="start"),
-                mo.hstack([mo.md("**Base resolution:**"), viz_resolution], justify="start"),
+                mo.hstack([
+                    _labeled("Variable", viz_field),
+                    _labeled("Timestep", viz_timestep),
+                    _labeled("Colormap", viz_colormap),
+                    _labeled("Detail", viz_quality),
+                ], justify="start"),
+                mo.hstack([
+                    _labeled("X range", viz_x),
+                    _labeled("Y range", viz_y),
+                    _labeled("Depth (z)", viz_depth),
+                ], justify="start"),
+                mo.hstack([
+                    _labeled("Min value", viz_vmin),
+                    _labeled("Max value", viz_vmax),
+                ], justify="start"),
+                mo.hstack([
+                    _labeled("Base resolution", viz_resolution),
+                ], justify="start"),
             ])
 
         try:
@@ -2418,10 +2478,17 @@ def _(
 
                 # Convert lon/lat slider values back to index ranges
                 if _lon_vals is not None and _lat_vals is not None:
-                    _xi0 = int(np.searchsorted(_lon_vals, viz_x.value[0]))
-                    _xi1 = int(np.searchsorted(_lon_vals, viz_x.value[1]))
-                    _yi0 = int(np.searchsorted(_lat_vals, viz_y.value[0]))
-                    _yi1 = int(np.searchsorted(_lat_vals, viz_y.value[1]))
+                    # Handle both ascending and descending coordinate arrays
+                    def _coord_slice(arr, lo, hi):
+                        if arr[-1] > arr[0]:  # ascending
+                            i0 = int(np.searchsorted(arr, lo, side='left'))
+                            i1 = int(np.searchsorted(arr, hi, side='right'))
+                        else:  # descending — flip, search, flip back
+                            i0 = len(arr) - int(np.searchsorted(arr[::-1], hi, side='left'))
+                            i1 = len(arr) - int(np.searchsorted(arr[::-1], lo, side='right'))
+                        return max(0, i0), min(len(arr), max(i1, i0 + 1))
+                    _xi0, _xi1 = _coord_slice(_lon_vals, viz_x.value[0], viz_x.value[1])
+                    _yi0, _yi1 = _coord_slice(_lat_vals, viz_y.value[0], viz_y.value[1])
                 else:
                     _xi0, _xi1 = _x0, _x1
                     _yi0, _yi1 = _y0, _y1
@@ -2471,17 +2538,52 @@ def _(
             _fig.patch.set_facecolor(_bg)
             _ax.set_facecolor(_bg)
 
-            _vmin = float(np.nanpercentile(_slice, 2))
-            _vmax = float(np.nanpercentile(_slice, 98))
+            _vmin = float(viz_vmin.value) if viz_vmin.value is not None else float(np.nanpercentile(_slice, 2))
+            _vmax = float(viz_vmax.value) if viz_vmax.value is not None else float(np.nanpercentile(_slice, 98))
+            if _vmax <= _vmin:
+                _vmax = _vmin + 1.0
 
             if _kind == "netcdf" and _plot_lon is not None and _plot_lat is not None:
-                # pcolormesh with real lat/lon axes
+                # ── Land background ──────────────────────────────────────────
+                import cartopy.crs as _ccrs
+                import cartopy.feature as _cfeature
+                import matplotlib.colors as _mcolors
+
+                # Rebuild ax with cartopy projection
+                plt.close(_fig)
+                _fig = plt.figure(figsize=(10, 5))
+                _fig.patch.set_facecolor(_bg)
+                _ax = _fig.add_subplot(1, 1, 1, projection=_ccrs.PlateCarree())
+                _ax.set_facecolor("#444444")  # ocean/water — dark gray
+                _ax.set_extent(
+                    [_plot_lon.min(), _plot_lon.max(),
+                     _plot_lat.min(), _plot_lat.max()],
+                    crs=_ccrs.PlateCarree(),
+                )
+                _ax.add_feature(
+                    _cfeature.NaturalEarthFeature(
+                        "physical", "land", "110m",
+                        facecolor="#888888", edgecolor="none",
+                    )
+                )
+
+                # ── Data with linear alpha (low=transparent, high=opaque) ────
+                _norm = _mcolors.Normalize(vmin=_vmin, vmax=_vmax)
+                _cmap_base = plt.get_cmap(viz_colormap.value)
+
+                # Build a custom colormap where alpha ramps from 0 to 1
+                _colors_rgba = _cmap_base(np.linspace(0, 1, 256))
+                _colors_rgba[:, 3] = np.linspace(0, 1, 256)  # alpha = 0..1
+                _cmap_alpha = _mcolors.ListedColormap(_colors_rgba)
+
                 _im = _ax.pcolormesh(
                     _plot_lon, _plot_lat, _slice,
-                    cmap=viz_colormap.value,
-                    vmin=_vmin, vmax=_vmax,
+                    cmap=_cmap_alpha,
+                    norm=_norm,
                     shading="auto",
+                    transform=_ccrs.PlateCarree(),
                 )
+
                 _ax.set_xlabel("Longitude", color=_txt)
                 _ax.set_ylabel("Latitude", color=_txt)
                 _title_loc = (f"lon=[{viz_x.value[0]:.2f},{viz_x.value[1]:.2f}]  "
@@ -2503,6 +2605,7 @@ def _(
                 _title_loc = f"x=[{_x0},{_x1}]  y=[{_y0},{_y1}]"
 
             _cbar = _fig.colorbar(_im, ax=_ax, fraction=0.03, pad=0.02)
+            _cbar.ax.set_facecolor("#444444")
             _cbar.ax.yaxis.set_tick_params(color=_txt)
             plt.setp(_cbar.ax.yaxis.get_ticklabels(), color=_txt)
             _cbar.set_label(viz_field.value, color=_txt)
