@@ -2219,7 +2219,7 @@ def _(mo, viz_file_picker, viz_load_button, viz_url):
                     import pandas as _pd
                     try:
                         _tv = _nc[_tdim].values
-                        _time_vals = [str(_pd.Timestamp(_t).date()) for _t in _tv]
+                        _time_vals = [_pd.Timestamp(_t).strftime("%Y-%m-%d %H:%M") for _t in _tv]
                     except Exception:
                         _time_vals = [str(i) for i in range(_nt)]
                 else:
@@ -2273,7 +2273,7 @@ def _(get_viz_ds, mo):
     """Build controls once a dataset is loaded."""
     _meta = get_viz_ds()
     if _meta is None:
-        viz_timestep   = mo.ui.text(value="", placeholder="YYYY-MM-DD")
+        viz_timestep   = mo.ui.text(value="", placeholder="YYYY-MM-DD HH:MM")
         viz_depth      = mo.ui.slider(start=0, stop=0,  value=0,  show_value=True)
         viz_resolution = mo.ui.slider(start=0, stop=40, value=28, show_value=True)
         viz_quality    = mo.ui.slider(start=-8, stop=0, value=-1, show_value=True)
@@ -2299,7 +2299,7 @@ def _(get_viz_ds, mo):
         if _kind_ctrl_t == "netcdf" and _time_vals:
             viz_timestep = mo.ui.text(
                 value=_time_vals[0],
-                placeholder="YYYY-MM-DD",
+                placeholder="YYYY-MM-DD HH:MM",
             )
         else:
             viz_timestep = mo.ui.slider(
@@ -2508,7 +2508,7 @@ def _(
             _controls = mo.vstack([
                 mo.hstack([
                     _labeled("Variable", viz_field),
-                    _labeled("Date (YYYY-MM-DD)", viz_timestep),
+                    _labeled("Date (YYYY-MM-DD HH:MM)", viz_timestep),
                     _labeled("Colormap", viz_colormap),
                     _labeled("Detail", viz_quality),
                 ], justify="start"),
