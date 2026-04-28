@@ -27,3 +27,4 @@ Thumbs.db
 .env
 .venv/
 
+uv.lock
