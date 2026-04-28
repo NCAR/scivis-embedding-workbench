@@ -40,7 +40,7 @@ dependencies = [
     "h5py>=3.16.0",
     "openvisus",
     "openvisusnogui",
-    "openvisuspy>=1.0.71",
+    "openvisuspy",
     "xmltodict>=1.0.4",
     "boto3>=1.42.92",
     "colorcet>=3.1.0",
