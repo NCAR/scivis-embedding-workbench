@@ -2116,15 +2116,40 @@ def _(
 def _(mo):
     viz_url = mo.ui.text(
         value="",
-        placeholder="pelican://... or /path/to/file.nc",
+        placeholder="pelican://... or /path/to/file.nc or /path/to/folder/",
         full_width=True,
     )
     viz_load_button = mo.ui.run_button(label="▶ Load dataset")
-    return viz_load_button, viz_url
+    viz_reset_minmax = mo.ui.run_button(label="↺ Reset min/max")
+    return viz_load_button, viz_reset_minmax, viz_url
 
 
 @app.cell
-def _(mo, viz_load_button, viz_url):
+def _(mo, viz_url):
+    """If the URL is a folder, list NetCDF files in a dropdown."""
+    import os as _os_fc
+    _path = viz_url.value.strip()
+    _nc_exts = (".nc", ".nc4", ".netcdf")
+    if _path and _os_fc.path.isdir(_path):
+        _files = sorted([
+            f for f in _os_fc.listdir(_path)
+            if f.lower().endswith(_nc_exts)
+        ])
+        if _files:
+            viz_file_picker = mo.ui.dropdown(
+                options=_files,
+                value=_files[0],
+                label="Select NetCDF file",
+            )
+        else:
+            viz_file_picker = None
+    else:
+        viz_file_picker = None
+    return (viz_file_picker,)
+
+
+@app.cell
+def _(mo, viz_file_picker, viz_load_button, viz_url):
     """Load dataset — triggers on button click or Enter in the URL field."""
     get_viz_ds, set_viz_ds = mo.state(None)
     get_viz_err, set_viz_err = mo.state(None)
@@ -2140,9 +2165,14 @@ def _(mo, viz_load_button, viz_url):
             # ── Determine source ────────────────────────────────────────────
             _is_netcdf = False
             _nc_path   = None
+            _nc_exts   = (".nc", ".nc4", ".netcdf")
 
-            if _url and (_url.endswith(".nc") or _url.endswith(".nc4")
-                         or _url.endswith(".netcdf") or _os.path.exists(_url)):
+            if _url and _os.path.isdir(_url):
+                # Folder — use the file picker selection
+                if viz_file_picker is not None and viz_file_picker.value:
+                    _nc_path   = _os.path.join(_url, viz_file_picker.value)
+                    _is_netcdf = True
+            elif _url and (_url.endswith(_nc_exts) or _os.path.exists(_url)):
                 _nc_path   = _url
                 _is_netcdf = True
 
@@ -2183,18 +2213,31 @@ def _(mo, viz_load_button, viz_url):
                 if _lat_vals is not None and _lat_vals.ndim > 1:
                     _lat_vals = _lat_vals[:, 0]  # take first column
 
+                # Extract actual time coordinate values if available
+                _time_vals = None
+                if _tdim and _tdim in _nc.coords:
+                    import pandas as _pd
+                    try:
+                        _tv = _nc[_tdim].values
+                        _time_vals = [str(_pd.Timestamp(_t).date()) for _t in _tv]
+                    except Exception:
+                        _time_vals = [str(i) for i in range(_nt)]
+                else:
+                    _time_vals = [str(i) for i in range(_nt)]
+
                 set_viz_ds({
-                    "kind":     "netcdf",
-                    "ds":       _nc,
-                    "path":     _nc_path,
-                    "url":      _nc_path,
-                    "fields":   _data_vars,
-                    "steps":    list(range(_nt)),
-                    "box":      [[0, 0, 0], [_nx, _ny, _nz]],
-                    "maxres":   32,
-                    "dims":     {"x": _xdim, "y": _ydim, "z": _zdim, "t": _tdim},
-                    "lon_vals": _lon_vals,  # 1-D array or None
-                    "lat_vals": _lat_vals,  # 1-D array or None
+                    "kind":      "netcdf",
+                    "ds":        _nc,
+                    "path":      _nc_path,
+                    "url":       _nc_path,
+                    "fields":    _data_vars,
+                    "steps":     list(range(_nt)),
+                    "time_vals": _time_vals,  # list of date strings
+                    "box":       [[0, 0, 0], [_nx, _ny, _nz]],
+                    "maxres":    32,
+                    "dims":      {"x": _xdim, "y": _ydim, "z": _zdim, "t": _tdim},
+                    "lon_vals":  _lon_vals,
+                    "lat_vals":  _lat_vals,
                 })
                 set_viz_err(None)
 
@@ -2230,7 +2273,7 @@ def _(get_viz_ds, mo):
     """Build controls once a dataset is loaded."""
     _meta = get_viz_ds()
     if _meta is None:
-        viz_timestep   = mo.ui.slider(start=0, stop=0,  value=0,        show_value=True)
+        viz_timestep   = mo.ui.text(value="", placeholder="YYYY-MM-DD")
         viz_depth      = mo.ui.slider(start=0, stop=0,  value=0,  show_value=True)
         viz_resolution = mo.ui.slider(start=0, stop=40, value=28, show_value=True)
         viz_quality    = mo.ui.slider(start=-8, stop=0, value=-1, show_value=True)
@@ -2251,11 +2294,19 @@ def _(get_viz_ds, mo):
         # Default to center 20%
         _cx0, _cx1 = int(_nx * 0.4), int(_nx * 0.6)
         _cy0, _cy1 = int(_ny * 0.4), int(_ny * 0.6)
-        viz_timestep = mo.ui.slider(
-            start=int(_steps[0]), stop=int(_steps[-1]),
-            value=int(_steps[0]),
-            step=int(_steps[1] - _steps[0]) if len(_steps) > 1 else 1, show_value=True,
-        )
+        _time_vals = _meta.get("time_vals")
+        _kind_ctrl_t = _meta.get("kind", "ovp")
+        if _kind_ctrl_t == "netcdf" and _time_vals:
+            viz_timestep = mo.ui.text(
+                value=_time_vals[0],
+                placeholder="YYYY-MM-DD",
+            )
+        else:
+            viz_timestep = mo.ui.slider(
+                start=int(_steps[0]), stop=int(_steps[-1]),
+                value=int(_steps[0]),
+                step=int(_steps[1] - _steps[0]) if len(_steps) > 1 else 1, show_value=True,
+            )
         viz_depth = mo.ui.slider(
             start=0, stop=int(_z_max), value=0, show_value=True,
         )
@@ -2320,18 +2371,39 @@ def _(get_viz_ds, mo):
 
 
 @app.cell
-def _(get_viz_ds, mo, np, viz_field):
-    """Compute default min/max when field changes; store in state so number fields can update."""
+def _(get_viz_ds, mo, np, viz_depth, viz_field, viz_timestep):
+    """Compute min/max for the selected timestep and depth when field/date/reset changes."""
     get_viz_vmin, set_viz_vmin = mo.state(0.0)
     get_viz_vmax, set_viz_vmax = mo.state(1.0)
 
     _meta = get_viz_ds()
     if _meta is not None and _meta.get("kind") == "netcdf":
         try:
-            _da = _meta["ds"][viz_field.value]
-            _vals = _da.values
-            set_viz_vmin(round(float(np.nanpercentile(_vals, 2)), 4))
-            set_viz_vmax(round(float(np.nanpercentile(_vals, 98)), 4))
+            _dims      = _meta["dims"]
+            _time_vals = _meta.get("time_vals")
+            _da        = _meta["ds"][viz_field.value]
+
+            # Select the current timestep
+            _sel = {}
+            if _dims["t"]:
+                if _time_vals and isinstance(viz_timestep.value, str):
+                    _tv = viz_timestep.value.strip()
+                    if _tv in _time_vals:
+                        _sel[_dims["t"]] = _time_vals.index(_tv)
+                    else:
+                        _sel = None  # invalid date — skip
+                else:
+                    try:
+                        _sel[_dims["t"]] = int(viz_timestep.value)
+                    except (ValueError, TypeError):
+                        _sel = None
+            if _dims["z"]:
+                _sel[_dims["z"]] = int(viz_depth.value)
+
+            if _sel is not None:
+                _slice = _da.isel(**_sel).values
+                set_viz_vmin(round(float(np.nanpercentile(_slice, 2)), 4))
+                set_viz_vmax(round(float(np.nanpercentile(_slice, 98)), 4))
         except Exception:
             pass
     return get_viz_vmax, get_viz_vmin
@@ -2356,8 +2428,10 @@ def _(
     viz_colormap,
     viz_depth,
     viz_field,
+    viz_file_picker,
     viz_load_button,
     viz_quality,
+    viz_reset_minmax,
     viz_resolution,
     viz_timestep,
     viz_url,
@@ -2372,7 +2446,19 @@ def _(
     _theme = "dark" if map_theme.value else "light"
     _colors = get_theme_colors(_theme)
 
-    _header = mo.hstack([viz_url, viz_load_button], justify="start")
+    _picker_row = (
+        mo.hstack([mo.md("**File:**"), viz_file_picker], justify="start")
+        if viz_file_picker is not None else None
+    )
+    _header = mo.vstack([
+        mo.Html(
+            '<div style="display:flex;gap:8px;align-items:flex-end;width:100%">'
+            + f'<div style="flex:3;min-width:0">{viz_url._repr_html_()}</div>'
+            + f'<div style="flex:0 0 auto">{viz_load_button._repr_html_()}</div>'
+            + '</div>'
+        ),
+        *([_picker_row] if _picker_row is not None else []),
+    ])
 
     if _err is not None:
         visualize_tab = mo.vstack([
@@ -2384,7 +2470,7 @@ def _(
             _header,
             mo.callout(
                 mo.md(
-                    "Enter a remote Pelican dataset URL or a pathway to a local NetCDF file.\n\n"
+                    "Enter a remote Pelican dataset URL, a path to a local NetCDF file, or a folder to browse files.\n\n"
                     "**Example datasets:**\n"
                     "- `pelican://osg-htc.org/nasa/nsdf/climate1/llc4320/idx/theta/theta_llc4320_x_y_depth.idx` — Temperature\n"
                     "- `pelican://osg-htc.org/nasa/nsdf/climate1/llc4320/idx/salt/salt_llc4320_x_y_depth.idx` — Salinity\n"
@@ -2401,12 +2487,18 @@ def _(
         _nx, _ny, _nz = _box[1][0], _box[1][1], _box[1][2]
 
         _kind = _meta.get("kind", "ovp")
+        _time_vals_info = _meta.get("time_vals")
+        if _kind == "ovp":
+            _extra = f"  ·  **Max resolution:** {_maxres}"
+        elif _time_vals_info:
+            _extra = f"  ·  **Dates:** {_time_vals_info[0]} → {_time_vals_info[-1]}"
+        else:
+            _extra = "  ·  **Source:** NetCDF"
         _info_md = mo.md(
             f"**Dimensions:** {_nx} × {_ny} × {_nz}  ·  "
             f"**Timesteps:** {len(_steps)}  ·  "
             f"**Fields:** {', '.join(_fields)}"
-            + (f"  ·  **Max resolution:** {_maxres}" if _kind == "ovp" else
-               f"  ·  **Source:** NetCDF  ·  **Dims:** {_meta['dims']}")
+            + _extra
         )
 
         def _labeled(label, widget):
@@ -2416,7 +2508,7 @@ def _(
             _controls = mo.vstack([
                 mo.hstack([
                     _labeled("Variable", viz_field),
-                    _labeled("Timestep", viz_timestep),
+                    _labeled("Date (YYYY-MM-DD)", viz_timestep),
                     _labeled("Colormap", viz_colormap),
                     _labeled("Detail", viz_quality),
                 ], justify="start"),
@@ -2428,6 +2520,7 @@ def _(
                 mo.hstack([
                     _labeled("Min value", viz_vmin),
                     _labeled("Max value", viz_vmax),
+                    _labeled(" ", viz_reset_minmax),
                 ], justify="start"),
             ])
         else:
@@ -2446,6 +2539,7 @@ def _(
                 mo.hstack([
                     _labeled("Min value", viz_vmin),
                     _labeled("Max value", viz_vmax),
+                    _labeled(" ", viz_reset_minmax),
                 ], justify="start"),
                 mo.hstack([
                     _labeled("Base resolution", viz_resolution),
@@ -2471,7 +2565,15 @@ def _(
                 _var      = _ds[viz_field.value]
                 _sel      = {}
                 if _dims["t"]:
-                    _sel[_dims["t"]] = int(viz_timestep.value)
+                    _time_vals = _meta.get("time_vals")
+                    if _time_vals and isinstance(viz_timestep.value, str):
+                        _tv = viz_timestep.value.strip()
+                        if _tv not in _time_vals:
+                            raise ValueError(f"Date '{_tv}' not found in dataset. Available range: {_time_vals[0]} → {_time_vals[-1]}")
+                        _t_idx = _time_vals.index(_tv)
+                    else:
+                        _t_idx = int(viz_timestep.value)
+                    _sel[_dims["t"]] = _t_idx
                 if _dims["z"]:
                     _sel[_dims["z"]] = _z
                 _var2d = _var.isel(**_sel) if _sel else _var
@@ -2544,46 +2646,54 @@ def _(
                 _vmax = _vmin + 1.0
 
             if _kind == "netcdf" and _plot_lon is not None and _plot_lat is not None:
-                # ── Land background ──────────────────────────────────────────
-                import cartopy.crs as _ccrs
-                import cartopy.feature as _cfeature
                 import matplotlib.colors as _mcolors
+                import matplotlib.patches as _mpatches
+                import cartopy.io.shapereader as _shpreader
+                import shapely.vectorized as _shvec
+                from shapely.ops import unary_union as _unary_union
 
-                # Rebuild ax with cartopy projection
+                # ── Fixed-size figure with plain axes ────────────────────────
                 plt.close(_fig)
-                _fig = plt.figure(figsize=(10, 5))
+                _fig, _ax = plt.subplots(figsize=(10, 5), dpi=100)
                 _fig.patch.set_facecolor(_bg)
-                _ax = _fig.add_subplot(1, 1, 1, projection=_ccrs.PlateCarree())
-                _ax.set_facecolor("#444444")  # ocean/water — dark gray
-                _ax.set_extent(
-                    [_plot_lon.min(), _plot_lon.max(),
-                     _plot_lat.min(), _plot_lat.max()],
-                    crs=_ccrs.PlateCarree(),
-                )
-                _ax.add_feature(
-                    _cfeature.NaturalEarthFeature(
-                        "physical", "land", "110m",
-                        facecolor="#888888", edgecolor="none",
-                    )
-                )
+                _ax.set_facecolor("#444444")  # ocean — dark gray
+                _ax.set_xlim(_plot_lon.min(), _plot_lon.max())
+                _ax.set_ylim(_plot_lat.min(), _plot_lat.max())
+                _ax.set_aspect("auto")  # fill the fixed figure size
 
-                # ── Data with linear alpha (low=transparent, high=opaque) ────
+                # ── Draw land polygons from Natural Earth ─────────────────────
+                _land_shp = _shpreader.natural_earth(
+                    resolution="110m", category="physical", name="land"
+                )
+                for _geom in _shpreader.Reader(_land_shp).geometries():
+                    _ax.add_patch(_mpatches.PathPatch(
+                        plt.matplotlib.path.Path.make_compound_path(
+                            *[plt.matplotlib.path.Path(
+                                np.column_stack([np.array(p.exterior.coords)[:, 0],
+                                                 np.array(p.exterior.coords)[:, 1]])
+                            ) for p in (
+                                [_geom] if _geom.geom_type == "Polygon"
+                                else list(_geom.geoms)
+                            )]
+                        ),
+                        facecolor="#888888", edgecolor="none", zorder=1,
+                        transform=_ax.transData,
+                    ))
+
+                # ── Data with linear alpha ────────────────────────────────────
                 _norm = _mcolors.Normalize(vmin=_vmin, vmax=_vmax)
                 _cmap_base = plt.get_cmap(viz_colormap.value)
-
-                # Build a custom colormap where alpha ramps from 0 to 1
                 _colors_rgba = _cmap_base(np.linspace(0, 1, 256))
-                _colors_rgba[:, 3] = np.linspace(0, 1, 256)  # alpha = 0..1
+                _colors_rgba[:, 3] = np.linspace(0, 1, 256)
                 _cmap_alpha = _mcolors.ListedColormap(_colors_rgba)
 
                 _im = _ax.pcolormesh(
                     _plot_lon, _plot_lat, _slice,
-                    cmap=_cmap_alpha,
-                    norm=_norm,
-                    shading="auto",
-                    transform=_ccrs.PlateCarree(),
+                    cmap=_cmap_alpha, norm=_norm,
+                    shading="auto", zorder=2,
                 )
 
+                # ── Lat/lon tick labels ───────────────────────────────────────
                 _ax.set_xlabel("Longitude", color=_txt)
                 _ax.set_ylabel("Latitude", color=_txt)
                 _title_loc = (f"lon=[{viz_x.value[0]:.2f},{viz_x.value[1]:.2f}]  "
@@ -2611,7 +2721,7 @@ def _(
             _cbar.set_label(viz_field.value, color=_txt)
 
             _ax.set_title(
-                f"{viz_field.value}  ·  t={viz_timestep.value}  ·  z={_z}  ·  "
+                f"{viz_field.value}  ·  {viz_timestep.value}  ·  z={_z}  ·  "
                 f"{_title_loc}  ·  q={_q}",
                 color=_txt,
             )
@@ -2619,7 +2729,8 @@ def _(
             for _spine in _ax.spines.values():
                 _spine.set_edgecolor(_colors["border"])
 
-            _fig.tight_layout()
+            if _kind != "netcdf":
+                _fig.tight_layout()
             _plot_html = mo.as_html(_fig)
             plt.close(_fig)
 
