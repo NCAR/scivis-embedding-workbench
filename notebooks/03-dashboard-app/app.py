@@ -2470,11 +2470,12 @@ def _(
             _header,
             mo.callout(
                 mo.md(
-                    "Enter a remote Pelican dataset URL, a path to a local NetCDF file, or a folder to browse files.\n\n"
-                    "**Example datasets:**\n"
-                    "- `pelican://osg-htc.org/nasa/nsdf/climate1/llc4320/idx/theta/theta_llc4320_x_y_depth.idx` — Temperature\n"
-                    "- `pelican://osg-htc.org/nasa/nsdf/climate1/llc4320/idx/salt/salt_llc4320_x_y_depth.idx` — Salinity\n"
-                    "- `pelican://osg-htc.org/nasa/nsdf/climate2/llc4320/idx/w/w_llc4320_x_y_depth.idx` — Vertical velocity"
+                    "Enter a folder pathway to ERA5 NetCDF files\n"
+                    # "Enter a remote Pelican dataset URL, a path to a local NetCDF file, or a folder to browse files.\n\n"
+                    # "**Example datasets:**\n"
+                    # "- `pelican://osg-htc.org/nasa/nsdf/climate1/llc4320/idx/theta/theta_llc4320_x_y_depth.idx` — Temperature\n"
+                    # "- `pelican://osg-htc.org/nasa/nsdf/climate1/llc4320/idx/salt/salt_llc4320_x_y_depth.idx` — Salinity\n"
+                    # "- `pelican://osg-htc.org/nasa/nsdf/climate2/llc4320/idx/w/w_llc4320_x_y_depth.idx` — Vertical velocity"
                 ),
                 kind="info",
             ),
