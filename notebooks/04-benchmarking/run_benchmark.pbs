@@ -1,0 +1,48 @@
+#!/bin/bash
+#PBS -N benchmark_phase2
+#PBS -A NVST0001
+#PBS -l select=1:ncpus=4:mem=16GB:ngpus=1
+#PBS -l walltime=06:00:00
+#PBS -q casper
+#PBS -j oe
+
+set -e
+
+echo "=== Starting Phase 2 Benchmark ==="
+date
+
+# 1. Define Paths
+GLADE_SRC="/glade/work/ncheruku/research/sample_data/data/lancedb/experiments/era5"
+NVME_DEST="/local_scratch/pbs.$PBS_JOBID/era5"
+
+# 2. Preflight: log available NVMe space
+echo "[INFO] NVMe available space:"
+df -h /local_scratch
+
+# 3. Export the environment variable for your Python script
+export NVME_DB_DIR="$NVME_DEST"
+echo "[INFO] Exported NVME_DB_DIR=$NVME_DB_DIR"
+
+# 4. Copy the data to the local NVMe
+echo "[INFO] Staging data from GLADE to local NVMe..."
+echo "[INFO] Copying patch_embeddings.lance only (excluding image_embeddings)."
+mkdir -p $NVME_DEST
+
+for exp_dir in "$GLADE_SRC"/*/; do
+    exp_name=$(basename "$exp_dir")
+    echo "[INFO] Copying $exp_name/patch_embeddings.lance ..."
+    mkdir -p "$NVME_DEST/$exp_name"
+    cp -r "$exp_dir/patch_embeddings.lance" "$NVME_DEST/$exp_name/"
+done
+
+echo "[INFO] Data staging complete!"
+echo "[INFO] Current NVMe contents:"
+ls -lh $NVME_DEST
+
+# 5. Run the Python Script
+echo "[INFO] Running the latency benchmark..."
+cd /glade/work/ncheruku/research/scivis-embedding-workbench/
+PYTHONUNBUFFERED=1 uv run python notebooks/04-benchmarking/02_benchmark_ann_latency.py
+
+echo "=== Benchmark Complete! ==="
+date

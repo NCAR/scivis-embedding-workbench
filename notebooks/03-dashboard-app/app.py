@@ -667,33 +667,110 @@ def composite_attention_overlay(
 
 @app.function
 def render_thumbnail_gallery(thumbs, n_filtered, max_display, theme="light",
-                             thumb_w=192, thumb_h=192):
-    """Build HTML for a theme-aware thumbnail gallery with datetime labels."""
+                             thumb_w=192, thumb_h=192, full_blobs=None):
+    """Build HTML for a theme-aware thumbnail gallery with datetime labels.
+
+    If `full_blobs` is a list aligned with `thumbs`, each thumbnail becomes
+    clickable: clicking opens the corresponding full-resolution image in a
+    pure-CSS lightbox overlay (hidden-checkbox sibling-selector technique —
+    no JavaScript, so it survives marimo's HTML sanitizer). Click anywhere
+    on the overlay to close.
+    """
     import base64
+    import uuid
 
     _c = get_theme_colors(theme)
     bg, text, border = _c["gallery_bg"], _c["text"], _c["border"]
 
+    # Per-render id prefix keeps checkbox ids unique across re-renders / cells
+    _render_id = uuid.uuid4().hex[:8]
+    _cls = f"lbx-{_render_id}"   # scoped class to avoid global CSS collisions
+
+    _has_any_full = (
+        full_blobs is not None
+        and any(fb is not None for fb in full_blobs[: len(thumbs)])
+    )
+
     imgs = []
-    for fname, blob, dt in thumbs:
+    for _i, (fname, blob, dt) in enumerate(thumbs):
         b64 = base64.b64encode(blob).decode()
-        dt_str = dt.strftime("%Y-%m-%d %H:%M") if hasattr(dt, "strftime") else str(dt)
-        imgs.append(
-            f'<div style="display:inline-block;margin:3px;text-align:center">'
-            f'<img src="data:image/jpeg;base64,{b64}" '
-            f'style="width:{thumb_w}px;height:{thumb_h}px;object-fit:fill;border:1px solid {border};'
-            f'border-radius:4px" title="{fname}"/>'
-            f'<div style="font-size:11px;color:{text};max-width:{thumb_w}px;'
-            f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
-            f'{dt_str}</div></div>'
-        )
+
+        def _fmt_dt(_d):
+            if _d is None:
+                return "—"
+            if hasattr(_d, "strftime"):
+                try:
+                    _s = _d.strftime("%Y-%m-%d %H:%M")
+                except (ValueError, AttributeError):
+                    _s = str(_d)
+            else:
+                _s = str(_d)
+            return "—" if _s in ("", "NaT", "NaTType", "None") else _s
+
+        dt_str = _fmt_dt(dt)
+
+        _has_full = full_blobs is not None and _i < len(full_blobs) and full_blobs[_i] is not None
+        if _has_full:
+            _slot = f"{_render_id}-{_i}"
+            _full_b64 = base64.b64encode(full_blobs[_i]).decode()
+            # Order matters: <input> must come before label + overlay so the
+            # `.lbx-cb:checked ~ .lbx-overlay` sibling selector can match.
+            imgs.append(
+                f'<span class="{_cls}-slot" style="display:inline-block;margin:3px;text-align:center;position:relative">'
+                f'<input type="checkbox" class="{_cls}-cb" id="lb-{_slot}">'
+                f'<label for="lb-{_slot}" class="{_cls}-thumb" title="{fname} — click to zoom">'
+                f'<img src="data:image/jpeg;base64,{b64}" '
+                f'style="width:{thumb_w}px;height:{thumb_h}px;object-fit:fill;'
+                f'border:1px solid {border};border-radius:4px;display:block"/>'
+                f'</label>'
+                f'<div style="font-size:11px;color:{text};max-width:{thumb_w}px;'
+                f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
+                f'{dt_str}</div>'
+                f'<label for="lb-{_slot}" class="{_cls}-overlay">'
+                f'<img src="data:image/jpeg;base64,{_full_b64}"/>'
+                f'</label>'
+                f'</span>'
+            )
+        else:
+            imgs.append(
+                f'<div style="display:inline-block;margin:3px;text-align:center">'
+                f'<img src="data:image/jpeg;base64,{b64}" '
+                f'style="width:{thumb_w}px;height:{thumb_h}px;object-fit:fill;border:1px solid {border};'
+                f'border-radius:4px" title="{fname}"/>'
+                f'<div style="font-size:11px;color:{text};max-width:{thumb_w}px;'
+                f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
+                f'{dt_str}</div></div>'
+            )
 
     count_msg = f"Showing {len(thumbs)} of {n_filtered} selected"
     if n_filtered > max_display:
         count_msg += f" (capped at {max_display})"
 
+    # Inject CSS only when at least one thumb has a full-res blob
+    _style = ""
+    if _has_any_full:
+        _style = (
+            f'<style>'
+            f'.{_cls}-cb {{ display: none; }}'
+            f'.{_cls}-thumb {{ cursor: zoom-in; display: inline-block; }}'
+            f'.{_cls}-overlay {{ '
+            f'display: none; position: fixed; inset: 0; '
+            f'background: rgba(0,0,0,0.85); z-index: 2147483647; '
+            f'align-items: center; justify-content: center; '
+            f'cursor: zoom-out; '
+            f'}}'
+            f'.{_cls}-cb:checked ~ .{_cls}-overlay {{ display: flex; }}'
+            f'.{_cls}-overlay img {{ '
+            f'max-width: 95vw; max-height: 95vh; '
+            f'border-radius: 4px; '
+            f'box-shadow: 0 8px 32px rgba(0,0,0,0.5); '
+            f'}}'
+            f'</style>'
+        )
+
     gallery_html = (
-        f'<div style="display:flex;flex-wrap:wrap;gap:4px;align-content:flex-start;'
+        _style
+        + f'<div class="{_cls}" style="display:flex;flex-wrap:wrap;gap:4px;align-content:flex-start;'
         f'height:600px;overflow-y:auto;background:{bg};'
         f'border-radius:8px;padding:8px;border:1px solid {border}">'
         + "".join(imgs)
@@ -1605,8 +1682,8 @@ def _(config, map_theme, mo, set_ss_init, src_img_tbl, ss_load_button):
 
 @app.cell
 def _(mo):
-    ss_n_similar_images = mo.ui.number(start=1, stop=50, step=1, value=50, label="Similar images")
-    ss_n_similar_patches = mo.ui.number(start=10, stop=500, step=200, value=100, label="Max patches")
+    ss_n_similar_images = mo.ui.number(start=1, stop=500, step=1, value=50, label="Similar images")
+    ss_n_similar_patches = mo.ui.number(start=10, stop=10000, step=10, value=100, label="Max patches")
     ss_max_gallery = mo.ui.number(start=4, stop=100, step=4, value=25, label="Gallery cap")
     ss_refine_factor = mo.ui.number(start=1, stop=50, step=1, value=20, label="Refine factor")
     ss_similarity_toggle = mo.ui.switch(label="Similarity overlay")
@@ -1965,18 +2042,42 @@ def _(
             for _, row in ss_top_df.iterrows()
         }
 
-        _thumbs = []
-        _date_map = {}
-        for _img_id, _data in _groups.iterrows():
-            _r = (
-                src_img_tbl.search()
-                .where(f"id = '{_img_id}'")
-                .select(["image_blob", "dt"])
-                .limit(1)
-                .to_pandas()
-                .iloc[0]
+        import pyarrow.compute as _pc_g
+
+        # 1. Lightweight dt-only fetch for ALL results → complete date map for
+        #    the Data sub-tab without pulling any image blobs for non-gallery rows.
+        _all_img_ids = ss_top_df["image_id"].unique().tolist()
+        _dt_batch = (
+            src_img_tbl.to_lance()
+            .scanner(
+                columns=["id", "dt"],
+                filter=_pc_g.field("id").isin(_all_img_ids),
             )
-            _date_map[_img_id] = _r["dt"]
+            .to_table()
+            .to_pandas()
+            .set_index("id")
+        )
+        _date_map = _dt_batch["dt"].to_dict()
+
+        # 2. Full blob fetch only for the gallery-capped images (≤ _MAX rows).
+        #    image_blob is ~190 KB each; fetching it for all results was the
+        #    over-fetch — only the gallery thumbnails ever use the blob.
+        _gallery_ids = list(_groups.index)
+        _blob_batch = (
+            src_img_tbl.to_lance()
+            .scanner(
+                columns=["id", "image_blob"],
+                filter=_pc_g.field("id").isin(_gallery_ids),
+            )
+            .to_table()
+            .to_pandas()
+            .set_index("id")
+        )
+
+        _thumbs = []
+        _full_blobs = []
+        for _img_id, _data in _groups.iterrows():
+            _r = _blob_batch.loc[_img_id]
 
             if ss_similarity_toggle.value:
                 _matched = {
@@ -1994,7 +2095,7 @@ def _(
                 for _p in map(int, _data["patch_index"]):
                     _pr, _pc = _p // _n_cols, _p % _n_cols
                     _bx = (_pc * _patch_w, _pr * _patch_h, (_pc + 1) * _patch_w, (_pr + 1) * _patch_h)
-                    _draw.rectangle(_bx, outline=(255, 80, 0), width=2)
+                    _draw.rectangle(_bx, outline=(0, 0, 0), width=2)
                 _buf = _io_g.BytesIO()
                 _im.save(_buf, format="JPEG", quality=85)
                 _blob = _buf.getvalue()
@@ -2003,7 +2104,15 @@ def _(
             _im_t = _Image_g.open(_io_g.BytesIO(_blob)).resize((_thumb_w, _thumb_h), _Image_g.LANCZOS)
             _buf_t = _io_g.BytesIO()
             _im_t.save(_buf_t, format="JPEG", quality=82)
-            _thumbs.append((f"{str(_r['dt'])[:10]}  ·  d={_data['_distance']:.2f}", _buf_t.getvalue(), _r["dt"]))
+            _dt = _date_map.get(_img_id)
+            _dt_label = (
+                _dt.strftime("%Y-%m-%d")
+                if (_dt is not None and hasattr(_dt, "strftime") and _pd_g.notna(_dt))
+                else "—"
+            )
+            _thumbs.append((f"{_dt_label}  ·  d={_data['_distance']:.2f}", _buf_t.getvalue(), _dt))
+            # Keep the pre-resize (annotated) blob for the click-to-zoom lightbox
+            _full_blobs.append(_blob)
 
         _theme = "dark" if map_theme.value else "light"
         _n_patches = len(ss_top_df)
@@ -2025,6 +2134,7 @@ def _(
         _, _gallery_html = render_thumbnail_gallery(
             _thumbs, _n_shown, _MAX, theme=_theme,
             thumb_w=_thumb_w, thumb_h=_thumb_h,
+            full_blobs=_full_blobs,
         )
 
         _df_merged = (
@@ -2032,7 +2142,14 @@ def _(
             .agg(patch_indices=("patch_index", list), cosine_dists=("_distance", list))
             .reset_index()
         )
-        _df_merged["date"] = _df_merged["image_id"].map(lambda x: str(_date_map.get(x, ""))[:10])
+        def _fmt_date(x):
+            _d = _date_map.get(x)
+            if _d is None or (hasattr(_d, "__class__") and _d.__class__.__name__ == "NaTType"):
+                return "—"
+            _s = str(_d)[:10]
+            return "—" if _s in ("", "NaT", "None") else _s
+
+        _df_merged["date"] = _df_merged["image_id"].map(_fmt_date)
         _df_merged["best_dist"] = _df_merged["cosine_dists"].apply(min)
         _df_merged = (
             _df_merged[["date", "image_id", "patch_indices", "cosine_dists", "best_dist"]]

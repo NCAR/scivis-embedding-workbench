@@ -93,7 +93,7 @@ def _(Path, lancedb):
     # ── Database ─────────────────────────────────────────────────────────────
     # Project name — used as the subfolder inside shared_source/ that holds
     # this dataset's LanceDB database. Rename this to separate datasets.
-    SOURCE_PROJECT = "era5_sample_images"
+    SOURCE_PROJECT = "era5_hrly_2016_2018_images"
 
     # LanceDB storage directory — each project lives in its own subfolder
     db_dir = PROJECT_ROOT / "data" / "lancedb" / "shared_source" / SOURCE_PROJECT
@@ -131,7 +131,7 @@ def _(Path, lancedb):
     # to a pandas freq string to ingest only the aligned subset.
     # Examples: "3h" (every 3 hours), "6h", "12h", "D" (daily noon), None (all)
     # INGEST_RESOLUTION = None           # ingest all files
-    INGEST_RESOLUTION = "3h"             # keep only timestamps aligned to 3-hour boundaries
+    INGEST_RESOLUTION = None             # keep only timestamps aligned to 3-hour boundaries
 
     # ── Ingest performance ────────────────────────────────────────────────────
     # Number of parallel worker processes for image decoding/resizing
@@ -531,7 +531,7 @@ def _(Path, db_dir, os):
         return total
 
 
-    table_path = db_dir / "era5_sample_images.lance"
+    table_path = db_dir / "era5_hrly_2016_2018_images.lance"
 
 
     # size_bytes = dir_size_bytes("/glade/work/ncheruku/research/bams-ai-data-exploration/data/lancedb/shared_source/era5/dinov3_image_embeddings.lance")
