@@ -27,4 +27,4 @@ Thumbs.db
 .env
 .venv/
 
-# uv.lock
+uv.lock
