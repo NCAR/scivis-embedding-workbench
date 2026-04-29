@@ -98,8 +98,8 @@ def test_setup_source_path_absolute_when_outside_project_root(tmp_path):
     assert config["source_path"] == str(source)
 
 
-def test_setup_overwrite_is_idempotent(tmp_path):
-    """Calling setup_experiment twice on same name doesn't raise (mode=overwrite)."""
+def test_setup_raises_on_duplicate(tmp_path):
+    """Calling setup_experiment twice on the same name raises RuntimeError."""
     kwargs = dict(
         project_name="dup",
         author="a",
@@ -108,7 +108,8 @@ def test_setup_overwrite_is_idempotent(tmp_path):
         db_uri=tmp_path / "db5",
     )
     setup_experiment(**kwargs)
-    setup_experiment(**kwargs)  # should not raise
+    with pytest.raises(RuntimeError, match="already exists"):
+        setup_experiment(**kwargs)
 
 
 # ── load_config ───────────────────────────────────────────────────────────────
