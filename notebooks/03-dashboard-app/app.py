@@ -2339,7 +2339,7 @@ def _(get_viz_ds, mo, viz_date_input):
         viz_field      = mo.ui.dropdown(options=["(none)"], value="(none)")
         viz_colormap   = mo.ui.dropdown(
             options=["viridis","plasma","inferno","magma","cividis","RdBu_r","coolwarm","turbo"],
-            value="magma",
+            value="viridis",
         )
     else:
         _steps  = _meta["steps"]
@@ -2413,7 +2413,7 @@ def _(get_viz_ds, mo, viz_date_input):
         )
         viz_colormap = mo.ui.dropdown(
             options=["viridis","plasma","inferno","magma","cividis","RdBu_r","coolwarm","turbo"],
-            value="magma",
+            value="viridis",
         )
     return (
         viz_colormap, viz_depth, viz_field,
