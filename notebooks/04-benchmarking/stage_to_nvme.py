@@ -38,16 +38,21 @@ your running job ID automatically. It errors out if no running job is found.
 
 Configuration
 -------------
-Set SOURCE_DIR below to the top-level folder you want to stage.
-For this project that is typically the experiments directory, e.g.:
-    /glade/work/<user>/research/sample_data/data/lancedb/experiments/era5
+Set SOURCE_DIR and GLADE_PROJECT_ROOT below.
 
-The script copies SOURCE_DIR into the NVMe root as a subdirectory, so the
-destination becomes:
-    /local_scratch/pbs.$PBS_JOBID/<basename of SOURCE_DIR>
+SOURCE_DIR is the folder to stage (typically the lancedb directory).
+GLADE_PROJECT_ROOT is the project root that SOURCE_DIR lives under.
 
-The app's "Experiments DB path" field should be set to the *parent* of that
-destination (printed at the end of the script).
+The script mirrors SOURCE_DIR's path relative to GLADE_PROJECT_ROOT under the
+NVMe root, so the destination becomes:
+    /local_scratch/pbs.$PBS_JOBID/<SOURCE_DIR relative to GLADE_PROJECT_ROOT>
+
+Preserving this relative path structure is required so that the dashboard's
+source-path resolution can walk up the directory tree and locate the source
+image DB using the relative path stored in each experiment's config.
+
+The app's "Experiments DB path" field should be set to the staged lancedb
+experiments subdirectory (printed at the end of the script).
 """
 
 import os
@@ -60,7 +65,10 @@ from pathlib import Path
 from tqdm import tqdm
 
 # ── User config ───────────────────────────────────────────────────────────────
-# Set this to the folder you want to stage (e.g. the LanceDB experiments dir)
+# Project root on Glade — SOURCE_DIR must be a subdirectory of this.
+# The path of SOURCE_DIR relative to GLADE_PROJECT_ROOT is replicated under
+# the NVMe root so the dashboard can resolve the source DB path correctly.
+GLADE_PROJECT_ROOT = "/glade/work/ncheruku/research/sample_data"
 SOURCE_DIR = "/glade/work/ncheruku/research/sample_data/data/lancedb/"
 MAX_WORKERS = 8   # parallel copy threads; reduce if Glade I/O throttles
 # ─────────────────────────────────────────────────────────────────────────────
@@ -134,12 +142,24 @@ def copy_with_progress(src: Path, dst: Path) -> None:
 
 def main() -> None:
     src = Path(SOURCE_DIR)
+    project_root = Path(GLADE_PROJECT_ROOT)
     if not src.exists():
         print(f"[stage] ERROR: SOURCE_DIR does not exist: {src}", file=sys.stderr)
         sys.exit(1)
+    try:
+        rel = src.relative_to(project_root)
+    except ValueError:
+        print(
+            f"[stage] ERROR: SOURCE_DIR ({src}) is not under GLADE_PROJECT_ROOT ({project_root})",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     nvme_root = get_nvme_root()
-    dst = nvme_root / src.name
+    # Mirror the Glade path structure under NVMe so resolve_source_path in the
+    # dashboard can walk up the tree and find the source DB using the relative
+    # path stored in each experiment's config.
+    dst = nvme_root / rel
 
     print(f"[stage] Source : {src}", flush=True)
     print(f"[stage] Dest   : {dst}", flush=True)
@@ -154,7 +174,7 @@ def main() -> None:
     print()
     print("=" * 60)
     print("  Paste this path into the app's 'Experiments DB path':")
-    print(f"  {dst.parent}")
+    print(f"  {dst}/experiments/era5")
     print("=" * 60)
 
 
