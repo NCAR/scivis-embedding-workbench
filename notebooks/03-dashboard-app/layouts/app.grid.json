@@ -3,7 +3,7 @@
   "data": {
     "columns": 24,
     "rowHeight": 20,
-    "maxWidth": 1400,
+    "maxWidth": 2500,
     "bordered": true,
     "cells": [
       {
@@ -233,7 +233,7 @@
           0,
           0,
           24,
-          42
+          104
         ],
         "scrollable": true
       },

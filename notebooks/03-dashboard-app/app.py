@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.20.4"
+__generated_with = "0.23.4"
 app = marimo.App(layout_file="layouts/app.grid.json")
 
 
@@ -2229,8 +2229,6 @@ def _(
     return (spatial_search_tab,)
 
 
-# ── Visualize tab: ERA5 NetCDF local dataset viewer ───────────────────────────
-
 @app.cell
 def _(mo):
     viz_url = mo.ui.text(
@@ -2311,12 +2309,11 @@ def _(mo, viz_date_input, viz_url):
             if _files:
                 viz_file_picker = mo.ui.dropdown(options=_files, value=_files[0])
                 viz_file_info = f"`{_root}` — {len(_files)} file(s)"
-
-    return viz_file_picker, viz_file_info
+    return viz_file_info, viz_file_picker
 
 
 @app.cell
-def _(mo, viz_date_input, viz_file_info, viz_file_picker, viz_load_button, viz_reset_minmax, viz_url):
+def _(mo, viz_date_input, viz_file_picker, viz_load_button, viz_url):
     """Load dataset — triggers on button click or Enter in the URL field."""
     get_viz_ds, set_viz_ds = mo.state(None)
     get_viz_err, set_viz_err = mo.state(None)
@@ -2438,8 +2435,7 @@ def _(mo, viz_date_input, viz_file_info, viz_file_picker, viz_load_button, viz_r
         except Exception as _e:
             set_viz_ds(None)
             set_viz_err(str(_e))
-
-    return get_viz_ds, get_viz_err, set_viz_ds, set_viz_err
+    return get_viz_ds, get_viz_err
 
 
 @app.cell
@@ -2533,13 +2529,19 @@ def _(get_viz_ds, mo, viz_date_input):
             value="viridis",
         )
     return (
-        viz_colormap, viz_depth, viz_field,
-        viz_quality, viz_resolution, viz_timestep, viz_x, viz_y,
+        viz_colormap,
+        viz_depth,
+        viz_field,
+        viz_quality,
+        viz_resolution,
+        viz_timestep,
+        viz_x,
+        viz_y,
     )
 
 
 @app.cell
-def _(get_viz_ds, mo, np, viz_depth, viz_field, viz_reset_minmax, viz_timestep):
+def _(get_viz_ds, mo, np, viz_depth, viz_field, viz_timestep):
     """Compute min/max for the selected timestep and depth when field/date/reset changes."""
     get_viz_vmin, set_viz_vmin = mo.state(0.0)
     get_viz_vmax, set_viz_vmax = mo.state(1.0)
@@ -2574,8 +2576,7 @@ def _(get_viz_ds, mo, np, viz_depth, viz_field, viz_reset_minmax, viz_timestep):
                 set_viz_vmax(round(float(np.nanpercentile(_slice, 98)), 4))
         except Exception:
             pass
-
-    return get_viz_vmin, get_viz_vmax, set_viz_vmin, set_viz_vmax
+    return get_viz_vmax, get_viz_vmin
 
 
 @app.cell
@@ -2583,16 +2584,33 @@ def _(get_viz_vmax, get_viz_vmin, mo):
     """Number fields initialised from state; user edits trigger re-render."""
     viz_vmin = mo.ui.number(value=get_viz_vmin(), label="Min")
     viz_vmax = mo.ui.number(value=get_viz_vmax(), label="Max")
-    return viz_vmin, viz_vmax
+    return viz_vmax, viz_vmin
 
 
 @app.cell
 def _(
-    get_viz_ds, get_viz_err, map_theme,
-    mo, np, plt,
-    viz_colormap, viz_date_input, viz_depth, viz_field, viz_file_info, viz_file_picker,
-    viz_load_button, viz_quality, viz_reset_minmax, viz_resolution,
-    viz_timestep, viz_url, viz_vmax, viz_vmin, viz_x, viz_y,
+    get_viz_ds,
+    get_viz_err,
+    map_theme,
+    mo,
+    np,
+    plt,
+    viz_colormap,
+    viz_date_input,
+    viz_depth,
+    viz_field,
+    viz_file_info,
+    viz_file_picker,
+    viz_load_button,
+    viz_quality,
+    viz_reset_minmax,
+    viz_resolution,
+    viz_timestep,
+    viz_url,
+    viz_vmax,
+    viz_vmin,
+    viz_x,
+    viz_y,
 ):
     """Render a horizontal 2-D slice — auto-updates on any control change."""
     _meta = get_viz_ds()
@@ -2859,33 +2877,16 @@ def _(
                 _header, _info_md, _controls,
                 mo.callout(mo.md(f"**Render error:** `{_render_err}`"), kind="danger"),
             ])
-
     return (visualize_tab,)
 
 
 @app.cell
-def _(mo):
-    audit_tab = mo.callout(
-        mo.md("**Audit** — coming soon."), kind="neutral"
-    )
-    return (audit_tab,)
-
-
-@app.cell
-def _(
-    audit_tab,
-    dim_reduction_tab,
-    explore_tab,
-    mo,
-    spatial_search_tab,
-    visualize_tab,
-):
+def _(dim_reduction_tab, explore_tab, mo, spatial_search_tab, visualize_tab):
     mo.ui.tabs({
         "Data": explore_tab,
         "Clustering": dim_reduction_tab,
         "Spatial Search": spatial_search_tab,
         "Visualize": visualize_tab,
-        "Audit": audit_tab,
     })
     return
 
