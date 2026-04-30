@@ -2663,6 +2663,21 @@ def _(
                 _land_shp_fill = _shpreader.natural_earth(
                     resolution="110m", category="physical", name="land"
                 )
+
+                def _split_and_draw_ring(lons, lats, draw_fn):
+                    """Split a ring at antimeridian jumps, draw each segment separately."""
+                    _seg_lons, _seg_lats = [lons[0]], [lats[0]]
+                    for _i in range(1, len(lons)):
+                        if abs(lons[_i] - lons[_i-1]) > 90:
+                            if len(_seg_lons) > 2:
+                                draw_fn(_seg_lons, _seg_lats)
+                            _seg_lons, _seg_lats = [lons[_i]], [lats[_i]]
+                        else:
+                            _seg_lons.append(lons[_i])
+                            _seg_lats.append(lats[_i])
+                    if len(_seg_lons) > 2:
+                        draw_fn(_seg_lons, _seg_lats)
+
                 for _geom_f in _shpreader.Reader(_land_shp_fill).geometries():
                     _polys_f = [_geom_f] if _geom_f.geom_type == "Polygon" else list(_geom_f.geoms)
                     for _poly_f in _polys_f:
@@ -2673,16 +2688,11 @@ def _(
                             _lons_f = np.where(_lons_f < 0, _lons_f + 360, _lons_f)
                         if _lons_f.max() < _lon_min_ax or _lons_f.min() > _lon_max_ax:
                             continue
-                        # Insert NaN breaks at large lon jumps to avoid horizontal streaks
-                        _lons_b, _lats_b = [_lons_f[0]], [_lats_f[0]]
-                        for _i in range(1, len(_lons_f)):
-                            if abs(_lons_f[_i] - _lons_f[_i-1]) > 90:
-                                _lons_b.append(np.nan)
-                                _lats_b.append(np.nan)
-                            _lons_b.append(_lons_f[_i])
-                            _lats_b.append(_lats_f[_i])
-                        _ax.fill(_lons_b, _lats_b, color="#666666",
-                                 zorder=1, transform=_ax.transData)
+                        _split_and_draw_ring(
+                            _lons_f, _lats_f,
+                            lambda lo, la: _ax.fill(lo, la, color="#666666",
+                                                    zorder=1, transform=_ax.transData)
+                        )
 
                 # ── Data ─────────────────────────────────────────────────────
                 _norm = _mcolors.Normalize(vmin=_vmin, vmax=_vmax)
@@ -2702,21 +2712,6 @@ def _(
                     resolution="110m", category="physical", name="land"
                 )
 
-                def _plot_coast(lons, lats):
-                    """Plot a coastline, breaking it wherever it jumps across the plot."""
-                    # Insert NaN breaks where consecutive points jump more than 180°
-                    # (antimeridian crossing) or leave the plot extent
-                    _seg_lons, _seg_lats = [lons[0]], [lats[0]]
-                    for _i in range(1, len(lons)):
-                        _gap = abs(lons[_i] - lons[_i-1]) > 90
-                        if _gap:
-                            _seg_lons.append(np.nan)
-                            _seg_lats.append(np.nan)
-                        _seg_lons.append(lons[_i])
-                        _seg_lats.append(lats[_i])
-                    _ax.plot(_seg_lons, _seg_lats, color="#cccccc",
-                             linewidth=0.5, zorder=3, transform=_ax.transData)
-
                 for _geom in _shpreader.Reader(_land_shp).geometries():
                     _polys = [_geom] if _geom.geom_type == "Polygon" else list(_geom.geoms)
                     for _poly in _polys:
@@ -2727,7 +2722,12 @@ def _(
                             _lons = np.where(_lons < 0, _lons + 360, _lons)
                         if _lons.max() < _lon_min_ax or _lons.min() > _lon_max_ax:
                             continue
-                        _plot_coast(_lons, _lats)
+                        _split_and_draw_ring(
+                            _lons, _lats,
+                            lambda lo, la: _ax.plot(lo, la, color="#cccccc",
+                                                    linewidth=0.5, zorder=3,
+                                                    transform=_ax.transData)
+                        )
 
                 # ── Lat/lon tick labels ───────────────────────────────────────
                 _ax.set_xlabel("Longitude", color=_txt)
