@@ -2863,17 +2863,16 @@ def _(
     return (visualize_tab,)
 
 
-@app.cell
-def _(mo):
-    audit_tab = mo.callout(
-        mo.md("**Audit** — coming soon."), kind="neutral"
-    )
-    return (audit_tab,)
+# @app.cell
+# def _(mo):
+#     audit_tab = mo.callout(
+#         mo.md("**Audit** — coming soon."), kind="neutral"
+#     )
+#     return (audit_tab,)
 
 
 @app.cell
 def _(
-    audit_tab,
     dim_reduction_tab,
     explore_tab,
     mo,
@@ -2885,7 +2884,6 @@ def _(
         "Clustering": dim_reduction_tab,
         "Spatial Search": spatial_search_tab,
         "Visualize": visualize_tab,
-        "Audit": audit_tab,
     })
     return
 
