@@ -2645,10 +2645,7 @@ def _(
 
             if _kind == "netcdf" and _plot_lon is not None and _plot_lat is not None:
                 import matplotlib.colors as _mcolors
-                import matplotlib.patches as _mpatches
                 import cartopy.io.shapereader as _shpreader
-                import shapely.vectorized as _shvec
-                from shapely.ops import unary_union as _unary_union
 
                 # ── Fixed-size figure with plain axes ────────────────────────
                 plt.close(_fig)
@@ -2659,35 +2656,7 @@ def _(
                 _ax.set_ylim(_plot_lat.min(), _plot_lat.max())
                 _ax.set_aspect("auto")  # fill the fixed figure size
 
-                # ── Draw land polygons from Natural Earth ─────────────────────
-                # ERA5 uses 0-360 lon; Natural Earth uses -180 to 180.
-                # Shift negative longitudes by +360 if data is in 0-360 space.
-                _lon_is_360 = _plot_lon.max() > 180
-
-                _land_shp = _shpreader.natural_earth(
-                    resolution="110m", category="physical", name="land"
-                )
-                _lon_min_ax = _plot_lon.min()
-                _lon_max_ax = _plot_lon.max()
-
-                def _draw_polygon(poly):
-                    coords = np.array(poly.exterior.coords)
-                    lons = coords[:, 0]
-                    lats = coords[:, 1]
-                    if _lon_is_360:
-                        lons = np.where(lons < 0, lons + 360, lons)
-                    # Only draw if polygon overlaps the plot extent
-                    if lons.max() < _lon_min_ax or lons.min() > _lon_max_ax:
-                        return
-                    _ax.fill(lons, lats, color="#888888", zorder=1,
-                             transform=_ax.transData)
-
-                for _geom in _shpreader.Reader(_land_shp).geometries():
-                    _polys = [_geom] if _geom.geom_type == "Polygon" else list(_geom.geoms)
-                    for _poly in _polys:
-                        _draw_polygon(_poly)
-
-                # ── Data with linear alpha ────────────────────────────────────
+                # ── Data ─────────────────────────────────────────────────────
                 _norm = _mcolors.Normalize(vmin=_vmin, vmax=_vmax)
                 _cmap_base = plt.get_cmap(viz_colormap.value)
                 _colors_rgba = _cmap_base(np.linspace(0, 1, 256))
@@ -2699,6 +2668,26 @@ def _(
                     cmap=_cmap_alpha, norm=_norm,
                     shading="auto", zorder=2,
                 )
+
+                # ── Coastline outline on top of data ─────────────────────────
+                _lon_is_360 = _plot_lon.max() > 180
+                _lon_min_ax = _plot_lon.min()
+                _lon_max_ax = _plot_lon.max()
+                _land_shp = _shpreader.natural_earth(
+                    resolution="110m", category="physical", name="land"
+                )
+                for _geom in _shpreader.Reader(_land_shp).geometries():
+                    _polys = [_geom] if _geom.geom_type == "Polygon" else list(_geom.geoms)
+                    for _poly in _polys:
+                        _coords = np.array(_poly.exterior.coords)
+                        _lons = _coords[:, 0]
+                        _lats = _coords[:, 1]
+                        if _lon_is_360:
+                            _lons = np.where(_lons < 0, _lons + 360, _lons)
+                        if _lons.max() < _lon_min_ax or _lons.min() > _lon_max_ax:
+                            continue
+                        _ax.plot(_lons, _lats, color="#cccccc", linewidth=0.5,
+                                 zorder=3, transform=_ax.transData)
 
                 # ── Lat/lon tick labels ───────────────────────────────────────
                 _ax.set_xlabel("Longitude", color=_txt)
