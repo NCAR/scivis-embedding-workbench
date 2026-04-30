@@ -2616,14 +2616,10 @@ def _(
                     _var2d = _var2d.isel({_dims["x"]: slice(_xi0, _xi1)})
                 _slice = _var2d.values.squeeze()
 
-                # Downsample to approximate quality level (each -1 halves resolution)
-                _step = max(1, 2 ** (-_q))
-                _slice = _slice[::_step, ::_step]
-
-                # Coordinate arrays for this slice, downsampled to match
+                # Coordinate arrays for this slice
                 if _lon_vals is not None and _lat_vals is not None:
-                    _plot_lon = _lon_vals[_xi0:_xi1][::_step]
-                    _plot_lat = _lat_vals[_yi0:_yi1][::_step]
+                    _plot_lon = _lon_vals[_xi0:_xi1]
+                    _plot_lat = _lat_vals[_yi0:_yi1]
                 else:
                     _plot_lon = None
                     _plot_lat = None
@@ -2718,7 +2714,7 @@ def _(
 
             _ax.set_title(
                 f"{viz_field.value}  ·  {viz_timestep.value}  ·  z={_z}  ·  "
-                f"{_title_loc}  ·  q={_q}",
+                f"{_title_loc}",
                 color=_txt,
             )
             _ax.tick_params(colors=_txt)
