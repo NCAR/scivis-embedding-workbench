@@ -10,7 +10,7 @@ Usage (standalone, e.g. for testing):
 
 Set SOURCE_DIR below to the folder you want to copy.
 The script copies to /local_scratch/pbs.$PBS_JOBID (or /tmp/scivis_staging if
-PBS_JOBID is not set), prints per-file progress, and prints the destination
+PBS_JOBID is not set), prints per-folder progress, and prints the destination
 path to paste into the app's "Experiments DB path" field.
 
 NOTE: /local_scratch/pbs.$PBS_JOBID is deleted when the job ends.
@@ -46,27 +46,36 @@ def check_space(src: Path, dst_root: Path) -> None:
 
 
 def copy_with_progress(src: Path, dst: Path) -> None:
-    files = [f for f in src.rglob("*") if f.is_file()]
-    total = len(files)
-    total_bytes = sum(f.stat().st_size for f in files)
+    # Group files by their immediate parent folder (one level below src)
+    folders: dict[Path, list[Path]] = {}
+    for f in sorted(src.rglob("*")):
+        if not f.is_file():
+            continue
+        top = f.relative_to(src).parts[0]
+        folders.setdefault(Path(top), []).append(f)
+
+    total_bytes = sum(f.stat().st_size for f in src.rglob("*") if f.is_file())
+    n_folders = len(folders)
     copied_bytes = 0
 
-    print(f"[stage] Copying {total} files ({total_bytes / 1024**2:.1f} MB) ...", flush=True)
+    print(f"[stage] {n_folders} folders  |  {total_bytes / 1024**3:.2f} GB total", flush=True)
 
-    for i, src_file in enumerate(files, 1):
-        rel = src_file.relative_to(src)
-        dst_file = dst / rel
-        dst_file.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src_file, dst_file)
-        copied_bytes += src_file.stat().st_size
+    for i, (folder, files) in enumerate(folders.items(), 1):
+        folder_bytes = sum(f.stat().st_size for f in files)
+        for src_file in files:
+            dst_file = dst / src_file.relative_to(src)
+            dst_file.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src_file, dst_file)
+        copied_bytes += folder_bytes
         pct = copied_bytes / total_bytes * 100
         print(
-            f"  [{i}/{total}] {rel}  "
-            f"({copied_bytes / 1024**2:.1f} / {total_bytes / 1024**2:.1f} MB  {pct:.1f}%)",
+            f"  [{i}/{n_folders}] {folder}/  "
+            f"{folder_bytes / 1024**2:.1f} MB  —  "
+            f"{copied_bytes / 1024**3:.2f} / {total_bytes / 1024**3:.2f} GB  ({pct:.0f}%)",
             flush=True,
         )
 
-    print(f"[stage] Done.", flush=True)
+    print("[stage] Done.", flush=True)
 
 
 def main() -> None:
