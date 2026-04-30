@@ -2127,7 +2127,17 @@ def _(mo):
 
 
 @app.cell
-def _(mo, viz_timestep, viz_url):
+def _(mo):
+    """Standalone date input — independent of all other cells to avoid cycles."""
+    viz_date_input = mo.ui.text(
+        value="",
+        placeholder="YYYY-MM-DD HH:MM",
+    )
+    return (viz_date_input,)
+
+
+@app.cell
+def _(mo, viz_date_input, viz_url):
     """
     ERA5-style path resolution:
       root/  e.g. /data/d633000/e5.oper.an.sfc
@@ -2144,7 +2154,7 @@ def _(mo, viz_timestep, viz_url):
     viz_file_info   = None  # info string shown to user
 
     if _root and _os_fc.path.isdir(_root):
-        _dt_str = viz_timestep.value.strip() if viz_timestep and viz_timestep.value else ""
+        _dt_str = viz_date_input.value.strip() if viz_date_input and viz_date_input.value else ""
         # Try to parse YYYY-MM-DD HH:MM from the date field
         _m = _re_fc.match(r"(\d{4})-(\d{2})-(\d{2})", _dt_str)
         if _m:
@@ -2189,7 +2199,7 @@ def _(mo, viz_timestep, viz_url):
 
 
 @app.cell
-def _(mo, viz_file_info, viz_file_picker, viz_load_button, viz_reset_minmax, viz_timestep, viz_url):
+def _(mo, viz_date_input, viz_file_info, viz_file_picker, viz_load_button, viz_reset_minmax, viz_url):
     """Load dataset — triggers on button click or Enter in the URL field."""
     get_viz_ds, set_viz_ds = mo.state(None)
     get_viz_err, set_viz_err = mo.state(None)
@@ -2211,7 +2221,7 @@ def _(mo, viz_file_info, viz_file_picker, viz_load_button, viz_reset_minmax, viz
                 # Folder — resolve month subfolder if date is set, then use picker
                 if viz_file_picker is not None and viz_file_picker.value:
                     import re as _re_ld
-                    _dt_str = viz_timestep.value.strip() if viz_timestep and viz_timestep.value else ""
+                    _dt_str = viz_date_input.value.strip() if viz_date_input and viz_date_input.value else ""
                     _m_ld = _re_ld.match(r"(\d{4})-(\d{2})-(\d{2})", _dt_str)
                     if _m_ld:
                         _yyyymm_ld = _m_ld.group(1) + _m_ld.group(2)
@@ -2276,8 +2286,8 @@ def _(mo, viz_file_info, viz_file_picker, viz_load_button, viz_reset_minmax, viz
 
                 # Find the timestep matching the entered date/time (or default to first)
                 _default_t = _time_vals[0] if _time_vals else ""
-                if viz_timestep and viz_timestep.value.strip() and _time_vals:
-                    _entered = viz_timestep.value.strip()
+                if viz_date_input and viz_date_input.value.strip() and _time_vals:
+                    _entered = viz_date_input.value.strip()
                     if _entered in _time_vals:
                         _default_t = _entered
                     else:
@@ -2316,11 +2326,11 @@ def _(mo, viz_file_info, viz_file_picker, viz_load_button, viz_reset_minmax, viz
 
 
 @app.cell
-def _(get_viz_ds, mo):
+def _(get_viz_ds, mo, viz_date_input):
     """Build controls once a dataset is loaded."""
     _meta = get_viz_ds()
     if _meta is None:
-        viz_timestep   = mo.ui.text(value="", placeholder="YYYY-MM-DD HH:MM")
+        viz_timestep   = mo.ui.text(value=viz_date_input.value, placeholder="YYYY-MM-DD HH:MM")
         viz_depth      = mo.ui.slider(start=0, stop=0,  value=0,  show_value=True)
         viz_resolution = mo.ui.slider(start=0, stop=40, value=28, show_value=True)
         viz_quality    = mo.ui.slider(start=-8, stop=0, value=-1, show_value=True)
@@ -2345,7 +2355,7 @@ def _(get_viz_ds, mo):
         _kind_ctrl_t = _meta.get("kind", "netcdf")
         if _kind_ctrl_t == "netcdf" and _time_vals:
             viz_timestep = mo.ui.text(
-                value=_meta.get("default_t", _time_vals[0]),
+                value=viz_date_input.value if viz_date_input.value.strip() else _meta.get("default_t", _time_vals[0]),
                 placeholder="YYYY-MM-DD HH:MM",
             )
         else:
@@ -2463,7 +2473,7 @@ def _(get_viz_vmax, get_viz_vmin, mo):
 def _(
     get_viz_ds, get_viz_err, map_theme,
     mo, np, plt,
-    viz_colormap, viz_depth, viz_field, viz_file_info, viz_file_picker,
+    viz_colormap, viz_date_input, viz_depth, viz_field, viz_file_info, viz_file_picker,
     viz_load_button, viz_quality, viz_reset_minmax, viz_resolution,
     viz_timestep, viz_url, viz_vmax, viz_vmin, viz_x, viz_y,
 ):
@@ -2484,6 +2494,7 @@ def _(
         mo.Html(
             '<div style="display:flex;gap:8px;align-items:flex-end;width:100%">'
             + f'<div style="flex:3;min-width:0">{viz_url._repr_html_()}</div>'
+            + f'<div style="flex:1;min-width:0">{viz_date_input._repr_html_()}</div>'
             + f'<div style="flex:0 0 auto">{viz_load_button._repr_html_()}</div>'
             + '</div>'
         ),
