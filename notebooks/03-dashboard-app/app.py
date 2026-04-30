@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.2"
+__generated_with = "0.23.4"
 app = marimo.App(layout_file="layouts/app.grid.json")
 
 
