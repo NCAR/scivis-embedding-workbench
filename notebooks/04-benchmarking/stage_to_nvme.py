@@ -54,13 +54,15 @@ import os
 import shutil
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from tqdm import tqdm
 
 # ── User config ───────────────────────────────────────────────────────────────
 # Set this to the folder you want to stage (e.g. the LanceDB experiments dir)
-SOURCE_DIR = "/glade/work/ncheruku/research/sample_data/data/lancedb/experiments/era5"
+SOURCE_DIR = "/glade/work/ncheruku/research/sample_data/data/lancedb/"
+MAX_WORKERS = 8   # parallel copy threads; reduce if Glade I/O throttles
 # ─────────────────────────────────────────────────────────────────────────────
 
 def resolve_job_id() -> str:
@@ -101,27 +103,31 @@ def check_space(src: Path, dst_root: Path) -> None:
 
 
 def copy_with_progress(src: Path, dst: Path) -> None:
-    # Group files by their immediate parent folder (one level below src)
-    folders: dict[Path, list[Path]] = {}
-    for f in sorted(src.rglob("*")):
-        if not f.is_file():
-            continue
-        top = f.relative_to(src).parts[0]
-        folders.setdefault(Path(top), []).append(f)
+    all_files = sorted(f for f in src.rglob("*") if f.is_file())
+    total_files = len(all_files)
+    total_bytes = sum(f.stat().st_size for f in all_files)
 
-    total_bytes = sum(f.stat().st_size for f in src.rglob("*") if f.is_file())
-    n_folders = len(folders)
+    print(f"[stage] {total_files} files  |  {total_bytes / 1024**3:.2f} GB total", flush=True)
 
-    print(f"[stage] {n_folders} folders  |  {total_bytes / 1024**3:.2f} GB total", flush=True)
+    done_count = 0
 
-    with tqdm(total=total_bytes, unit="B", unit_scale=True, unit_divisor=1024, dynamic_ncols=True) as bar:
-        for i, (folder, files) in enumerate(folders.items(), 1):
-            bar.set_description(f"[{i}/{n_folders}] {folder}/")
-            for src_file in files:
-                dst_file = dst / src_file.relative_to(src)
-                dst_file.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src_file, dst_file)
-                bar.update(src_file.stat().st_size)
+    def _copy_one(src_file: Path) -> int:
+        dst_file = dst / src_file.relative_to(src)
+        dst_file.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src_file, dst_file)
+        return src_file.stat().st_size
+
+    with tqdm(
+        total=total_bytes, unit="B", unit_scale=True,
+        unit_divisor=1024, dynamic_ncols=True,
+    ) as bar:
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+            futures = {pool.submit(_copy_one, f): f for f in all_files}
+            for fut in as_completed(futures):
+                size = fut.result()
+                done_count += 1
+                bar.update(size)
+                bar.set_postfix(files=f"{done_count}/{total_files}")
 
     print("[stage] Done.", flush=True)
 
