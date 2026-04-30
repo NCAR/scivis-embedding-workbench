@@ -2333,7 +2333,7 @@ def _(get_viz_ds, mo, viz_date_input):
         viz_timestep   = mo.ui.text(value=viz_date_input.value, placeholder="YYYY-MM-DD HH:MM")
         viz_depth      = mo.ui.slider(start=0, stop=0,  value=0,  show_value=True)
         viz_resolution = mo.ui.slider(start=0, stop=40, value=28, show_value=True)
-        viz_quality    = mo.ui.slider(start=-8, stop=0, value=-1, show_value=True)
+        viz_quality    = mo.ui.slider(start=-8, stop=0, value=0, show_value=True)
         viz_x          = mo.ui.range_slider(start=0, stop=100, value=[40, 60], show_value=True)
         viz_y          = mo.ui.range_slider(start=0, stop=100, value=[40, 60], show_value=True)
         viz_field      = mo.ui.dropdown(options=["(none)"], value="(none)")
@@ -2547,7 +2547,6 @@ def _(
                     _labeled("Variable", viz_field),
                     _labeled("Date (YYYY-MM-DD HH:MM)", viz_timestep),
                     _labeled("Colormap", viz_colormap),
-                    _labeled("Detail", viz_quality),
                 ], justify="start"),
                 mo.hstack([
                     _labeled("Longitude range", viz_x),
