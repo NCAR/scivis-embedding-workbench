@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.2"
+__generated_with = "0.20.4"
 app = marimo.App(layout_file="layouts/app.grid.json")
 
 
@@ -2112,11 +2112,13 @@ def _(
     return (spatial_search_tab,)
 
 
+# ── Visualize tab: ERA5 NetCDF local dataset viewer ───────────────────────────
+
 @app.cell
 def _(mo):
     viz_url = mo.ui.text(
         value="",
-        placeholder="pelican://... or /path/to/file.nc or /path/to/folder/",
+        placeholder="/path/to/root/folder or /path/to/file.nc",
         full_width=True,
     )
     viz_load_button = mo.ui.run_button(label="▶ Load dataset")
@@ -2125,31 +2127,69 @@ def _(mo):
 
 
 @app.cell
-def _(mo, viz_url):
-    """If the URL is a folder, list NetCDF files in a dropdown."""
+def _(mo, viz_timestep, viz_url):
+    """
+    ERA5-style path resolution:
+      root/  e.g. /data/d633000/e5.oper.an.sfc
+      date   e.g. 2020-01-15 06:00
+      ->     root/{yyyymm}/  list nc files, subset by yyyymmdd, pick first match
+    Falls back to plain folder listing if path structure doesn't match.
+    """
     import os as _os_fc
-    _path = viz_url.value.strip()
+    import re as _re_fc
+
+    _root = viz_url.value.strip().rstrip("/")
     _nc_exts = (".nc", ".nc4", ".netcdf")
-    if _path and _os_fc.path.isdir(_path):
-        _files = sorted([
-            f for f in _os_fc.listdir(_path)
-            if f.lower().endswith(_nc_exts)
-        ])
-        if _files:
-            viz_file_picker = mo.ui.dropdown(
-                options=_files,
-                value=_files[0],
-                label="Select NetCDF file",
-            )
+    viz_file_picker = None
+    viz_file_info   = None  # info string shown to user
+
+    if _root and _os_fc.path.isdir(_root):
+        _dt_str = viz_timestep.value.strip() if viz_timestep and viz_timestep.value else ""
+        # Try to parse YYYY-MM-DD HH:MM from the date field
+        _m = _re_fc.match(r"(\d{4})-(\d{2})-(\d{2})", _dt_str)
+        if _m:
+            _yyyy, _mm, _dd = _m.group(1), _m.group(2), _m.group(3)
+            _yyyymm  = _yyyy + _mm
+            _yyyymmdd = _yyyy + _mm + _dd
+            _month_dir = _os_fc.path.join(_root, _yyyymm)
+            if _os_fc.path.isdir(_month_dir):
+                _all_nc = sorted([
+                    f for f in _os_fc.listdir(_month_dir)
+                    if f.lower().endswith(_nc_exts)
+                ])
+                # Subset: keep files whose name contains yyyymmdd
+                _matched = [f for f in _all_nc if _yyyymmdd in f]
+                _files = _matched if _matched else _all_nc
+                if _files:
+                    viz_file_picker = mo.ui.dropdown(options=_files, value=_files[0])
+                    _info = f"`{_month_dir}` — {len(_files)} file(s)"
+                    if _matched:
+                        _info += f" matching `{_yyyymmdd}`"
+                    viz_file_info = _info
+            else:
+                # month subfolder doesn't exist — fall back to root listing
+                _files = sorted([
+                    f for f in _os_fc.listdir(_root)
+                    if f.lower().endswith(_nc_exts)
+                ])
+                if _files:
+                    viz_file_picker = mo.ui.dropdown(options=_files, value=_files[0])
+                    viz_file_info = f"`{_root}` — {len(_files)} file(s) (no `{_yyyymm}` subfolder found)"
         else:
-            viz_file_picker = None
-    else:
-        viz_file_picker = None
-    return (viz_file_picker,)
+            # No valid date yet — list root directly
+            _files = sorted([
+                f for f in _os_fc.listdir(_root)
+                if f.lower().endswith(_nc_exts)
+            ])
+            if _files:
+                viz_file_picker = mo.ui.dropdown(options=_files, value=_files[0])
+                viz_file_info = f"`{_root}` — {len(_files)} file(s)"
+
+    return viz_file_picker, viz_file_info
 
 
 @app.cell
-def _(mo, viz_file_picker, viz_load_button, viz_url):
+def _(mo, viz_file_info, viz_file_picker, viz_load_button, viz_reset_minmax, viz_timestep, viz_url):
     """Load dataset — triggers on button click or Enter in the URL field."""
     get_viz_ds, set_viz_ds = mo.state(None)
     get_viz_err, set_viz_err = mo.state(None)
@@ -2168,9 +2208,18 @@ def _(mo, viz_file_picker, viz_load_button, viz_url):
             _nc_exts   = (".nc", ".nc4", ".netcdf")
 
             if _url and _os.path.isdir(_url):
-                # Folder — use the file picker selection
+                # Folder — resolve month subfolder if date is set, then use picker
                 if viz_file_picker is not None and viz_file_picker.value:
-                    _nc_path   = _os.path.join(_url, viz_file_picker.value)
+                    import re as _re_ld
+                    _dt_str = viz_timestep.value.strip() if viz_timestep and viz_timestep.value else ""
+                    _m_ld = _re_ld.match(r"(\d{4})-(\d{2})-(\d{2})", _dt_str)
+                    if _m_ld:
+                        _yyyymm_ld = _m_ld.group(1) + _m_ld.group(2)
+                        _month_dir_ld = _os.path.join(_url, _yyyymm_ld)
+                        _base_dir = _month_dir_ld if _os.path.isdir(_month_dir_ld) else _url
+                    else:
+                        _base_dir = _url
+                    _nc_path   = _os.path.join(_base_dir, viz_file_picker.value)
                     _is_netcdf = True
             elif _url and (_url.endswith(_nc_exts) or _os.path.exists(_url)):
                 _nc_path   = _url
@@ -2225,47 +2274,45 @@ def _(mo, viz_file_picker, viz_load_button, viz_url):
                 else:
                     _time_vals = [str(i) for i in range(_nt)]
 
+                # Find the timestep matching the entered date/time (or default to first)
+                _default_t = _time_vals[0] if _time_vals else ""
+                if viz_timestep and viz_timestep.value.strip() and _time_vals:
+                    _entered = viz_timestep.value.strip()
+                    if _entered in _time_vals:
+                        _default_t = _entered
+                    else:
+                        # partial match: entered date without time
+                        _partial = [t for t in _time_vals if t.startswith(_entered[:10])]
+                        if _partial:
+                            _default_t = _partial[0]
+
                 set_viz_ds({
-                    "kind":      "netcdf",
-                    "ds":        _nc,
-                    "path":      _nc_path,
-                    "url":       _nc_path,
-                    "fields":    _data_vars,
-                    "steps":     list(range(_nt)),
-                    "time_vals": _time_vals,  # list of date strings
-                    "box":       [[0, 0, 0], [_nx, _ny, _nz]],
-                    "maxres":    32,
-                    "dims":      {"x": _xdim, "y": _ydim, "z": _zdim, "t": _tdim},
-                    "lon_vals":  _lon_vals,
-                    "lat_vals":  _lat_vals,
+                    "kind":        "netcdf",
+                    "ds":          _nc,
+                    "path":        _nc_path,
+                    "url":         _nc_path,
+                    "fields":      _data_vars,
+                    "steps":       list(range(_nt)),
+                    "time_vals":   _time_vals,
+                    "default_t":   _default_t,
+                    "box":         [[0, 0, 0], [_nx, _ny, _nz]],
+                    "maxres":      32,
+                    "dims":        {"x": _xdim, "y": _ydim, "z": _zdim, "t": _tdim},
+                    "lon_vals":    _lon_vals,
+                    "lat_vals":    _lat_vals,
                 })
                 set_viz_err(None)
 
-            elif _url:
-                # ── Remote OpenVisus dataset ─────────────────────────────────
-                import openvisuspy as _ovp_viz
-                _ds = _ovp_viz.LoadDataset(_url)
-                _box   = _ds.getLogicBox()
-                _steps = _ds.getTimesteps()
-                _raw_fields = _ds.getFields()
-                _fields = [f.name if hasattr(f, "name") else str(f) for f in _raw_fields]
-                set_viz_ds({
-                    "kind":   "ovp",
-                    "ds":     _ds,
-                    "url":    _url,
-                    "box":    _box,
-                    "steps":  _steps,
-                    "fields": _fields,
-                    "maxres": _ds.getMaxResolution(),
-                })
-                set_viz_err(None)
-            else:
-                set_viz_err("Please enter a URL or upload a file.")
+            elif not _is_netcdf and _url:
+                set_viz_err("Please enter a local file path or root folder.")
+            elif not _url:
+                set_viz_err("Please enter a path.")
 
         except Exception as _e:
             set_viz_ds(None)
             set_viz_err(str(_e))
-    return get_viz_ds, get_viz_err
+
+    return get_viz_ds, get_viz_err, set_viz_ds, set_viz_err
 
 
 @app.cell
@@ -2295,10 +2342,10 @@ def _(get_viz_ds, mo):
         _cx0, _cx1 = int(_nx * 0.4), int(_nx * 0.6)
         _cy0, _cy1 = int(_ny * 0.4), int(_ny * 0.6)
         _time_vals = _meta.get("time_vals")
-        _kind_ctrl_t = _meta.get("kind", "ovp")
+        _kind_ctrl_t = _meta.get("kind", "netcdf")
         if _kind_ctrl_t == "netcdf" and _time_vals:
             viz_timestep = mo.ui.text(
-                value=_time_vals[0],
+                value=_meta.get("default_t", _time_vals[0]),
                 placeholder="YYYY-MM-DD HH:MM",
             )
         else:
@@ -2318,7 +2365,7 @@ def _(get_viz_ds, mo):
         )
         _lon_vals = _meta.get("lon_vals")
         _lat_vals = _meta.get("lat_vals")
-        _kind_ctrl = _meta.get("kind", "ovp")
+        _kind_ctrl = _meta.get("kind", "netcdf")
         if _kind_ctrl == "netcdf" and _lon_vals is not None and _lat_vals is not None:
             _lon_min, _lon_max = float(_lon_vals.min()), float(_lon_vals.max())
             _lat_min, _lat_max = float(_lat_vals.min()), float(_lat_vals.max())
@@ -2359,19 +2406,13 @@ def _(get_viz_ds, mo):
             value="magma",
         )
     return (
-        viz_colormap,
-        viz_depth,
-        viz_field,
-        viz_quality,
-        viz_resolution,
-        viz_timestep,
-        viz_x,
-        viz_y,
+        viz_colormap, viz_depth, viz_field,
+        viz_quality, viz_resolution, viz_timestep, viz_x, viz_y,
     )
 
 
 @app.cell
-def _(get_viz_ds, mo, np, viz_depth, viz_field, viz_timestep):
+def _(get_viz_ds, mo, np, viz_depth, viz_field, viz_reset_minmax, viz_timestep):
     """Compute min/max for the selected timestep and depth when field/date/reset changes."""
     get_viz_vmin, set_viz_vmin = mo.state(0.0)
     get_viz_vmax, set_viz_vmax = mo.state(1.0)
@@ -2406,7 +2447,8 @@ def _(get_viz_ds, mo, np, viz_depth, viz_field, viz_timestep):
                 set_viz_vmax(round(float(np.nanpercentile(_slice, 98)), 4))
         except Exception:
             pass
-    return get_viz_vmax, get_viz_vmin
+
+    return get_viz_vmin, get_viz_vmax, set_viz_vmin, set_viz_vmax
 
 
 @app.cell
@@ -2414,31 +2456,16 @@ def _(get_viz_vmax, get_viz_vmin, mo):
     """Number fields initialised from state; user edits trigger re-render."""
     viz_vmin = mo.ui.number(value=get_viz_vmin(), label="Min")
     viz_vmax = mo.ui.number(value=get_viz_vmax(), label="Max")
-    return viz_vmax, viz_vmin
+    return viz_vmin, viz_vmax
 
 
 @app.cell
 def _(
-    get_viz_ds,
-    get_viz_err,
-    map_theme,
-    mo,
-    np,
-    plt,
-    viz_colormap,
-    viz_depth,
-    viz_field,
-    viz_file_picker,
-    viz_load_button,
-    viz_quality,
-    viz_reset_minmax,
-    viz_resolution,
-    viz_timestep,
-    viz_url,
-    viz_vmax,
-    viz_vmin,
-    viz_x,
-    viz_y,
+    get_viz_ds, get_viz_err, map_theme,
+    mo, np, plt,
+    viz_colormap, viz_depth, viz_field, viz_file_info, viz_file_picker,
+    viz_load_button, viz_quality, viz_reset_minmax, viz_resolution,
+    viz_timestep, viz_url, viz_vmax, viz_vmin, viz_x, viz_y,
 ):
     """Render a horizontal 2-D slice — auto-updates on any control change."""
     _meta = get_viz_ds()
@@ -2447,7 +2474,10 @@ def _(
     _colors = get_theme_colors(_theme)
 
     _picker_row = (
-        mo.hstack([mo.md("**File:**"), viz_file_picker], justify="start")
+        mo.vstack([
+            mo.md(f"*{viz_file_info}*") if viz_file_info else None,
+            mo.hstack([mo.md("**File:**"), viz_file_picker], justify="start"),
+        ])
         if viz_file_picker is not None else None
     )
     _header = mo.vstack([
@@ -2470,12 +2500,9 @@ def _(
             _header,
             mo.callout(
                 mo.md(
-                    "Enter a folder pathway to ERA5 NetCDF files\n"
-                    # "Enter a remote Pelican dataset URL, a path to a local NetCDF file, or a folder to browse files.\n\n"
-                    # "**Example datasets:**\n"
-                    # "- `pelican://osg-htc.org/nasa/nsdf/climate1/llc4320/idx/theta/theta_llc4320_x_y_depth.idx` — Temperature\n"
-                    # "- `pelican://osg-htc.org/nasa/nsdf/climate1/llc4320/idx/salt/salt_llc4320_x_y_depth.idx` — Salinity\n"
-                    # "- `pelican://osg-htc.org/nasa/nsdf/climate2/llc4320/idx/w/w_llc4320_x_y_depth.idx` — Vertical velocity"
+                    "Enter a path to a local NetCDF file or a root folder containing ERA5 data.\n\n"
+                    "**Folder mode:** enter root folder and a date — subfolder `{YYYYMM}` is resolved automatically.\n"
+                    "**File mode:** enter a full path to a `.nc` file directly."
                 ),
                 kind="info",
             ),
@@ -2487,14 +2514,12 @@ def _(
         _maxres = _meta["maxres"]
         _nx, _ny, _nz = _box[1][0], _box[1][1], _box[1][2]
 
-        _kind = _meta.get("kind", "ovp")
+        _kind = _meta.get("kind", "netcdf")
         _time_vals_info = _meta.get("time_vals")
-        if _kind == "ovp":
-            _extra = f"  ·  **Max resolution:** {_maxres}"
-        elif _time_vals_info:
+        if _time_vals_info:
             _extra = f"  ·  **Dates:** {_time_vals_info[0]} → {_time_vals_info[-1]}"
         else:
-            _extra = "  ·  **Source:** NetCDF"
+            _extra = ""
         _info_md = mo.md(
             f"**Dimensions:** {_nx} × {_ny} × {_nz}  ·  "
             f"**Timesteps:** {len(_steps)}  ·  "
@@ -2524,32 +2549,11 @@ def _(
                     _labeled(" ", viz_reset_minmax),
                 ], justify="start"),
             ])
-        else:
-            _controls = mo.vstack([
-                mo.hstack([
-                    _labeled("Variable", viz_field),
-                    _labeled("Timestep", viz_timestep),
-                    _labeled("Colormap", viz_colormap),
-                    _labeled("Detail", viz_quality),
-                ], justify="start"),
-                mo.hstack([
-                    _labeled("X range", viz_x),
-                    _labeled("Y range", viz_y),
-                    _labeled("Depth (z)", viz_depth),
-                ], justify="start"),
-                mo.hstack([
-                    _labeled("Min value", viz_vmin),
-                    _labeled("Max value", viz_vmax),
-                    _labeled(" ", viz_reset_minmax),
-                ], justify="start"),
-                mo.hstack([
-                    _labeled("Base resolution", viz_resolution),
-                ], justify="start"),
-            ])
+
 
         try:
             _ds   = _meta["ds"]
-            _kind = _meta.get("kind", "ovp")
+            _kind = _meta.get("kind", "netcdf")
             _res  = int(viz_resolution.value)
             _q    = int(viz_quality.value)
             _z    = int(viz_depth.value)
@@ -2614,25 +2618,7 @@ def _(
                     _plot_lon = None
                     _plot_lat = None
             else:
-                # ── Remote OpenVisus dataset ─────────────────────────────────
-                _reader = _ds.db if hasattr(_ds, "db") and hasattr(_ds.db, "read") else _ds
-                if not hasattr(_reader, "read"):
-                    raise AttributeError(
-                        f"Cannot find read() on {type(_ds).__name__}. "
-                        f"Available: {[m for m in dir(_ds) if not m.startswith('_')]}"
-                    )
-                _data = _reader.read(
-                    logic_box=[[_x0, _y0, _z], [_x1, _y1, _z + 1]],
-                    field=viz_field.value,
-                    time=int(viz_timestep.value),
-                    max_resolution=_res,
-                    quality=_q,
-                )
-                if not isinstance(_data, np.ndarray):
-                    _data = next(iter(_data))
-                while isinstance(_data, np.ndarray) and _data.ndim > 2 and _data.shape[0] == 1:
-                    _data = _data[0]
-                _slice = _data
+                raise ValueError("Only local NetCDF files are supported.")
 
             _bg = _colors["bg"]
             _txt = _colors["text"]
@@ -2751,6 +2737,7 @@ def _(
                 _header, _info_md, _controls,
                 mo.callout(mo.md(f"**Render error:** `{_render_err}`"), kind="danger"),
             ])
+
     return (visualize_tab,)
 
 
