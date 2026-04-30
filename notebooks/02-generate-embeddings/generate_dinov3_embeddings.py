@@ -75,21 +75,7 @@ def _(mo):
 
 
 @app.cell
-<<<<<<< Updated upstream
 def _(Path):
-    # Local Mac (for reference):
-    # PROJECT_ROOT = Path("/Users/ncheruku/Documents/Work/sample_data")
-=======
-def _(mo):
-    project_root_input = mo.ui.text(
-        value=Path.cwd(),
-        label="Project data root",
-        full_width=True,
-    )
-    return (project_root_input,)
->>>>>>> Stashed changes
-
-    # NCAR Casper
     PROJECT_ROOT = Path("/glade/work/ncheruku/research/sample_data")
 
     # Project folder name — must match the SOURCE_PROJECT used during ingest.

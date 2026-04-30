@@ -78,16 +78,6 @@ def _(mo):
 
 @app.cell
 def _(Path, lancedb):
-<<<<<<< Updated upstream
-    # ── Paths ────────────────────────────────────────────────────────────────
-    # Root directory containing all project data
-    # Local Mac (for reference):
-    # PROJECT_ROOT = Path("/Users/ncheruku/Documents/Work/sample_data")
-=======
-    PROJECT_ROOT = Path.cwd()
->>>>>>> Stashed changes
-
-    # NCAR Casper
     PROJECT_ROOT = Path("/glade/work/ncheruku/research/sample_data")
 
     # Folder holding the source images to ingest
