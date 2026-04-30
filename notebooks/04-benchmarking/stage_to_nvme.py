@@ -56,6 +56,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from tqdm import tqdm
+
 # ── User config ───────────────────────────────────────────────────────────────
 # Set this to the folder you want to stage (e.g. the LanceDB experiments dir)
 SOURCE_DIR = "/glade/work/ncheruku/research/sample_data/data/lancedb/experiments/era5"
@@ -109,24 +111,17 @@ def copy_with_progress(src: Path, dst: Path) -> None:
 
     total_bytes = sum(f.stat().st_size for f in src.rglob("*") if f.is_file())
     n_folders = len(folders)
-    copied_bytes = 0
 
     print(f"[stage] {n_folders} folders  |  {total_bytes / 1024**3:.2f} GB total", flush=True)
 
-    for i, (folder, files) in enumerate(folders.items(), 1):
-        folder_bytes = sum(f.stat().st_size for f in files)
-        for src_file in files:
-            dst_file = dst / src_file.relative_to(src)
-            dst_file.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src_file, dst_file)
-        copied_bytes += folder_bytes
-        pct = copied_bytes / total_bytes * 100
-        print(
-            f"  [{i}/{n_folders}] {folder}/  "
-            f"{folder_bytes / 1024**2:.1f} MB  —  "
-            f"{copied_bytes / 1024**3:.2f} / {total_bytes / 1024**3:.2f} GB  ({pct:.0f}%)",
-            flush=True,
-        )
+    with tqdm(total=total_bytes, unit="B", unit_scale=True, unit_divisor=1024, dynamic_ncols=True) as bar:
+        for i, (folder, files) in enumerate(folders.items(), 1):
+            bar.set_description(f"[{i}/{n_folders}] {folder}/")
+            for src_file in files:
+                dst_file = dst / src_file.relative_to(src)
+                dst_file.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src_file, dst_file)
+                bar.update(src_file.stat().st_size)
 
     print("[stage] Done.", flush=True)
 
