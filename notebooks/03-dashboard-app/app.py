@@ -2656,6 +2656,26 @@ def _(
                 _ax.set_ylim(_plot_lat.min(), _plot_lat.max())
                 _ax.set_aspect("auto")  # fill the fixed figure size
 
+                # ── Land fill under data ─────────────────────────────────────
+                _lon_is_360 = _plot_lon.max() > 180
+                _lon_min_ax = _plot_lon.min()
+                _lon_max_ax = _plot_lon.max()
+                _land_shp_fill = _shpreader.natural_earth(
+                    resolution="110m", category="physical", name="land"
+                )
+                for _geom_f in _shpreader.Reader(_land_shp_fill).geometries():
+                    _polys_f = [_geom_f] if _geom_f.geom_type == "Polygon" else list(_geom_f.geoms)
+                    for _poly_f in _polys_f:
+                        _coords_f = np.array(_poly_f.exterior.coords)
+                        _lons_f = _coords_f[:, 0]
+                        _lats_f = _coords_f[:, 1]
+                        if _lon_is_360:
+                            _lons_f = np.where(_lons_f < 0, _lons_f + 360, _lons_f)
+                        if _lons_f.max() < _lon_min_ax or _lons_f.min() > _lon_max_ax:
+                            continue
+                        _ax.fill(_lons_f, _lats_f, color="#888888",
+                                 zorder=1, transform=_ax.transData)
+
                 # ── Data ─────────────────────────────────────────────────────
                 _norm = _mcolors.Normalize(vmin=_vmin, vmax=_vmax)
                 _cmap_base = plt.get_cmap(viz_colormap.value)
@@ -2670,9 +2690,6 @@ def _(
                 )
 
                 # ── Coastline outline on top of data ─────────────────────────
-                _lon_is_360 = _plot_lon.max() > 180
-                _lon_min_ax = _plot_lon.min()
-                _lon_max_ax = _plot_lon.max()
                 _land_shp = _shpreader.natural_earth(
                     resolution="110m", category="physical", name="land"
                 )
