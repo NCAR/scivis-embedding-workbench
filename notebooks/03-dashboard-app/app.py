@@ -2660,23 +2660,32 @@ def _(
                 _ax.set_aspect("auto")  # fill the fixed figure size
 
                 # ── Draw land polygons from Natural Earth ─────────────────────
+                # ERA5 uses 0-360 lon; Natural Earth uses -180 to 180.
+                # Shift negative longitudes by +360 if data is in 0-360 space.
+                _lon_is_360 = _plot_lon.max() > 180
+
                 _land_shp = _shpreader.natural_earth(
                     resolution="110m", category="physical", name="land"
                 )
+                _lon_min_ax = _plot_lon.min()
+                _lon_max_ax = _plot_lon.max()
+
+                def _draw_polygon(poly):
+                    coords = np.array(poly.exterior.coords)
+                    lons = coords[:, 0]
+                    lats = coords[:, 1]
+                    if _lon_is_360:
+                        lons = np.where(lons < 0, lons + 360, lons)
+                    # Only draw if polygon overlaps the plot extent
+                    if lons.max() < _lon_min_ax or lons.min() > _lon_max_ax:
+                        return
+                    _ax.fill(lons, lats, color="#888888", zorder=1,
+                             transform=_ax.transData)
+
                 for _geom in _shpreader.Reader(_land_shp).geometries():
-                    _ax.add_patch(_mpatches.PathPatch(
-                        plt.matplotlib.path.Path.make_compound_path(
-                            *[plt.matplotlib.path.Path(
-                                np.column_stack([np.array(p.exterior.coords)[:, 0],
-                                                 np.array(p.exterior.coords)[:, 1]])
-                            ) for p in (
-                                [_geom] if _geom.geom_type == "Polygon"
-                                else list(_geom.geoms)
-                            )]
-                        ),
-                        facecolor="#888888", edgecolor="none", zorder=1,
-                        transform=_ax.transData,
-                    ))
+                    _polys = [_geom] if _geom.geom_type == "Polygon" else list(_geom.geoms)
+                    for _poly in _polys:
+                        _draw_polygon(_poly)
 
                 # ── Data with linear alpha ────────────────────────────────────
                 _norm = _mcolors.Normalize(vmin=_vmin, vmax=_vmax)
