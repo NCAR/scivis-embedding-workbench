@@ -2673,7 +2673,15 @@ def _(
                             _lons_f = np.where(_lons_f < 0, _lons_f + 360, _lons_f)
                         if _lons_f.max() < _lon_min_ax or _lons_f.min() > _lon_max_ax:
                             continue
-                        _ax.fill(_lons_f, _lats_f, color="#888888",
+                        # Insert NaN breaks at large lon jumps to avoid horizontal streaks
+                        _lons_b, _lats_b = [_lons_f[0]], [_lats_f[0]]
+                        for _i in range(1, len(_lons_f)):
+                            if abs(_lons_f[_i] - _lons_f[_i-1]) > 90:
+                                _lons_b.append(np.nan)
+                                _lats_b.append(np.nan)
+                            _lons_b.append(_lons_f[_i])
+                            _lats_b.append(_lats_f[_i])
+                        _ax.fill(_lons_b, _lats_b, color="#666666",
                                  zorder=1, transform=_ax.transData)
 
                 # ── Data ─────────────────────────────────────────────────────
