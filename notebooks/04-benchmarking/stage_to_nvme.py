@@ -2,19 +2,57 @@
 """
 Stage a LanceDB experiment folder to Casper NVMe local scratch for I/O-intensive jobs.
 
-Usage (inside a PBS job):
+Background
+----------
+Casper nodes expose fast NVMe storage at /local_scratch/pbs.$PBS_JOBID while a
+job is running. Copying your LanceDB database there before launching the app
+removes the Glade filesystem bottleneck for random-read-heavy workloads (vector
+search, thumbnail fetching, etc.).
+
+WARNING: /local_scratch/pbs.$PBS_JOBID is wiped when the job ends.
+         Any outputs you generate must be moved back to Glade before the job
+         finishes, or they will be lost.
+
+How to use in a PBS job
+-----------------------
+Add the following lines to your PBS batch script, replacing the paths as needed:
+
+    # Stage data to NVMe
+    python /path/to/stage_to_nvme.py
+
+    # Launch the app (use the printed "Experiments DB path" value)
+    marimo run /path/to/app.py
+
+    # (Optional) Move outputs back to Glade before job ends
+    mv /local_scratch/pbs.$PBS_JOBID/output_data $SCRATCH/
+
+How to test outside a PBS job (on a login node or interactive session)
+-----------------------------------------------------------------------
+Run the script directly — it will fall back to /tmp/scivis_staging instead of
+/local_scratch/pbs.$PBS_JOBID since PBS_JOBID will not be set:
+
     python stage_to_nvme.py
 
-Usage (standalone, e.g. for testing):
-    python stage_to_nvme.py
+Check that:
+  - The folder structure under /tmp/scivis_staging/ matches the source
+  - The printed "Experiments DB path" opens correctly in the app
+  - No errors appear during the copy
 
-Set SOURCE_DIR below to the folder you want to copy.
-The script copies to /local_scratch/pbs.$PBS_JOBID (or /tmp/scivis_staging if
-PBS_JOBID is not set), prints per-folder progress, and prints the destination
-path to paste into the app's "Experiments DB path" field.
+To clean up after testing:
+    rm -rf /tmp/scivis_staging
 
-NOTE: /local_scratch/pbs.$PBS_JOBID is deleted when the job ends.
-      Move any outputs you want to keep before the job finishes.
+Configuration
+-------------
+Set SOURCE_DIR below to the top-level folder you want to stage.
+For this project that is typically the experiments directory, e.g.:
+    /glade/work/<user>/research/sample_data/data/lancedb/experiments/era5
+
+The script copies SOURCE_DIR into the NVMe root as a subdirectory, so the
+destination becomes:
+    /local_scratch/pbs.$PBS_JOBID/<basename of SOURCE_DIR>
+
+The app's "Experiments DB path" field should be set to the *parent* of that
+destination (printed at the end of the script).
 """
 
 import os
