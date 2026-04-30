@@ -33,7 +33,8 @@ Submit an interactive PBS job and run the script from there:
     qsub -I -l select=1:ncpus=4:mem=16GB -l walltime=01:00:00 -q casper -A <project>
     python stage_to_nvme.py
 
-The script will exit with an error if run outside a PBS job (PBS_JOBID not set).
+If PBS_JOBID is not set in the environment, the script queries qstat to find
+your running job ID automatically. It errors out if no running job is found.
 
 Configuration
 -------------
@@ -60,11 +61,32 @@ from pathlib import Path
 SOURCE_DIR = "/glade/work/ncheruku/research/sample_data/data/lancedb/experiments/era5"
 # ─────────────────────────────────────────────────────────────────────────────
 
-def get_nvme_root() -> Path:
+def resolve_job_id() -> str:
+    """Return PBS_JOBID from the environment, or look it up via qstat if not set."""
     job_id = os.environ.get("PBS_JOBID", "")
-    if not job_id:
-        print("[stage] ERROR: PBS_JOBID is not set. Run this script inside a PBS job.", file=sys.stderr)
+    if job_id:
+        return job_id
+    print("[stage] PBS_JOBID not in environment — querying qstat ...", flush=True)
+    result = subprocess.run(
+        ["qstat", "-u", os.environ["USER"], "-w"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print(f"[stage] ERROR: qstat failed: {result.stderr.strip()}", file=sys.stderr)
         sys.exit(1)
+    # Parse lines like: 3384434.casper-pbs  ncheruku  ...  R  ...
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 10 and parts[9] == "R" and parts[1] == os.environ["USER"]:
+            job_id = parts[0]
+            print(f"[stage] Found running job: {job_id}", flush=True)
+            return job_id
+    print("[stage] ERROR: No running PBS job found for this user.", file=sys.stderr)
+    sys.exit(1)
+
+
+def get_nvme_root() -> Path:
+    job_id = resolve_job_id()
     return Path(f"/local_scratch/pbs.{job_id}")
 
 
