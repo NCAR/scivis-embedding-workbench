@@ -1,4 +1,5 @@
 import marimo
+import Path
 
 __generated_with = "0.20.4"
 app = marimo.App()
@@ -74,10 +75,6 @@ def _(mo):
 
 @app.cell
 def _(Path):
-    # Local Mac (for reference):
-    # PROJECT_ROOT = Path("/Users/ncheruku/Documents/Work/sample_data")
-
-    # NCAR Casper
     PROJECT_ROOT = Path("/glade/work/ncheruku/research/sample_data")
 
     # Project folder name — must match the SOURCE_PROJECT used during ingest.

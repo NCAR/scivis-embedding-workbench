@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.2"
+__generated_with = "0.20.4"
 app = marimo.App(layout_file="layouts/app.grid.json")
 
 
@@ -667,110 +667,33 @@ def composite_attention_overlay(
 
 @app.function
 def render_thumbnail_gallery(thumbs, n_filtered, max_display, theme="light",
-                             thumb_w=192, thumb_h=192, full_blobs=None):
-    """Build HTML for a theme-aware thumbnail gallery with datetime labels.
-
-    If `full_blobs` is a list aligned with `thumbs`, each thumbnail becomes
-    clickable: clicking opens the corresponding full-resolution image in a
-    pure-CSS lightbox overlay (hidden-checkbox sibling-selector technique —
-    no JavaScript, so it survives marimo's HTML sanitizer). Click anywhere
-    on the overlay to close.
-    """
+                             thumb_w=192, thumb_h=192):
+    """Build HTML for a theme-aware thumbnail gallery with datetime labels."""
     import base64
-    import uuid
 
     _c = get_theme_colors(theme)
     bg, text, border = _c["gallery_bg"], _c["text"], _c["border"]
 
-    # Per-render id prefix keeps checkbox ids unique across re-renders / cells
-    _render_id = uuid.uuid4().hex[:8]
-    _cls = f"lbx-{_render_id}"   # scoped class to avoid global CSS collisions
-
-    _has_any_full = (
-        full_blobs is not None
-        and any(fb is not None for fb in full_blobs[: len(thumbs)])
-    )
-
     imgs = []
-    for _i, (fname, blob, dt) in enumerate(thumbs):
+    for fname, blob, dt in thumbs:
         b64 = base64.b64encode(blob).decode()
-
-        def _fmt_dt(_d):
-            if _d is None:
-                return "—"
-            if hasattr(_d, "strftime"):
-                try:
-                    _s = _d.strftime("%Y-%m-%d %H:%M")
-                except (ValueError, AttributeError):
-                    _s = str(_d)
-            else:
-                _s = str(_d)
-            return "—" if _s in ("", "NaT", "NaTType", "None") else _s
-
-        dt_str = _fmt_dt(dt)
-
-        _has_full = full_blobs is not None and _i < len(full_blobs) and full_blobs[_i] is not None
-        if _has_full:
-            _slot = f"{_render_id}-{_i}"
-            _full_b64 = base64.b64encode(full_blobs[_i]).decode()
-            # Order matters: <input> must come before label + overlay so the
-            # `.lbx-cb:checked ~ .lbx-overlay` sibling selector can match.
-            imgs.append(
-                f'<span class="{_cls}-slot" style="display:inline-block;margin:3px;text-align:center;position:relative">'
-                f'<input type="checkbox" class="{_cls}-cb" id="lb-{_slot}">'
-                f'<label for="lb-{_slot}" class="{_cls}-thumb" title="{fname} — click to zoom">'
-                f'<img src="data:image/jpeg;base64,{b64}" '
-                f'style="width:{thumb_w}px;height:{thumb_h}px;object-fit:fill;'
-                f'border:1px solid {border};border-radius:4px;display:block"/>'
-                f'</label>'
-                f'<div style="font-size:11px;color:{text};max-width:{thumb_w}px;'
-                f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
-                f'{dt_str}</div>'
-                f'<label for="lb-{_slot}" class="{_cls}-overlay">'
-                f'<img src="data:image/jpeg;base64,{_full_b64}"/>'
-                f'</label>'
-                f'</span>'
-            )
-        else:
-            imgs.append(
-                f'<div style="display:inline-block;margin:3px;text-align:center">'
-                f'<img src="data:image/jpeg;base64,{b64}" '
-                f'style="width:{thumb_w}px;height:{thumb_h}px;object-fit:fill;border:1px solid {border};'
-                f'border-radius:4px" title="{fname}"/>'
-                f'<div style="font-size:11px;color:{text};max-width:{thumb_w}px;'
-                f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
-                f'{dt_str}</div></div>'
-            )
+        dt_str = dt.strftime("%Y-%m-%d %H:%M") if hasattr(dt, "strftime") else str(dt)
+        imgs.append(
+            f'<div style="display:inline-block;margin:3px;text-align:center">'
+            f'<img src="data:image/jpeg;base64,{b64}" '
+            f'style="width:{thumb_w}px;height:{thumb_h}px;object-fit:fill;border:1px solid {border};'
+            f'border-radius:4px" title="{fname}"/>'
+            f'<div style="font-size:11px;color:{text};max-width:{thumb_w}px;'
+            f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
+            f'{dt_str}</div></div>'
+        )
 
     count_msg = f"Showing {len(thumbs)} of {n_filtered} selected"
     if n_filtered > max_display:
         count_msg += f" (capped at {max_display})"
 
-    # Inject CSS only when at least one thumb has a full-res blob
-    _style = ""
-    if _has_any_full:
-        _style = (
-            f'<style>'
-            f'.{_cls}-cb {{ display: none; }}'
-            f'.{_cls}-thumb {{ cursor: zoom-in; display: inline-block; }}'
-            f'.{_cls}-overlay {{ '
-            f'display: none; position: fixed; inset: 0; '
-            f'background: rgba(0,0,0,0.85); z-index: 2147483647; '
-            f'align-items: center; justify-content: center; '
-            f'cursor: zoom-out; '
-            f'}}'
-            f'.{_cls}-cb:checked ~ .{_cls}-overlay {{ display: flex; }}'
-            f'.{_cls}-overlay img {{ '
-            f'max-width: 95vw; max-height: 95vh; '
-            f'border-radius: 4px; '
-            f'box-shadow: 0 8px 32px rgba(0,0,0,0.5); '
-            f'}}'
-            f'</style>'
-        )
-
     gallery_html = (
-        _style
-        + f'<div class="{_cls}" style="display:flex;flex-wrap:wrap;gap:4px;align-content:flex-start;'
+        f'<div style="display:flex;flex-wrap:wrap;gap:4px;align-content:flex-start;'
         f'height:600px;overflow-y:auto;background:{bg};'
         f'border-radius:8px;padding:8px;border:1px solid {border}">'
         + "".join(imgs)
@@ -1682,8 +1605,8 @@ def _(config, map_theme, mo, set_ss_init, src_img_tbl, ss_load_button):
 
 @app.cell
 def _(mo):
-    ss_n_similar_images = mo.ui.number(start=1, stop=500, step=1, value=50, label="Similar images")
-    ss_n_similar_patches = mo.ui.number(start=10, stop=10000, step=10, value=100, label="Max patches")
+    ss_n_similar_images = mo.ui.number(start=1, stop=50, step=1, value=50, label="Similar images")
+    ss_n_similar_patches = mo.ui.number(start=10, stop=500, step=200, value=100, label="Max patches")
     ss_max_gallery = mo.ui.number(start=4, stop=100, step=4, value=25, label="Gallery cap")
     ss_refine_factor = mo.ui.number(start=1, stop=50, step=1, value=20, label="Refine factor")
     ss_similarity_toggle = mo.ui.switch(label="Similarity overlay")
@@ -2042,42 +1965,18 @@ def _(
             for _, row in ss_top_df.iterrows()
         }
 
-        import pyarrow.compute as _pc_g
-
-        # 1. Lightweight dt-only fetch for ALL results → complete date map for
-        #    the Data sub-tab without pulling any image blobs for non-gallery rows.
-        _all_img_ids = ss_top_df["image_id"].unique().tolist()
-        _dt_batch = (
-            src_img_tbl.to_lance()
-            .scanner(
-                columns=["id", "dt"],
-                filter=_pc_g.field("id").isin(_all_img_ids),
-            )
-            .to_table()
-            .to_pandas()
-            .set_index("id")
-        )
-        _date_map = _dt_batch["dt"].to_dict()
-
-        # 2. Full blob fetch only for the gallery-capped images (≤ _MAX rows).
-        #    image_blob is ~190 KB each; fetching it for all results was the
-        #    over-fetch — only the gallery thumbnails ever use the blob.
-        _gallery_ids = list(_groups.index)
-        _blob_batch = (
-            src_img_tbl.to_lance()
-            .scanner(
-                columns=["id", "image_blob"],
-                filter=_pc_g.field("id").isin(_gallery_ids),
-            )
-            .to_table()
-            .to_pandas()
-            .set_index("id")
-        )
-
         _thumbs = []
-        _full_blobs = []
+        _date_map = {}
         for _img_id, _data in _groups.iterrows():
-            _r = _blob_batch.loc[_img_id]
+            _r = (
+                src_img_tbl.search()
+                .where(f"id = '{_img_id}'")
+                .select(["image_blob", "dt"])
+                .limit(1)
+                .to_pandas()
+                .iloc[0]
+            )
+            _date_map[_img_id] = _r["dt"]
 
             if ss_similarity_toggle.value:
                 _matched = {
@@ -2095,7 +1994,7 @@ def _(
                 for _p in map(int, _data["patch_index"]):
                     _pr, _pc = _p // _n_cols, _p % _n_cols
                     _bx = (_pc * _patch_w, _pr * _patch_h, (_pc + 1) * _patch_w, (_pr + 1) * _patch_h)
-                    _draw.rectangle(_bx, outline=(0, 0, 0), width=2)
+                    _draw.rectangle(_bx, outline=(255, 80, 0), width=2)
                 _buf = _io_g.BytesIO()
                 _im.save(_buf, format="JPEG", quality=85)
                 _blob = _buf.getvalue()
@@ -2104,15 +2003,7 @@ def _(
             _im_t = _Image_g.open(_io_g.BytesIO(_blob)).resize((_thumb_w, _thumb_h), _Image_g.LANCZOS)
             _buf_t = _io_g.BytesIO()
             _im_t.save(_buf_t, format="JPEG", quality=82)
-            _dt = _date_map.get(_img_id)
-            _dt_label = (
-                _dt.strftime("%Y-%m-%d")
-                if (_dt is not None and hasattr(_dt, "strftime") and _pd_g.notna(_dt))
-                else "—"
-            )
-            _thumbs.append((f"{_dt_label}  ·  d={_data['_distance']:.2f}", _buf_t.getvalue(), _dt))
-            # Keep the pre-resize (annotated) blob for the click-to-zoom lightbox
-            _full_blobs.append(_blob)
+            _thumbs.append((f"{str(_r['dt'])[:10]}  ·  d={_data['_distance']:.2f}", _buf_t.getvalue(), _r["dt"]))
 
         _theme = "dark" if map_theme.value else "light"
         _n_patches = len(ss_top_df)
@@ -2134,7 +2025,6 @@ def _(
         _, _gallery_html = render_thumbnail_gallery(
             _thumbs, _n_shown, _MAX, theme=_theme,
             thumb_w=_thumb_w, thumb_h=_thumb_h,
-            full_blobs=_full_blobs,
         )
 
         _df_merged = (
@@ -2142,14 +2032,7 @@ def _(
             .agg(patch_indices=("patch_index", list), cosine_dists=("_distance", list))
             .reset_index()
         )
-        def _fmt_date(x):
-            _d = _date_map.get(x)
-            if _d is None or (hasattr(_d, "__class__") and _d.__class__.__name__ == "NaTType"):
-                return "—"
-            _s = str(_d)[:10]
-            return "—" if _s in ("", "NaT", "None") else _s
-
-        _df_merged["date"] = _df_merged["image_id"].map(_fmt_date)
+        _df_merged["date"] = _df_merged["image_id"].map(lambda x: str(_date_map.get(x, ""))[:10])
         _df_merged["best_dist"] = _df_merged["cosine_dists"].apply(min)
         _df_merged = (
             _df_merged[["date", "image_id", "patch_indices", "cosine_dists", "best_dist"]]
@@ -2231,643 +2114,9 @@ def _(
 
 @app.cell
 def _(mo):
-    viz_url = mo.ui.text(
-        value="",
-        placeholder="pelican://... or /path/to/file.nc or /path/to/folder/",
-        full_width=True,
+    visualize_tab = mo.callout(
+        mo.md("**Visualize** — coming soon."), kind="neutral"
     )
-    viz_load_button = mo.ui.run_button(label="▶ Load dataset")
-    viz_reset_minmax = mo.ui.run_button(label="↺ Reset min/max")
-    return viz_load_button, viz_reset_minmax, viz_url
-
-
-@app.cell
-def _(mo, viz_url):
-    """If the URL is a folder, list NetCDF files in a dropdown."""
-    import os as _os_fc
-    _path = viz_url.value.strip()
-    _nc_exts = (".nc", ".nc4", ".netcdf")
-    if _path and _os_fc.path.isdir(_path):
-        _files = sorted([
-            f for f in _os_fc.listdir(_path)
-            if f.lower().endswith(_nc_exts)
-        ])
-        if _files:
-            viz_file_picker = mo.ui.dropdown(
-                options=_files,
-                value=_files[0],
-                label="Select NetCDF file",
-            )
-        else:
-            viz_file_picker = None
-    else:
-        viz_file_picker = None
-    return (viz_file_picker,)
-
-
-@app.cell
-def _(mo, viz_file_picker, viz_load_button, viz_url):
-    """Load dataset — triggers on button click or Enter in the URL field."""
-    get_viz_ds, set_viz_ds = mo.state(None)
-    get_viz_err, set_viz_err = mo.state(None)
-
-    # mo.ui.text submits (re-runs dependents) on Enter, same as button click
-    if viz_load_button.value or viz_url.value.strip():
-        try:
-            import xarray as _xr
-            import os as _os
-
-            _url = viz_url.value.strip()
-
-            # ── Determine source ────────────────────────────────────────────
-            _is_netcdf = False
-            _nc_path   = None
-            _nc_exts   = (".nc", ".nc4", ".netcdf")
-
-            if _url and _os.path.isdir(_url):
-                # Folder — use the file picker selection
-                if viz_file_picker is not None and viz_file_picker.value:
-                    _nc_path   = _os.path.join(_url, viz_file_picker.value)
-                    _is_netcdf = True
-            elif _url and (_url.endswith(_nc_exts) or _os.path.exists(_url)):
-                _nc_path   = _url
-                _is_netcdf = True
-
-            if _is_netcdf:
-                # ── NetCDF via xarray ────────────────────────────────────────
-                _nc = _xr.open_dataset(_nc_path, engine="netcdf4")
-                _data_vars = list(_nc.data_vars)
-                _dims      = dict(_nc.dims)
-                _coords    = dict(_nc.coords)
-
-                # Identify x, y, z, time dimensions heuristically
-                def _find_dim(candidates, dims):
-                    for c in candidates:
-                        for d in dims:
-                            if c in d.lower():
-                                return d
-                    return None
-
-                _xdim = _find_dim(["lon","x","nx"], _dims)
-                _ydim = _find_dim(["lat","y","ny"], _dims)
-                _zdim = _find_dim(["depth","lev","z","nz","alt"], _dims)
-                _tdim = _find_dim(["time","t"], _dims)
-
-                _nx = int(_dims[_xdim]) if _xdim else 1
-                _ny = int(_dims[_ydim]) if _ydim else 1
-                _nz = int(_dims[_zdim]) if _zdim else 1
-                _nt = int(_dims[_tdim]) if _tdim else 1
-
-                # Extract 1-D lat/lon coordinate arrays if available
-                _lon_coord = _find_dim(["lon","longitude","x"], _coords)
-                _lat_coord = _find_dim(["lat","latitude","y"], _coords)
-                _lon_vals = _nc[_lon_coord].values if _lon_coord else None
-                _lat_vals = _nc[_lat_coord].values if _lat_coord else None
-
-                # Flatten to 1-D if needed (some files store 2-D coords)
-                if _lon_vals is not None and _lon_vals.ndim > 1:
-                    _lon_vals = _lon_vals[0]  # take first row
-                if _lat_vals is not None and _lat_vals.ndim > 1:
-                    _lat_vals = _lat_vals[:, 0]  # take first column
-
-                # Extract actual time coordinate values if available
-                _time_vals = None
-                if _tdim and _tdim in _nc.coords:
-                    import pandas as _pd
-                    try:
-                        _tv = _nc[_tdim].values
-                        _time_vals = [_pd.Timestamp(_t).strftime("%Y-%m-%d %H:%M") for _t in _tv]
-                    except Exception:
-                        _time_vals = [str(i) for i in range(_nt)]
-                else:
-                    _time_vals = [str(i) for i in range(_nt)]
-
-                set_viz_ds({
-                    "kind":      "netcdf",
-                    "ds":        _nc,
-                    "path":      _nc_path,
-                    "url":       _nc_path,
-                    "fields":    _data_vars,
-                    "steps":     list(range(_nt)),
-                    "time_vals": _time_vals,  # list of date strings
-                    "box":       [[0, 0, 0], [_nx, _ny, _nz]],
-                    "maxres":    32,
-                    "dims":      {"x": _xdim, "y": _ydim, "z": _zdim, "t": _tdim},
-                    "lon_vals":  _lon_vals,
-                    "lat_vals":  _lat_vals,
-                })
-                set_viz_err(None)
-
-            elif _url:
-                # ── Remote OpenVisus dataset ─────────────────────────────────
-                import openvisuspy as _ovp_viz
-                _ds = _ovp_viz.LoadDataset(_url)
-                _box   = _ds.getLogicBox()
-                _steps = _ds.getTimesteps()
-                _raw_fields = _ds.getFields()
-                _fields = [f.name if hasattr(f, "name") else str(f) for f in _raw_fields]
-                set_viz_ds({
-                    "kind":   "ovp",
-                    "ds":     _ds,
-                    "url":    _url,
-                    "box":    _box,
-                    "steps":  _steps,
-                    "fields": _fields,
-                    "maxres": _ds.getMaxResolution(),
-                })
-                set_viz_err(None)
-            else:
-                set_viz_err("Please enter a URL or upload a file.")
-
-        except Exception as _e:
-            set_viz_ds(None)
-            set_viz_err(str(_e))
-    return get_viz_ds, get_viz_err
-
-
-@app.cell
-def _(get_viz_ds, mo):
-    """Build controls once a dataset is loaded."""
-    _meta = get_viz_ds()
-    if _meta is None:
-        viz_timestep   = mo.ui.text(value="", placeholder="YYYY-MM-DD HH:MM")
-        viz_depth      = mo.ui.slider(start=0, stop=0,  value=0,  show_value=True)
-        viz_resolution = mo.ui.slider(start=0, stop=40, value=28, show_value=True)
-        viz_quality    = mo.ui.slider(start=-8, stop=0, value=-1, show_value=True)
-        viz_x          = mo.ui.range_slider(start=0, stop=100, value=[40, 60], show_value=True)
-        viz_y          = mo.ui.range_slider(start=0, stop=100, value=[40, 60], show_value=True)
-        viz_field      = mo.ui.dropdown(options=["(none)"], value="(none)")
-        viz_colormap   = mo.ui.dropdown(
-            options=["viridis","plasma","inferno","magma","cividis","RdBu_r","coolwarm","turbo"],
-            value="magma",
-        )
-    else:
-        _steps  = _meta["steps"]
-        _box    = _meta["box"]
-        _maxres = _meta["maxres"]
-        _z_max  = max(0, _box[1][2] - 1)
-        _nx     = int(_box[1][0])
-        _ny     = int(_box[1][1])
-        # Default to center 20%
-        _cx0, _cx1 = int(_nx * 0.4), int(_nx * 0.6)
-        _cy0, _cy1 = int(_ny * 0.4), int(_ny * 0.6)
-        _time_vals = _meta.get("time_vals")
-        _kind_ctrl_t = _meta.get("kind", "ovp")
-        if _kind_ctrl_t == "netcdf" and _time_vals:
-            viz_timestep = mo.ui.text(
-                value=_time_vals[0],
-                placeholder="YYYY-MM-DD HH:MM",
-            )
-        else:
-            viz_timestep = mo.ui.slider(
-                start=int(_steps[0]), stop=int(_steps[-1]),
-                value=int(_steps[0]),
-                step=int(_steps[1] - _steps[0]) if len(_steps) > 1 else 1, show_value=True,
-            )
-        viz_depth = mo.ui.slider(
-            start=0, stop=int(_z_max), value=0, show_value=True,
-        )
-        viz_resolution = mo.ui.slider(
-            start=0, stop=int(_maxres), value=min(28, int(_maxres)), show_value=True,
-        )
-        viz_quality = mo.ui.slider(
-            start=-8, stop=0, value=-1, show_value=True,
-        )
-        _lon_vals = _meta.get("lon_vals")
-        _lat_vals = _meta.get("lat_vals")
-        _kind_ctrl = _meta.get("kind", "ovp")
-        if _kind_ctrl == "netcdf" and _lon_vals is not None and _lat_vals is not None:
-            _lon_min, _lon_max = float(_lon_vals.min()), float(_lon_vals.max())
-            _lat_min, _lat_max = float(_lat_vals.min()), float(_lat_vals.max())
-            _lon_step = max(round((_lon_max - _lon_min) / _nx, 4), 0.0001)
-            _lat_step = max(round((_lat_max - _lat_min) / _ny, 4), 0.0001)
-            _lon_c0 = max(_lon_min, 260)
-            _lon_c1 = min(_lon_max, 330)
-            if _lon_c1 <= _lon_c0:
-                _lon_c0 = _lon_min + (_lon_max - _lon_min) * 0.4
-                _lon_c1 = _lon_min + (_lon_max - _lon_min) * 0.6
-            _lat_c0 = max(_lat_min, 10)
-            _lat_c1 = min(_lat_max, 40)
-            if _lat_c1 <= _lat_c0:
-                _lat_c0 = _lat_min + (_lat_max - _lat_min) * 0.4
-                _lat_c1 = _lat_min + (_lat_max - _lat_min) * 0.6
-            viz_x = mo.ui.range_slider(
-                start=round(_lon_min, 4), stop=round(_lon_max, 4),
-                value=[round(_lon_c0, 4), round(_lon_c1, 4)],
-                step=_lon_step, show_value=True,
-            )
-            viz_y = mo.ui.range_slider(
-                start=round(_lat_min, 4), stop=round(_lat_max, 4),
-                value=[round(_lat_c0, 4), round(_lat_c1, 4)],
-                step=_lat_step, show_value=True,
-            )
-        else:
-            viz_x = mo.ui.range_slider(
-                start=0, stop=_nx, value=[_cx0, _cx1], show_value=True,
-            )
-            viz_y = mo.ui.range_slider(
-                start=0, stop=_ny, value=[_cy0, _cy1], show_value=True,
-            )
-        viz_field = mo.ui.dropdown(
-            options=_meta["fields"], value=_meta["fields"][0],
-        )
-        viz_colormap = mo.ui.dropdown(
-            options=["viridis","plasma","inferno","magma","cividis","RdBu_r","coolwarm","turbo"],
-            value="magma",
-        )
-    return (
-        viz_colormap,
-        viz_depth,
-        viz_field,
-        viz_quality,
-        viz_resolution,
-        viz_timestep,
-        viz_x,
-        viz_y,
-    )
-
-
-@app.cell
-def _(get_viz_ds, mo, np, viz_depth, viz_field, viz_timestep):
-    """Compute min/max for the selected timestep and depth when field/date/reset changes."""
-    get_viz_vmin, set_viz_vmin = mo.state(0.0)
-    get_viz_vmax, set_viz_vmax = mo.state(1.0)
-
-    _meta = get_viz_ds()
-    if _meta is not None and _meta.get("kind") == "netcdf":
-        try:
-            _dims      = _meta["dims"]
-            _time_vals = _meta.get("time_vals")
-            _da        = _meta["ds"][viz_field.value]
-
-            # Select the current timestep
-            _sel = {}
-            if _dims["t"]:
-                if _time_vals and isinstance(viz_timestep.value, str):
-                    _tv = viz_timestep.value.strip()
-                    if _tv in _time_vals:
-                        _sel[_dims["t"]] = _time_vals.index(_tv)
-                    else:
-                        _sel = None  # invalid date — skip
-                else:
-                    try:
-                        _sel[_dims["t"]] = int(viz_timestep.value)
-                    except (ValueError, TypeError):
-                        _sel = None
-            if _dims["z"]:
-                _sel[_dims["z"]] = int(viz_depth.value)
-
-            if _sel is not None:
-                _slice = _da.isel(**_sel).values
-                set_viz_vmin(round(float(np.nanpercentile(_slice, 2)), 4))
-                set_viz_vmax(round(float(np.nanpercentile(_slice, 98)), 4))
-        except Exception:
-            pass
-    return get_viz_vmax, get_viz_vmin
-
-
-@app.cell
-def _(get_viz_vmax, get_viz_vmin, mo):
-    """Number fields initialised from state; user edits trigger re-render."""
-    viz_vmin = mo.ui.number(value=get_viz_vmin(), label="Min")
-    viz_vmax = mo.ui.number(value=get_viz_vmax(), label="Max")
-    return viz_vmax, viz_vmin
-
-
-@app.cell
-def _(
-    get_viz_ds,
-    get_viz_err,
-    map_theme,
-    mo,
-    np,
-    plt,
-    viz_colormap,
-    viz_depth,
-    viz_field,
-    viz_file_picker,
-    viz_load_button,
-    viz_quality,
-    viz_reset_minmax,
-    viz_resolution,
-    viz_timestep,
-    viz_url,
-    viz_vmax,
-    viz_vmin,
-    viz_x,
-    viz_y,
-):
-    """Render a horizontal 2-D slice — auto-updates on any control change."""
-    _meta = get_viz_ds()
-    _err  = get_viz_err()
-    _theme = "dark" if map_theme.value else "light"
-    _colors = get_theme_colors(_theme)
-
-    _picker_row = (
-        mo.hstack([mo.md("**File:**"), viz_file_picker], justify="start")
-        if viz_file_picker is not None else None
-    )
-    _header = mo.vstack([
-        mo.Html(
-            '<div style="display:flex;gap:8px;align-items:flex-end;width:100%">'
-            + f'<div style="flex:3;min-width:0">{viz_url._repr_html_()}</div>'
-            + f'<div style="flex:0 0 auto">{viz_load_button._repr_html_()}</div>'
-            + '</div>'
-        ),
-        *([_picker_row] if _picker_row is not None else []),
-    ])
-
-    if _err is not None:
-        visualize_tab = mo.vstack([
-            _header,
-            mo.callout(mo.md(f"**Load error:** `{_err}`"), kind="danger"),
-        ])
-    elif _meta is None:
-        visualize_tab = mo.vstack([
-            _header,
-            mo.callout(
-                mo.md(
-                    "Enter a folder pathway to ERA5 NetCDF files\n"
-                    # "Enter a remote Pelican dataset URL, a path to a local NetCDF file, or a folder to browse files.\n\n"
-                    # "**Example datasets:**\n"
-                    # "- `pelican://osg-htc.org/nasa/nsdf/climate1/llc4320/idx/theta/theta_llc4320_x_y_depth.idx` — Temperature\n"
-                    # "- `pelican://osg-htc.org/nasa/nsdf/climate1/llc4320/idx/salt/salt_llc4320_x_y_depth.idx` — Salinity\n"
-                    # "- `pelican://osg-htc.org/nasa/nsdf/climate2/llc4320/idx/w/w_llc4320_x_y_depth.idx` — Vertical velocity"
-                ),
-                kind="info",
-            ),
-        ])
-    else:
-        _box    = _meta["box"]
-        _steps  = _meta["steps"]
-        _fields = _meta["fields"]
-        _maxres = _meta["maxres"]
-        _nx, _ny, _nz = _box[1][0], _box[1][1], _box[1][2]
-
-        _kind = _meta.get("kind", "ovp")
-        _time_vals_info = _meta.get("time_vals")
-        if _kind == "ovp":
-            _extra = f"  ·  **Max resolution:** {_maxres}"
-        elif _time_vals_info:
-            _extra = f"  ·  **Dates:** {_time_vals_info[0]} → {_time_vals_info[-1]}"
-        else:
-            _extra = "  ·  **Source:** NetCDF"
-        _info_md = mo.md(
-            f"**Dimensions:** {_nx} × {_ny} × {_nz}  ·  "
-            f"**Timesteps:** {len(_steps)}  ·  "
-            f"**Fields:** {', '.join(_fields)}"
-            + _extra
-        )
-
-        def _labeled(label, widget):
-            return mo.vstack([mo.md(f"**{label}**"), widget], gap=0)
-
-        if _kind == "netcdf":
-            _controls = mo.vstack([
-                mo.hstack([
-                    _labeled("Variable", viz_field),
-                    _labeled("Date (YYYY-MM-DD HH:MM)", viz_timestep),
-                    _labeled("Colormap", viz_colormap),
-                    _labeled("Detail", viz_quality),
-                ], justify="start"),
-                mo.hstack([
-                    _labeled("Longitude range", viz_x),
-                    _labeled("Latitude range", viz_y),
-                    _labeled("Depth (z)", viz_depth),
-                ], justify="start"),
-                mo.hstack([
-                    _labeled("Min value", viz_vmin),
-                    _labeled("Max value", viz_vmax),
-                    _labeled(" ", viz_reset_minmax),
-                ], justify="start"),
-            ])
-        else:
-            _controls = mo.vstack([
-                mo.hstack([
-                    _labeled("Variable", viz_field),
-                    _labeled("Timestep", viz_timestep),
-                    _labeled("Colormap", viz_colormap),
-                    _labeled("Detail", viz_quality),
-                ], justify="start"),
-                mo.hstack([
-                    _labeled("X range", viz_x),
-                    _labeled("Y range", viz_y),
-                    _labeled("Depth (z)", viz_depth),
-                ], justify="start"),
-                mo.hstack([
-                    _labeled("Min value", viz_vmin),
-                    _labeled("Max value", viz_vmax),
-                    _labeled(" ", viz_reset_minmax),
-                ], justify="start"),
-                mo.hstack([
-                    _labeled("Base resolution", viz_resolution),
-                ], justify="start"),
-            ])
-
-        try:
-            _ds   = _meta["ds"]
-            _kind = _meta.get("kind", "ovp")
-            _res  = int(viz_resolution.value)
-            _q    = int(viz_quality.value)
-            _z    = int(viz_depth.value)
-            _x0, _x1 = int(viz_x.value[0]), int(viz_x.value[1])
-            _y0, _y1 = int(viz_y.value[0]), int(viz_y.value[1])
-            if _x1 <= _x0: _x1 = _x0 + 1
-            if _y1 <= _y0: _y1 = _y0 + 1
-
-            if _kind == "netcdf":
-                # ── NetCDF slice via xarray ──────────────────────────────────
-                _dims     = _meta["dims"]
-                _lon_vals = _meta.get("lon_vals")
-                _lat_vals = _meta.get("lat_vals")
-                _var      = _ds[viz_field.value]
-                _sel      = {}
-                if _dims["t"]:
-                    _time_vals = _meta.get("time_vals")
-                    if _time_vals and isinstance(viz_timestep.value, str):
-                        _tv = viz_timestep.value.strip()
-                        if _tv not in _time_vals:
-                            raise ValueError(f"Date '{_tv}' not found in dataset. Available range: {_time_vals[0]} → {_time_vals[-1]}")
-                        _t_idx = _time_vals.index(_tv)
-                    else:
-                        _t_idx = int(viz_timestep.value)
-                    _sel[_dims["t"]] = _t_idx
-                if _dims["z"]:
-                    _sel[_dims["z"]] = _z
-                _var2d = _var.isel(**_sel) if _sel else _var
-
-                # Convert lon/lat slider values back to index ranges
-                if _lon_vals is not None and _lat_vals is not None:
-                    # Handle both ascending and descending coordinate arrays
-                    def _coord_slice(arr, lo, hi):
-                        if arr[-1] > arr[0]:  # ascending
-                            i0 = int(np.searchsorted(arr, lo, side='left'))
-                            i1 = int(np.searchsorted(arr, hi, side='right'))
-                        else:  # descending — flip, search, flip back
-                            i0 = len(arr) - int(np.searchsorted(arr[::-1], hi, side='left'))
-                            i1 = len(arr) - int(np.searchsorted(arr[::-1], lo, side='right'))
-                        return max(0, i0), min(len(arr), max(i1, i0 + 1))
-                    _xi0, _xi1 = _coord_slice(_lon_vals, viz_x.value[0], viz_x.value[1])
-                    _yi0, _yi1 = _coord_slice(_lat_vals, viz_y.value[0], viz_y.value[1])
-                else:
-                    _xi0, _xi1 = _x0, _x1
-                    _yi0, _yi1 = _y0, _y1
-
-                if _dims["y"]:
-                    _var2d = _var2d.isel({_dims["y"]: slice(_yi0, _yi1)})
-                if _dims["x"]:
-                    _var2d = _var2d.isel({_dims["x"]: slice(_xi0, _xi1)})
-                _slice = _var2d.values.squeeze()
-
-                # Downsample to approximate quality level (each -1 halves resolution)
-                _step = max(1, 2 ** (-_q))
-                _slice = _slice[::_step, ::_step]
-
-                # Coordinate arrays for this slice, downsampled to match
-                if _lon_vals is not None and _lat_vals is not None:
-                    _plot_lon = _lon_vals[_xi0:_xi1][::_step]
-                    _plot_lat = _lat_vals[_yi0:_yi1][::_step]
-                else:
-                    _plot_lon = None
-                    _plot_lat = None
-            else:
-                # ── Remote OpenVisus dataset ─────────────────────────────────
-                _reader = _ds.db if hasattr(_ds, "db") and hasattr(_ds.db, "read") else _ds
-                if not hasattr(_reader, "read"):
-                    raise AttributeError(
-                        f"Cannot find read() on {type(_ds).__name__}. "
-                        f"Available: {[m for m in dir(_ds) if not m.startswith('_')]}"
-                    )
-                _data = _reader.read(
-                    logic_box=[[_x0, _y0, _z], [_x1, _y1, _z + 1]],
-                    field=viz_field.value,
-                    time=int(viz_timestep.value),
-                    max_resolution=_res,
-                    quality=_q,
-                )
-                if not isinstance(_data, np.ndarray):
-                    _data = next(iter(_data))
-                while isinstance(_data, np.ndarray) and _data.ndim > 2 and _data.shape[0] == 1:
-                    _data = _data[0]
-                _slice = _data
-
-            _bg = _colors["bg"]
-            _txt = _colors["text"]
-
-            _fig, _ax = plt.subplots(figsize=(10, 5))
-            _fig.patch.set_facecolor(_bg)
-            _ax.set_facecolor(_bg)
-
-            _vmin = float(viz_vmin.value) if viz_vmin.value is not None else float(np.nanpercentile(_slice, 2))
-            _vmax = float(viz_vmax.value) if viz_vmax.value is not None else float(np.nanpercentile(_slice, 98))
-            if _vmax <= _vmin:
-                _vmax = _vmin + 1.0
-
-            if _kind == "netcdf" and _plot_lon is not None and _plot_lat is not None:
-                import matplotlib.colors as _mcolors
-                import matplotlib.patches as _mpatches
-                import cartopy.io.shapereader as _shpreader
-                import shapely.vectorized as _shvec
-                from shapely.ops import unary_union as _unary_union
-
-                # ── Fixed-size figure with plain axes ────────────────────────
-                plt.close(_fig)
-                _fig, _ax = plt.subplots(figsize=(10, 5), dpi=100)
-                _fig.patch.set_facecolor(_bg)
-                _ax.set_facecolor("#444444")  # ocean — dark gray
-                _ax.set_xlim(_plot_lon.min(), _plot_lon.max())
-                _ax.set_ylim(_plot_lat.min(), _plot_lat.max())
-                _ax.set_aspect("auto")  # fill the fixed figure size
-
-                # ── Draw land polygons from Natural Earth ─────────────────────
-                _land_shp = _shpreader.natural_earth(
-                    resolution="110m", category="physical", name="land"
-                )
-                for _geom in _shpreader.Reader(_land_shp).geometries():
-                    _ax.add_patch(_mpatches.PathPatch(
-                        plt.matplotlib.path.Path.make_compound_path(
-                            *[plt.matplotlib.path.Path(
-                                np.column_stack([np.array(p.exterior.coords)[:, 0],
-                                                 np.array(p.exterior.coords)[:, 1]])
-                            ) for p in (
-                                [_geom] if _geom.geom_type == "Polygon"
-                                else list(_geom.geoms)
-                            )]
-                        ),
-                        facecolor="#888888", edgecolor="none", zorder=1,
-                        transform=_ax.transData,
-                    ))
-
-                # ── Data with linear alpha ────────────────────────────────────
-                _norm = _mcolors.Normalize(vmin=_vmin, vmax=_vmax)
-                _cmap_base = plt.get_cmap(viz_colormap.value)
-                _colors_rgba = _cmap_base(np.linspace(0, 1, 256))
-                _colors_rgba[:, 3] = np.linspace(0, 1, 256)
-                _cmap_alpha = _mcolors.ListedColormap(_colors_rgba)
-
-                _im = _ax.pcolormesh(
-                    _plot_lon, _plot_lat, _slice,
-                    cmap=_cmap_alpha, norm=_norm,
-                    shading="auto", zorder=2,
-                )
-
-                # ── Lat/lon tick labels ───────────────────────────────────────
-                _ax.set_xlabel("Longitude", color=_txt)
-                _ax.set_ylabel("Latitude", color=_txt)
-                _title_loc = (f"lon=[{viz_x.value[0]:.2f},{viz_x.value[1]:.2f}]  "
-                              f"lat=[{viz_y.value[0]:.2f},{viz_y.value[1]:.2f}]")
-            else:
-                # Normalize to uint8 for faster matplotlib rendering
-                _range = _vmax - _vmin if _vmax > _vmin else 1.0
-                _slice_8 = np.clip((_slice - _vmin) / _range * 255, 0, 255).astype(np.uint8)
-                _im = _ax.imshow(
-                    _slice_8,
-                    origin="lower",
-                    cmap=viz_colormap.value,
-                    aspect="auto",
-                    vmin=0, vmax=255,
-                    extent=[_x0, _x1, _y0, _y1],
-                )
-                _ax.set_xlabel("X", color=_txt)
-                _ax.set_ylabel("Y", color=_txt)
-                _title_loc = f"x=[{_x0},{_x1}]  y=[{_y0},{_y1}]"
-
-            _cbar = _fig.colorbar(_im, ax=_ax, fraction=0.03, pad=0.02)
-            _cbar.ax.set_facecolor("#444444")
-            _cbar.ax.yaxis.set_tick_params(color=_txt)
-            plt.setp(_cbar.ax.yaxis.get_ticklabels(), color=_txt)
-            _cbar.set_label(viz_field.value, color=_txt)
-
-            _ax.set_title(
-                f"{viz_field.value}  ·  {viz_timestep.value}  ·  z={_z}  ·  "
-                f"{_title_loc}  ·  q={_q}",
-                color=_txt,
-            )
-            _ax.tick_params(colors=_txt)
-            for _spine in _ax.spines.values():
-                _spine.set_edgecolor(_colors["border"])
-
-            if _kind != "netcdf":
-                _fig.tight_layout()
-            _plot_html = mo.as_html(_fig)
-            plt.close(_fig)
-
-            _shape_note = mo.md(
-                f"Slice shape: **{_slice.shape[1]} × {_slice.shape[0]}**  ·  "
-                f"min {float(np.nanmin(_slice)):.4g}  ·  "
-                f"max {float(np.nanmax(_slice)):.4g}  ·  "
-                f"mean {float(np.nanmean(_slice)):.4g}"
-            )
-
-            visualize_tab = mo.vstack([
-                _header, _info_md, _controls, _shape_note, _plot_html,
-            ])
-
-        except Exception as _render_err:
-            visualize_tab = mo.vstack([
-                _header, _info_md, _controls,
-                mo.callout(mo.md(f"**Render error:** `{_render_err}`"), kind="danger"),
-            ])
     return (visualize_tab,)
 
 
