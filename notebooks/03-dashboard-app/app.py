@@ -2676,6 +2676,22 @@ def _(
                 _land_shp = _shpreader.natural_earth(
                     resolution="110m", category="physical", name="land"
                 )
+
+                def _plot_coast(lons, lats):
+                    """Plot a coastline, breaking it wherever it jumps across the plot."""
+                    # Insert NaN breaks where consecutive points jump more than 180°
+                    # (antimeridian crossing) or leave the plot extent
+                    _seg_lons, _seg_lats = [lons[0]], [lats[0]]
+                    for _i in range(1, len(lons)):
+                        _gap = abs(lons[_i] - lons[_i-1]) > 90
+                        if _gap:
+                            _seg_lons.append(np.nan)
+                            _seg_lats.append(np.nan)
+                        _seg_lons.append(lons[_i])
+                        _seg_lats.append(lats[_i])
+                    _ax.plot(_seg_lons, _seg_lats, color="#cccccc",
+                             linewidth=0.5, zorder=3, transform=_ax.transData)
+
                 for _geom in _shpreader.Reader(_land_shp).geometries():
                     _polys = [_geom] if _geom.geom_type == "Polygon" else list(_geom.geoms)
                     for _poly in _polys:
@@ -2686,8 +2702,7 @@ def _(
                             _lons = np.where(_lons < 0, _lons + 360, _lons)
                         if _lons.max() < _lon_min_ax or _lons.min() > _lon_max_ax:
                             continue
-                        _ax.plot(_lons, _lats, color="#cccccc", linewidth=0.5,
-                                 zorder=3, transform=_ax.transData)
+                        _plot_coast(_lons, _lats)
 
                 # ── Lat/lon tick labels ───────────────────────────────────────
                 _ax.set_xlabel("Longitude", color=_txt)
