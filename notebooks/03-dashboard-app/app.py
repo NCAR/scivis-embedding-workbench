@@ -2651,59 +2651,21 @@ def _(
                 plt.close(_fig)
                 _fig, _ax = plt.subplots(figsize=(10, 5), dpi=100)
                 _fig.patch.set_facecolor(_bg)
-                _ax.set_facecolor("#444444")  # ocean — dark gray
                 _ax.set_xlim(_plot_lon.min(), _plot_lon.max())
                 _ax.set_ylim(_plot_lat.min(), _plot_lat.max())
                 _ax.set_aspect("auto")  # fill the fixed figure size
 
-                # ── Land fill under data ─────────────────────────────────────
+                # ── Compute lon/lat helpers for coastline ─────────────────────
                 _lon_is_360 = _plot_lon.max() > 180
                 _lon_min_ax = _plot_lon.min()
                 _lon_max_ax = _plot_lon.max()
-                _land_shp_fill = _shpreader.natural_earth(
-                    resolution="110m", category="physical", name="land"
-                )
 
-                def _split_and_draw_ring(lons, lats, draw_fn):
-                    """Split a ring at antimeridian jumps, draw each segment separately."""
-                    _seg_lons, _seg_lats = [lons[0]], [lats[0]]
-                    for _i in range(1, len(lons)):
-                        if abs(lons[_i] - lons[_i-1]) > 90:
-                            if len(_seg_lons) > 2:
-                                draw_fn(_seg_lons, _seg_lats)
-                            _seg_lons, _seg_lats = [lons[_i]], [lats[_i]]
-                        else:
-                            _seg_lons.append(lons[_i])
-                            _seg_lats.append(lats[_i])
-                    if len(_seg_lons) > 2:
-                        draw_fn(_seg_lons, _seg_lats)
-
-                for _geom_f in _shpreader.Reader(_land_shp_fill).geometries():
-                    _polys_f = [_geom_f] if _geom_f.geom_type == "Polygon" else list(_geom_f.geoms)
-                    for _poly_f in _polys_f:
-                        _coords_f = np.array(_poly_f.exterior.coords)
-                        _lons_f = _coords_f[:, 0]
-                        _lats_f = _coords_f[:, 1]
-                        if _lon_is_360:
-                            _lons_f = np.where(_lons_f < 0, _lons_f + 360, _lons_f)
-                        if _lons_f.max() < _lon_min_ax or _lons_f.min() > _lon_max_ax:
-                            continue
-                        _split_and_draw_ring(
-                            _lons_f, _lats_f,
-                            lambda lo, la: _ax.fill(lo, la, color="#666666",
-                                                    zorder=1, transform=_ax.transData)
-                        )
-
-                # ── Data ─────────────────────────────────────────────────────
+                # ── Data (fully opaque) ──────────────────────────────────────
                 _norm = _mcolors.Normalize(vmin=_vmin, vmax=_vmax)
-                _cmap_base = plt.get_cmap(viz_colormap.value)
-                _colors_rgba = _cmap_base(np.linspace(0, 1, 256))
-                _colors_rgba[:, 3] = np.linspace(0, 1, 256)
-                _cmap_alpha = _mcolors.ListedColormap(_colors_rgba)
 
                 _im = _ax.pcolormesh(
                     _plot_lon, _plot_lat, _slice,
-                    cmap=_cmap_alpha, norm=_norm,
+                    cmap=viz_colormap.value, norm=_norm,
                     shading="auto", zorder=2,
                 )
 
@@ -2716,18 +2678,17 @@ def _(
                     _polys = [_geom] if _geom.geom_type == "Polygon" else list(_geom.geoms)
                     for _poly in _polys:
                         _coords = np.array(_poly.exterior.coords)
-                        _lons = _coords[:, 0]
-                        _lats = _coords[:, 1]
+                        _lons = _coords[:, 0].copy()
+                        _lats = _coords[:, 1].copy()
                         if _lon_is_360:
                             _lons = np.where(_lons < 0, _lons + 360, _lons)
                         if _lons.max() < _lon_min_ax or _lons.min() > _lon_max_ax:
                             continue
-                        _split_and_draw_ring(
-                            _lons, _lats,
-                            lambda lo, la: _ax.plot(lo, la, color="#cccccc",
-                                                    linewidth=0.5, zorder=3,
-                                                    transform=_ax.transData)
-                        )
+                        # Break line at antimeridian jumps
+                        _lons = _lons.astype(float)
+                        _lons[np.abs(np.diff(_lons, prepend=_lons[0])) > 90] = np.nan
+                        _ax.plot(_lons, _lats, color="#cccccc",
+                                 linewidth=0.5, zorder=3, transform=_ax.transData)
 
                 # ── Lat/lon tick labels ───────────────────────────────────────
                 _ax.set_xlabel("Longitude", color=_txt)
