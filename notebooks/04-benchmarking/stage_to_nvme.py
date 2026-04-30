@@ -26,20 +26,14 @@ Add the following lines to your PBS batch script, replacing the paths as needed:
     # (Optional) Move outputs back to Glade before job ends
     mv /local_scratch/pbs.$PBS_JOBID/output_data $SCRATCH/
 
-How to test outside a PBS job (on a login node or interactive session)
------------------------------------------------------------------------
-Run the script directly — it will fall back to /tmp/scivis_staging instead of
-/local_scratch/pbs.$PBS_JOBID since PBS_JOBID will not be set:
+How to test
+-----------
+Submit an interactive PBS job and run the script from there:
 
+    qsub -I -l select=1:ncpus=4:mem=16GB -l walltime=01:00:00 -q casper -A <project>
     python stage_to_nvme.py
 
-Check that:
-  - The folder structure under /tmp/scivis_staging/ matches the source
-  - The printed "Experiments DB path" opens correctly in the app
-  - No errors appear during the copy
-
-To clean up after testing:
-    rm -rf /tmp/scivis_staging
+The script will exit with an error if run outside a PBS job (PBS_JOBID not set).
 
 Configuration
 -------------
@@ -68,11 +62,10 @@ SOURCE_DIR = "/glade/work/ncheruku/research/sample_data/data/lancedb/experiments
 
 def get_nvme_root() -> Path:
     job_id = os.environ.get("PBS_JOBID", "")
-    if job_id:
-        return Path(f"/local_scratch/pbs.{job_id}")
-    fallback = Path("/tmp/scivis_staging")
-    print(f"[stage] PBS_JOBID not set — using fallback: {fallback}", flush=True)
-    return fallback
+    if not job_id:
+        print("[stage] ERROR: PBS_JOBID is not set. Run this script inside a PBS job.", file=sys.stderr)
+        sys.exit(1)
+    return Path(f"/local_scratch/pbs.{job_id}")
 
 
 def check_space(src: Path, dst_root: Path) -> None:
