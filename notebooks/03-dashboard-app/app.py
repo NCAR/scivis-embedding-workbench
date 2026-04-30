@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.20.4"
+__generated_with = "0.23.4"
 app = marimo.App(layout_file="layouts/app.grid.json")
 
 
@@ -2863,22 +2863,8 @@ def _(
     return (visualize_tab,)
 
 
-# @app.cell
-# def _(mo):
-#     audit_tab = mo.callout(
-#         mo.md("**Audit** — coming soon."), kind="neutral"
-#     )
-#     return (audit_tab,)
-
-
 @app.cell
-def _(
-    dim_reduction_tab,
-    explore_tab,
-    mo,
-    spatial_search_tab,
-    visualize_tab,
-):
+def _(dim_reduction_tab, explore_tab, mo, spatial_search_tab, visualize_tab):
     mo.ui.tabs({
         "Data": explore_tab,
         "Clustering": dim_reduction_tab,
