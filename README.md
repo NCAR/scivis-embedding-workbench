@@ -1,6 +1,5 @@
 # SciVis Embeddings Workbench
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/NCAR/scivis-embedding-workbench/blob/main/notebooks/02-generate-embeddings/generate_dinov3_embeddings.ipynb)
 [![Tests](https://github.com/NCAR/scivis-embedding-workbench/actions/workflows/tests.yml/badge.svg)](https://github.com/NCAR/scivis-embedding-workbench/actions/workflows/tests.yml)
 [![Python 3.13](https://img.shields.io/badge/python-3.13-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/License-BSD_3--Clause-blue.svg)](https://opensource.org/licenses/BSD-3-Clause)
@@ -32,14 +31,21 @@ cd scivis-embedding-workbench
 uv sync
 ```
 
-This creates or updates a local virtual environment and installs dependencies from `pyproject.toml` and `uv.lock`.
+This creates or updates a local virtual environment and installs dependencies from `pyproject.toml`.
 
 ### 4) Run notebooks
 
-Start Jupyter and open any notebook under the `notebooks/` directory.
+All notebooks use [marimo](https://marimo.io). Run commands from the repo root.
 
+**Edit a notebook interactively:**
 ```bash
-uv run jupyter notebook
+uv run marimo edit notebooks/01-prepare-data/create_image_database.py
+uv run marimo edit notebooks/02-generate-embeddings/generate_dinov3_embeddings.py
+```
+
+**Run the dashboard app:**
+```bash
+uv run marimo run notebooks/03-dashboard-app/app.py
 ```
 
 ### 5) Run the Python entry point (optional)
@@ -50,11 +56,17 @@ uv run python main.py
 
 ## What To Do Next
 
-After your environment is working, a good next path is:
+After your environment is working, choose a starting point based on what data you have:
 
-1. Open `notebooks/01-prepare-data/` and run the notebooks from top to bottom.
-2. Move to `notebooks/02-generate-embeddings/`.
-3. Use the Colab badge above if you prefer a hosted environment instead of local setup.
+**Option A — Quickest start (pre-computed embeddings):**
+1. Download embeddings from [GDEX (d041308)](https://gdex.ucar.edu/datasets/d041308/).
+2. Launch the dashboard: `uv run marimo run notebooks/03-dashboard-app/app.py`
+
+**Option B — Start from raw ERA5 data:**
+1. Download ERA5 data from [GDEX](https://gdex.ucar.edu).
+2. Prepare the image database: `uv run marimo edit notebooks/01-prepare-data/create_image_database.py`
+3. Generate embeddings: `uv run marimo edit notebooks/02-generate-embeddings/generate_dinov3_embeddings.py`
+4. Launch the dashboard: `uv run marimo run notebooks/03-dashboard-app/app.py`
 
 ## How to Review and Contribute
 
