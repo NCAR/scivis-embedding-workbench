@@ -61,12 +61,14 @@ After your environment is working, choose a starting point based on what data yo
 **Option A — Quickest start (pre-computed embeddings):**
 1. Download embeddings from [GDEX (d041308)](https://gdex.ucar.edu/datasets/d041308/).
 2. Launch the dashboard: `uv run marimo run notebooks/03-dashboard-app/app.py`
+3. On the startup page, set the **Experiments DB path** to the folder containing your downloaded experiments (e.g. `/data/lancedb/experiments/era5`).
 
 **Option B — Start from raw ERA5 data:**
 1. Download ERA5 data from [GDEX](https://gdex.ucar.edu).
 2. Prepare the image database: `uv run marimo edit notebooks/01-prepare-data/create_image_database.py`
 3. Generate embeddings: `uv run marimo edit notebooks/02-generate-embeddings/generate_dinov3_embeddings.py`
 4. Launch the dashboard: `uv run marimo run notebooks/03-dashboard-app/app.py`
+5. On the startup page, set the **Experiments DB path** to the folder where your experiments are stored (e.g. `/data/lancedb/experiments/era5`).
 
 ## How to Review and Contribute
 
