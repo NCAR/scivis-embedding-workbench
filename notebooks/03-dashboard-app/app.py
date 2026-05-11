@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.4"
+__generated_with = "0.23.5"
 app = marimo.App(layout_file="layouts/app.grid.json")
 
 
@@ -2233,119 +2233,77 @@ def _(
 def _(mo):
     viz_url = mo.ui.text(
         value="",
-        placeholder="/path/to/root/folder or /path/to/file.nc",
+        placeholder="/path/to/folder or /path/to/file.nc",
         full_width=True,
     )
-    viz_load_button = mo.ui.run_button(label="▶ Load dataset")
     viz_reset_minmax = mo.ui.run_button(label="↺ Reset min/max")
-    return viz_load_button, viz_reset_minmax, viz_url
+    return viz_reset_minmax, viz_url
 
 
 @app.cell
 def _(mo):
-    """Standalone date input — independent of all other cells to avoid cycles."""
-    viz_date_input = mo.ui.text(
-        value="",
-        placeholder="YYYY-MM-DD HH:MM",
+    viz_map_style = mo.ui.dropdown(
+        options=["pcolormesh", "contourf", "barbs", "streamlines"],
+        value="pcolormesh",
     )
-    return (viz_date_input,)
+    return (viz_map_style,)
 
 
 @app.cell
-def _(mo, viz_date_input, viz_url):
-    """
-    ERA5-style path resolution:
-      root/  e.g. /data/d633000/e5.oper.an.sfc
-      date   e.g. 2020-01-15 06:00
-      ->     root/{yyyymm}/  list nc files, subset by yyyymmdd, pick first match
-    Falls back to plain folder listing if path structure doesn't match.
-    """
+def _(mo, viz_url):
+    """List all NetCDF files in the folder (root + one level of subfolders for ERA5 month dirs)."""
     import os as _os_fc
-    import re as _re_fc
 
     _root = viz_url.value.strip().rstrip("/")
     _nc_exts = (".nc", ".nc4", ".netcdf")
     viz_file_picker = None
-    viz_file_info   = None  # info string shown to user
+    viz_file_info   = None
 
     if _root and _os_fc.path.isdir(_root):
-        _dt_str = viz_date_input.value.strip() if viz_date_input and viz_date_input.value else ""
-        # Try to parse YYYY-MM-DD HH:MM from the date field
-        _m = _re_fc.match(r"(\d{4})-(\d{2})-(\d{2})", _dt_str)
-        if _m:
-            _yyyy, _mm, _dd = _m.group(1), _m.group(2), _m.group(3)
-            _yyyymm  = _yyyy + _mm
-            _yyyymmdd = _yyyy + _mm + _dd
-            _month_dir = _os_fc.path.join(_root, _yyyymm)
-            if _os_fc.path.isdir(_month_dir):
-                _all_nc = sorted([
-                    f for f in _os_fc.listdir(_month_dir)
-                    if f.lower().endswith(_nc_exts)
-                ])
-                # Subset: keep files whose name contains yyyymmdd
-                _matched = [f for f in _all_nc if _yyyymmdd in f]
-                _files = _matched if _matched else _all_nc
-                if _files:
-                    viz_file_picker = mo.ui.dropdown(options=_files, value=_files[0])
-                    _info = f"`{_month_dir}` — {len(_files)} file(s)"
-                    if _matched:
-                        _info += f" matching `{_yyyymmdd}`"
-                    viz_file_info = _info
-            else:
-                # month subfolder doesn't exist — fall back to root listing
-                _files = sorted([
-                    f for f in _os_fc.listdir(_root)
-                    if f.lower().endswith(_nc_exts)
-                ])
-                if _files:
-                    viz_file_picker = mo.ui.dropdown(options=_files, value=_files[0])
-                    viz_file_info = f"`{_root}` — {len(_files)} file(s) (no `{_yyyymm}` subfolder found)"
-        else:
-            # No valid date yet — list root directly
-            _files = sorted([
-                f for f in _os_fc.listdir(_root)
-                if f.lower().endswith(_nc_exts)
-            ])
-            if _files:
-                viz_file_picker = mo.ui.dropdown(options=_files, value=_files[0])
-                viz_file_info = f"`{_root}` — {len(_files)} file(s)"
+        _files = []
+        for _entry in sorted(_os_fc.listdir(_root)):
+            _full = _os_fc.path.join(_root, _entry)
+            if _os_fc.path.isfile(_full) and _entry.lower().endswith(_nc_exts):
+                _files.append(_entry)
+            elif _os_fc.path.isdir(_full):
+                for _sub in sorted(_os_fc.listdir(_full)):
+                    if _sub.lower().endswith(_nc_exts):
+                        _files.append(_os_fc.path.join(_entry, _sub))
+        if _files:
+            _opts = ["(select a file)"] + _files
+            viz_file_picker = mo.ui.dropdown(options=_opts, value="(select a file)")
+            viz_file_info = f"`{_root}` — {len(_files)} file(s)"
     return viz_file_info, viz_file_picker
 
 
 @app.cell
-def _(mo, viz_date_input, viz_file_picker, viz_load_button, viz_url):
-    """Load dataset — triggers on button click or Enter in the URL field."""
+def _(mo, viz_file_picker, viz_url):
+    """Load dataset — triggers when user selects a file or pastes a direct .nc path."""
     get_viz_ds, set_viz_ds = mo.state(None)
     get_viz_err, set_viz_err = mo.state(None)
 
-    # mo.ui.text submits (re-runs dependents) on Enter, same as button click
-    if viz_load_button.value or viz_url.value.strip():
+    _url = viz_url.value.strip()
+    _nc_exts = (".nc", ".nc4", ".netcdf")
+    _picked = viz_file_picker.value if viz_file_picker is not None else None
+    _has_selection = _picked is not None and _picked != "(select a file)"
+
+    import os as _os
+    _is_direct_nc = bool(_url) and not _os.path.isdir(_url) and (
+        _url.lower().endswith(_nc_exts) or _os.path.isfile(_url)
+    )
+
+    if _has_selection or _is_direct_nc:
         try:
             import xarray as _xr
-            import os as _os
-
-            _url = viz_url.value.strip()
 
             # ── Determine source ────────────────────────────────────────────
             _is_netcdf = False
             _nc_path   = None
-            _nc_exts   = (".nc", ".nc4", ".netcdf")
 
-            if _url and _os.path.isdir(_url):
-                # Folder — resolve month subfolder if date is set, then use picker
-                if viz_file_picker is not None and viz_file_picker.value:
-                    import re as _re_ld
-                    _dt_str = viz_date_input.value.strip() if viz_date_input and viz_date_input.value else ""
-                    _m_ld = _re_ld.match(r"(\d{4})-(\d{2})-(\d{2})", _dt_str)
-                    if _m_ld:
-                        _yyyymm_ld = _m_ld.group(1) + _m_ld.group(2)
-                        _month_dir_ld = _os.path.join(_url, _yyyymm_ld)
-                        _base_dir = _month_dir_ld if _os.path.isdir(_month_dir_ld) else _url
-                    else:
-                        _base_dir = _url
-                    _nc_path   = _os.path.join(_base_dir, viz_file_picker.value)
-                    _is_netcdf = True
-            elif _url and (_url.endswith(_nc_exts) or _os.path.exists(_url)):
+            if _has_selection:
+                _nc_path   = _os.path.join(_url.rstrip("/"), _picked)
+                _is_netcdf = True
+            elif _is_direct_nc:
                 _nc_path   = _url
                 _is_netcdf = True
 
@@ -2398,17 +2356,7 @@ def _(mo, viz_date_input, viz_file_picker, viz_load_button, viz_url):
                 else:
                     _time_vals = [str(i) for i in range(_nt)]
 
-                # Find the timestep matching the entered date/time (or default to first)
                 _default_t = _time_vals[0] if _time_vals else ""
-                if viz_date_input and viz_date_input.value.strip() and _time_vals:
-                    _entered = viz_date_input.value.strip()
-                    if _entered in _time_vals:
-                        _default_t = _entered
-                    else:
-                        # partial match: entered date without time
-                        _partial = [t for t in _time_vals if t.startswith(_entered[:10])]
-                        if _partial:
-                            _default_t = _partial[0]
 
                 set_viz_ds({
                     "kind":        "netcdf",
@@ -2427,10 +2375,8 @@ def _(mo, viz_date_input, viz_file_picker, viz_load_button, viz_url):
                 })
                 set_viz_err(None)
 
-            elif not _is_netcdf and _url:
-                set_viz_err("Please enter a local file path or root folder.")
-            elif not _url:
-                set_viz_err("Please enter a path.")
+            elif not _is_netcdf:
+                set_viz_err(f"File not found or unsupported format: {_nc_path}")
 
         except Exception as _e:
             set_viz_ds(None)
@@ -2439,11 +2385,68 @@ def _(mo, viz_date_input, viz_file_picker, viz_load_button, viz_url):
 
 
 @app.cell
-def _(get_viz_ds, mo, viz_date_input):
+def _(mo, viz_url):
+    """List NetCDF files for the secondary (V-component) picker — same folder as primary."""
+    import os as _os_fc2
+
+    _root2 = viz_url.value.strip().rstrip("/")
+    _nc_exts2 = (".nc", ".nc4", ".netcdf")
+    viz_file_picker2 = None
+    viz_file_info2   = None
+
+    if _root2 and _os_fc2.path.isdir(_root2):
+        _files2 = []
+        for _entry2 in sorted(_os_fc2.listdir(_root2)):
+            _full2 = _os_fc2.path.join(_root2, _entry2)
+            if _os_fc2.path.isfile(_full2) and _entry2.lower().endswith(_nc_exts2):
+                _files2.append(_entry2)
+            elif _os_fc2.path.isdir(_full2):
+                for _sub2 in sorted(_os_fc2.listdir(_full2)):
+                    if _sub2.lower().endswith(_nc_exts2):
+                        _files2.append(_os_fc2.path.join(_entry2, _sub2))
+        if _files2:
+            _opts2 = ["(select a file)"] + _files2
+            viz_file_picker2 = mo.ui.dropdown(options=_opts2, value="(select a file)")
+            viz_file_info2 = None  # same folder as primary, no need to repeat path
+    return viz_file_info2, viz_file_picker2
+
+
+@app.cell
+def _(mo, viz_file_picker2, viz_url):
+    """Load secondary dataset for V-component (barbs / streamlines)."""
+    get_viz_ds2, set_viz_ds2 = mo.state(None)
+    get_viz_err2, set_viz_err2 = mo.state(None)
+
+    _url2 = viz_url.value.strip()
+    _nc_exts2 = (".nc", ".nc4", ".netcdf")
+    _picked2 = viz_file_picker2.value if viz_file_picker2 is not None else None
+    _has_selection2 = _picked2 is not None and _picked2 != "(select a file)"
+
+    import os as _os2
+
+    if _has_selection2:
+        try:
+            import xarray as _xr2
+            _nc_path2 = _os2.path.join(_url2.rstrip("/"), _picked2)
+            _nc2 = _xr2.open_dataset(_nc_path2, engine="netcdf4")
+            set_viz_ds2({"ds": _nc2, "fields": list(_nc2.data_vars)})
+            set_viz_err2(None)
+        except Exception as _e2:
+            set_viz_ds2(None)
+            set_viz_err2(str(_e2))
+    else:
+        set_viz_ds2(None)
+        set_viz_err2(None)
+    return get_viz_ds2, get_viz_err2
+
+
+@app.cell
+def _(get_viz_ds, get_viz_ds2, mo):
     """Build controls once a dataset is loaded."""
     _meta = get_viz_ds()
+    _meta2 = get_viz_ds2()
     if _meta is None:
-        viz_timestep   = mo.ui.text(value=viz_date_input.value, placeholder="YYYY-MM-DD HH:MM")
+        viz_timestep   = mo.ui.text(value="", placeholder="YYYY-MM-DD HH:MM")
         viz_depth      = mo.ui.slider(start=0, stop=0,  value=0,  show_value=True)
         viz_resolution = mo.ui.slider(start=0, stop=40, value=28, show_value=True)
         viz_quality    = mo.ui.slider(start=-8, stop=0, value=0, show_value=True)
@@ -2454,6 +2457,8 @@ def _(get_viz_ds, mo, viz_date_input):
             options=["viridis","plasma","inferno","magma","cividis","RdBu_r","coolwarm","turbo"],
             value="viridis",
         )
+        _v_opts = _meta2["fields"] if _meta2 else ["(none)"]
+        viz_v_field    = mo.ui.dropdown(options=_v_opts, value=_v_opts[0])
     else:
         _steps  = _meta["steps"]
         _box    = _meta["box"]
@@ -2468,7 +2473,7 @@ def _(get_viz_ds, mo, viz_date_input):
         _kind_ctrl_t = _meta.get("kind", "netcdf")
         if _kind_ctrl_t == "netcdf" and _time_vals:
             viz_timestep = mo.ui.text(
-                value=viz_date_input.value if viz_date_input.value.strip() else _meta.get("default_t", _time_vals[0]),
+                value=_meta.get("default_t", _time_vals[0]),
                 placeholder="YYYY-MM-DD HH:MM",
             )
         else:
@@ -2528,6 +2533,10 @@ def _(get_viz_ds, mo, viz_date_input):
             options=["viridis","plasma","inferno","magma","cividis","RdBu_r","coolwarm","turbo"],
             value="viridis",
         )
+        _v_opts2 = _meta2["fields"] if _meta2 else _meta["fields"]
+        viz_v_field = mo.ui.dropdown(
+            options=_v_opts2, value=_v_opts2[0],
+        )
     return (
         viz_colormap,
         viz_depth,
@@ -2535,6 +2544,7 @@ def _(get_viz_ds, mo, viz_date_input):
         viz_quality,
         viz_resolution,
         viz_timestep,
+        viz_v_field,
         viz_x,
         viz_y,
     )
@@ -2590,23 +2600,27 @@ def _(get_viz_vmax, get_viz_vmin, mo):
 @app.cell
 def _(
     get_viz_ds,
+    get_viz_ds2,
     get_viz_err,
+    get_viz_err2,
     map_theme,
     mo,
     np,
     plt,
     viz_colormap,
-    viz_date_input,
     viz_depth,
     viz_field,
     viz_file_info,
+    viz_file_info2,
     viz_file_picker,
-    viz_load_button,
+    viz_file_picker2,
+    viz_map_style,
     viz_quality,
     viz_reset_minmax,
     viz_resolution,
     viz_timestep,
     viz_url,
+    viz_v_field,
     viz_vmax,
     viz_vmin,
     viz_x,
@@ -2614,9 +2628,12 @@ def _(
 ):
     """Render a horizontal 2-D slice — auto-updates on any control change."""
     _meta = get_viz_ds()
+    _meta2 = get_viz_ds2()
     _err  = get_viz_err()
+    _err2 = get_viz_err2()
     _theme = "dark" if map_theme.value else "light"
     _colors = get_theme_colors(_theme)
+    _needs_v = viz_map_style.value in ("barbs", "streamlines")
 
     _picker_row = (
         mo.vstack([
@@ -2625,30 +2642,38 @@ def _(
         ])
         if viz_file_picker is not None else None
     )
-    _header = mo.vstack([
-        mo.Html(
-            '<div style="display:flex;gap:8px;align-items:flex-end;width:100%">'
-            + f'<div style="flex:3;min-width:0">{viz_url._repr_html_()}</div>'
-            + f'<div style="flex:1;min-width:0">{viz_date_input._repr_html_()}</div>'
-            + f'<div style="flex:0 0 auto">{viz_load_button._repr_html_()}</div>'
-            + '</div>'
-        ),
+    _picker_row2 = (
+        mo.vstack([
+            mo.md(f"*{viz_file_info2}*") if viz_file_info2 else None,
+            mo.hstack([mo.md("**File (V):**"), viz_file_picker2], justify="start"),
+        ])
+        if viz_file_picker2 is not None else None
+    )
+    _header_items = [
+        mo.hstack([mo.md("**Map style:**"), viz_map_style], justify="start"),
+        viz_url,
         *([_picker_row] if _picker_row is not None else []),
-    ])
+    ]
+    if _needs_v:
+        _header_items += [
+            *([_picker_row2] if _picker_row2 is not None else []),
+            *([mo.callout(mo.md(f"**V load error:** `{_err2}`"), kind="danger")] if _err2 else []),
+        ]
+    _header = mo.vstack(_header_items)
 
     if _err is not None:
-        visualize_tab = mo.vstack([
+        visualize_backup_tab = mo.vstack([
             _header,
             mo.callout(mo.md(f"**Load error:** `{_err}`"), kind="danger"),
         ])
     elif _meta is None:
-        visualize_tab = mo.vstack([
+        visualize_backup_tab = mo.vstack([
             _header,
             mo.callout(
                 mo.md(
-                    "Enter a path to a local NetCDF file or a root folder containing ERA5 data.\n\n"
-                    "**Folder mode:** enter root folder and a date — subfolder `{YYYYMM}` is resolved automatically.\n"
-                    "**File mode:** enter a full path to a `.nc` file directly."
+                    "Enter a folder path to browse available NetCDF files, "
+                    "or paste a direct path to a `.nc` file.\n\n"
+                    "ERA5 month subfolders (`{YYYYMM}/`) are included automatically."
                 ),
                 kind="info",
             ),
@@ -2677,11 +2702,13 @@ def _(
             return mo.vstack([mo.md(f"**{label}**"), widget], gap=0)
 
         if _kind == "netcdf":
+            _v_row = ([_labeled("V variable", viz_v_field)] if _needs_v else [])
             _controls = mo.vstack([
                 mo.hstack([
                     _labeled("Variable", viz_field),
                     _labeled("Date (YYYY-MM-DD HH:MM)", viz_timestep),
                     _labeled("Colormap", viz_colormap),
+                    *_v_row,
                 ], justify="start"),
                 mo.hstack([
                     _labeled("Longitude range", viz_x),
@@ -2758,6 +2785,21 @@ def _(
                 else:
                     _plot_lon = None
                     _plot_lat = None
+
+                # V component for barbs / streamlines
+                _style = viz_map_style.value
+                _v_slice = None
+                _speed = None
+                if _style in ("barbs", "streamlines") and viz_v_field.value not in ("(none)", ""):
+                    _ds_v = _meta2["ds"] if _meta2 is not None else _ds
+                    _v_var = _ds_v[viz_v_field.value]
+                    _v2d = _v_var.isel(**_sel) if _sel else _v_var
+                    if _dims["y"]:
+                        _v2d = _v2d.isel({_dims["y"]: slice(_yi0, _yi1)})
+                    if _dims["x"]:
+                        _v2d = _v2d.isel({_dims["x"]: slice(_xi0, _xi1)})
+                    _v_slice = _v2d.values.squeeze()
+                    _speed = np.sqrt(_slice**2 + _v_slice**2)
             else:
                 raise ValueError("Only local NetCDF files are supported.")
 
@@ -2790,14 +2832,62 @@ def _(
                 _lon_min_ax = _plot_lon.min()
                 _lon_max_ax = _plot_lon.max()
 
-                # ── Data (fully opaque) ──────────────────────────────────────
-                _norm = _mcolors.Normalize(vmin=_vmin, vmax=_vmax)
-
-                _im = _ax.pcolormesh(
-                    _plot_lon, _plot_lat, _slice,
-                    cmap=viz_colormap.value, norm=_norm,
-                    shading="auto", zorder=2,
-                )
+                # ── Data layer (style-dependent) ─────────────────────────────
+                if _style == "contourf":
+                    _levels = np.linspace(_vmin, _vmax, 13)
+                    _cf = _ax.contourf(
+                        _plot_lon, _plot_lat, _slice,
+                        levels=_levels, cmap=viz_colormap.value, extend="both", zorder=2,
+                    )
+                    _cs = _ax.contour(
+                        _plot_lon, _plot_lat, _slice,
+                        levels=_levels, colors="k", linewidths=0.4, zorder=3,
+                    )
+                    _ax.clabel(_cs, levels=_levels[::2], fmt="%.4g", fontsize=7, inline=True)
+                    _im = _cf
+                elif _style in ("barbs", "streamlines") and _v_slice is not None:
+                    _spd_norm = _mcolors.Normalize(vmin=0, vmax=float(np.nanpercentile(_speed, 98)))
+                    _im = _ax.pcolormesh(
+                        _plot_lon, _plot_lat, _speed,
+                        cmap=viz_colormap.value, norm=_spd_norm, alpha=0.7, shading="auto", zorder=2,
+                    )
+                    if _style == "barbs":
+                        _bstep = max(1, len(_plot_lon) // 15)
+                        _bstep_lat = max(1, len(_plot_lat) // 15)
+                        _ax.barbs(
+                            _plot_lon[::_bstep], _plot_lat[::_bstep_lat],
+                            _slice[::_bstep_lat, ::_bstep] * 1.94384,
+                            _v_slice[::_bstep_lat, ::_bstep] * 1.94384,
+                            length=5, linewidth=0.6, color="navy",
+                            sizes={"emptybarb": 0.15}, zorder=4,
+                        )
+                    else:
+                        _lons_st = _plot_lon.copy()
+                        _lats_st = _plot_lat.copy()
+                        _u_st = _slice.copy()
+                        _v_st = _v_slice.copy()
+                        if _lats_st[0] > _lats_st[-1]:
+                            _lats_st = _lats_st[::-1]
+                            _u_st = _u_st[::-1, :]
+                            _v_st = _v_st[::-1, :]
+                        _sstep = max(1, len(_lons_st) // 150)
+                        _slats = max(1, len(_lats_st) // 150)
+                        _u_st = _u_st[::_slats, ::_sstep]
+                        _v_st = _v_st[::_slats, ::_sstep]
+                        _lons_st = _lons_st[::_sstep]
+                        _lats_st = _lats_st[::_slats]
+                        _ax.streamplot(
+                            _lons_st, _lats_st, _u_st, _v_st,
+                            color="#444444", linewidth=0.8, density=1.5,
+                            arrowsize=0.72, arrowstyle="-|>", zorder=4,
+                        )
+                else:
+                    _norm = _mcolors.Normalize(vmin=_vmin, vmax=_vmax)
+                    _im = _ax.pcolormesh(
+                        _plot_lon, _plot_lat, _slice,
+                        cmap=viz_colormap.value, norm=_norm,
+                        shading="auto", zorder=2,
+                    )
 
                 # ── Coastline outline on top of data ─────────────────────────
                 _land_shp = _shpreader.natural_earth(
@@ -2845,7 +2935,12 @@ def _(
             _cbar.ax.set_facecolor("#444444")
             _cbar.ax.yaxis.set_tick_params(color=_txt)
             plt.setp(_cbar.ax.yaxis.get_ticklabels(), color=_txt)
-            _cbar.set_label(viz_field.value, color=_txt)
+            _cbar_label = (
+                "Wind speed (m s⁻¹)"
+                if _style in ("barbs", "streamlines") and _v_slice is not None
+                else viz_field.value
+            )
+            _cbar.set_label(_cbar_label, color=_txt)
 
             _ax.set_title(
                 f"{viz_field.value}  ·  {viz_timestep.value}  ·  z={_z}  ·  "
@@ -2868,25 +2963,594 @@ def _(
                 f"mean {float(np.nanmean(_slice)):.4g}"
             )
 
-            visualize_tab = mo.vstack([
+            visualize_backup_tab = mo.vstack([
                 _header, _info_md, _controls, _shape_note, _plot_html,
             ])
 
         except Exception as _render_err:
-            visualize_tab = mo.vstack([
+            visualize_backup_tab = mo.vstack([
                 _header, _info_md, _controls,
                 mo.callout(mo.md(f"**Render error:** `{_render_err}`"), kind="danger"),
             ])
+    return (visualize_backup_tab,)
+
+
+@app.cell
+def _(mo):
+    viz2_folder = mo.ui.text(
+        value="",
+        placeholder="/path/to/folder",
+        full_width=True,
+    )
+    return (viz2_folder,)
+
+
+@app.cell
+def _(viz2_folder):
+    """Scan folder for NetCDF files (root + one subdirectory level)."""
+    import os as _os
+
+    _NC_EXTS = (".nc", ".nc4", ".netcdf")
+    _root = viz2_folder.value.strip().rstrip("/")
+    viz2_nc_files = []  # list of paths relative to _root
+
+    if _root and _os.path.isdir(_root):
+        for _entry in sorted(_os.listdir(_root)):
+            _full = _os.path.join(_root, _entry)
+            if _os.path.isfile(_full) and _entry.lower().endswith(_NC_EXTS):
+                viz2_nc_files.append(_entry)
+            elif _os.path.isdir(_full):
+                for _sub in sorted(_os.listdir(_full)):
+                    if _sub.lower().endswith(_NC_EXTS):
+                        viz2_nc_files.append(_os.path.join(_entry, _sub))
+    return (viz2_nc_files,)
+
+
+@app.cell
+def _(mo):
+    viz2_map_style = mo.ui.dropdown(
+        options=["pcolormesh", "contourf", "barbs", "streamlines"],
+        value="pcolormesh",
+        label="Map style",
+    )
+    return (viz2_map_style,)
+
+
+@app.cell
+def _(mo):
+    viz2_colormap = mo.ui.dropdown(
+        options=["viridis", "plasma", "inferno", "magma", "cividis",
+                 "RdBu_r", "coolwarm", "turbo", "YlOrRd", "Blues"],
+        value="viridis",
+        label="Colormap",
+    )
+    return (viz2_colormap,)
+
+
+@app.cell
+def _(mo):
+    viz2_dark_mode = mo.ui.switch(value=True, label="Dark mode")
+    return (viz2_dark_mode,)
+
+
+@app.cell
+def _(mo, viz2_nc_files):
+    _opts = ["(select a file)"] + viz2_nc_files if viz2_nc_files else ["(select a file)"]
+    viz2_file1 = mo.ui.dropdown(options=_opts, value="(select a file)", label="File 1")
+    return (viz2_file1,)
+
+
+@app.cell
+def _(mo, viz2_nc_files):
+    _opts2 = ["(select a file)"] + viz2_nc_files if viz2_nc_files else ["(select a file)"]
+    viz2_file2 = mo.ui.dropdown(options=_opts2, value="(select a file)", label="File 2")
+    return (viz2_file2,)
+
+
+@app.cell
+def _(mo, viz2_file1, viz2_folder):
+    """Load variables from File 1."""
+    import os as _os
+    _picked = viz2_file1.value
+    _root = viz2_folder.value.strip().rstrip("/")
+    _vars1 = []
+    if _picked and _picked != "(select a file)" and _root:
+        try:
+            import xarray as _xr
+            _ds = _xr.open_dataset(_os.path.join(_root, _picked), engine="netcdf4")
+            _vars1 = list(_ds.data_vars)
+            _ds.close()
+        except Exception:
+            _vars1 = []
+    viz2_var1 = mo.ui.dropdown(
+        options=_vars1 if _vars1 else ["(none)"],
+        value=_vars1[0] if _vars1 else "(none)",
+        label="Variable 1",
+    )
+    return (viz2_var1,)
+
+
+@app.cell
+def _(mo, viz2_file2, viz2_folder):
+    """Load variables from File 2."""
+    import os as _os
+    _picked = viz2_file2.value
+    _root = viz2_folder.value.strip().rstrip("/")
+    _vars2 = []
+    if _picked and _picked != "(select a file)" and _root:
+        try:
+            import xarray as _xr
+            _ds = _xr.open_dataset(_os.path.join(_root, _picked), engine="netcdf4")
+            _vars2 = list(_ds.data_vars)
+            _ds.close()
+        except Exception:
+            _vars2 = []
+    viz2_var2 = mo.ui.dropdown(
+        options=_vars2 if _vars2 else ["(none)"],
+        value=_vars2[0] if _vars2 else "(none)",
+        label="Variable 2",
+    )
+    return (viz2_var2,)
+
+
+@app.cell
+def _(mo):
+    viz2_lat_min_input = mo.ui.number(value=-90.0, start=-90, stop=90, step=0.25, label="Lat min")
+    viz2_lat_max_input = mo.ui.number(value=90.0,  start=-90, stop=90, step=0.25, label="Lat max")
+    viz2_lon_min_input = mo.ui.number(value=0.0,   start=-180, stop=360, step=0.25, label="Lon min")
+    viz2_lon_max_input = mo.ui.number(value=360.0, start=-180, stop=360, step=0.25, label="Lon max")
+    return (
+        viz2_lat_max_input,
+        viz2_lat_min_input,
+        viz2_lon_max_input,
+        viz2_lon_min_input,
+    )
+
+
+@app.cell
+def _(viz2_file1, viz2_folder, viz2_var1):
+    """Collect available timestamps from File 1 once a variable is selected."""
+    import os as _os
+    _picked = viz2_file1.value
+    _root = viz2_folder.value.strip().rstrip("/")
+    _var = viz2_var1.value
+    viz2_timestamps = []
+    if _picked and _picked != "(select a file)" and _var and _var != "(none)" and _root:
+        try:
+            import xarray as _xr
+            import pandas as _pd
+            _ds = _xr.open_dataset(_os.path.join(_root, _picked), engine="netcdf4")
+            for _dim in _ds.dims:
+                if "time" in _dim.lower() or _dim.lower() == "t":
+                    try:
+                        viz2_timestamps = [
+                            _pd.Timestamp(_t).strftime("%Y-%m-%d %H:%M:%S")
+                            for _t in _ds[_dim].values
+                        ]
+                    except Exception:
+                        viz2_timestamps = [str(i) for i in range(len(_ds[_dim]))]
+                    break
+            _ds.close()
+        except Exception:
+            viz2_timestamps = []
+    return (viz2_timestamps,)
+
+
+@app.cell
+def _(mo, viz2_timestamps):
+    viz2_datetime_pick = mo.ui.dropdown(
+        options=viz2_timestamps if viz2_timestamps else ["(no times available)"],
+        value=viz2_timestamps[0] if viz2_timestamps else "(no times available)",
+        label="Datetime",
+    )
+    return (viz2_datetime_pick,)
+
+
+@app.cell
+def _(
+    mo,
+    np,
+    plt,
+    viz2_colormap,
+    viz2_dark_mode,
+    viz2_datetime_pick,
+    viz2_file1,
+    viz2_file2,
+    viz2_folder,
+    viz2_lat_max_input,
+    viz2_lat_min_input,
+    viz2_lon_max_input,
+    viz2_lon_min_input,
+    viz2_map_style,
+    viz2_var1,
+    viz2_var2,
+):
+    """Render the map for the selected configuration."""
+    import os as _os
+
+    viz2_map_html = None
+    viz2_map_err = None
+    viz2_map_stats = None
+
+    _style   = viz2_map_style.value
+    _needs_v = _style in ("barbs", "streamlines")
+    _root    = viz2_folder.value.strip().rstrip("/")
+    _f1      = viz2_file1.value
+    _f2      = viz2_file2.value
+    _v1      = viz2_var1.value
+    _v2      = viz2_var2.value
+
+    _f1_ok = bool(_f1) and _f1 != "(select a file)"
+    _f2_ok = bool(_f2) and _f2 != "(select a file)"
+    _v1_ok = bool(_v1) and _v1 != "(none)"
+    _v2_ok = bool(_v2) and _v2 != "(none)"
+    _ready = _root and _f1_ok and _v1_ok and (not _needs_v or (_f2_ok and _v2_ok))
+
+    _active_dt = viz2_datetime_pick.value
+    _has_dt   = bool(_active_dt) and _active_dt != "(no times available)"
+
+    if _ready and _has_dt:
+        _fig = None
+        try:
+            import xarray as _xr
+            import pandas as _pd
+            import matplotlib.colors as _mcolors
+            import cartopy.io.shapereader as _shpreader
+
+            def _find_dim(ds, candidates):
+                for c in candidates:
+                    for d in ds.dims:
+                        if c in d.lower():
+                            return d
+                return None
+
+            # ── File 1 ────────────────────────────────────────────────────────
+            _ds1   = _xr.open_dataset(_os.path.join(_root, _f1), engine="netcdf4")
+            _tdim1 = _find_dim(_ds1, ["time", "t"])
+            _times1 = []
+            if _tdim1 and _tdim1 in _ds1.coords:
+                try:
+                    _times1 = [
+                        _pd.Timestamp(t).strftime("%Y-%m-%d %H:%M:%S")
+                        for t in _ds1[_tdim1].values
+                    ]
+                except Exception:
+                    _times1 = [str(i) for i in range(len(_ds1[_tdim1]))]
+
+            if _times1 and _active_dt not in _times1:
+                raise ValueError(
+                    f"**`{_active_dt}`** not found in File 1.  \n"
+                    f"Available: {_times1[0]} → {_times1[-1]}"
+                )
+
+            _sel1 = {}
+            if _tdim1 and _times1:
+                _sel1[_tdim1] = _times1.index(_active_dt)
+            _zdim1 = _find_dim(_ds1, ["depth", "lev", "level", "z", "nz", "alt"])
+            if _zdim1:
+                _sel1[_zdim1] = 0
+
+            _da1   = _ds1[_v1].isel(**_sel1) if _sel1 else _ds1[_v1]
+            _u     = _da1.values.squeeze()
+
+            _lon_name = _find_dim(_ds1, ["lon", "longitude", "x"])
+            _lat_name = _find_dim(_ds1, ["lat", "latitude", "y"])
+            _plot_lon = _ds1[_lon_name].values if _lon_name and _lon_name in _ds1.coords else None
+            _plot_lat = _ds1[_lat_name].values if _lat_name and _lat_name in _ds1.coords else None
+            if _plot_lon is not None and _plot_lon.ndim > 1:
+                _plot_lon = _plot_lon[0]
+            if _plot_lat is not None and _plot_lat.ndim > 1:
+                _plot_lat = _plot_lat[:, 0]
+            _ds1.close()
+
+            # ── File 2 ────────────────────────────────────────────────────────
+            _v_data = None
+            if _needs_v:
+                _ds2   = _xr.open_dataset(_os.path.join(_root, _f2), engine="netcdf4")
+                _tdim2 = _find_dim(_ds2, ["time", "t"])
+                _times2 = []
+                if _tdim2 and _tdim2 in _ds2.coords:
+                    try:
+                        _times2 = [
+                            _pd.Timestamp(t).strftime("%Y-%m-%d %H:%M:%S")
+                            for t in _ds2[_tdim2].values
+                        ]
+                    except Exception:
+                        _times2 = [str(i) for i in range(len(_ds2[_tdim2]))]
+
+                if _times2 and _active_dt not in _times2:
+                    raise ValueError(
+                        f"**`{_active_dt}`** not found in File 2.  \n"
+                        f"Available: {_times2[0]} → {_times2[-1]}"
+                    )
+
+                _sel2 = {}
+                if _tdim2 and _times2:
+                    _sel2[_tdim2] = _times2.index(_active_dt)
+                _zdim2 = _find_dim(_ds2, ["depth", "lev", "level", "z", "nz", "alt"])
+                if _zdim2:
+                    _sel2[_zdim2] = 0
+                _da2   = _ds2[_v2].isel(**_sel2) if _sel2 else _ds2[_v2]
+                _v_data = _da2.values.squeeze()
+                _ds2.close()
+
+            # ── Dimension validation for 2-variable styles ───────────────────
+            if _needs_v and _v_data is not None:
+                if _u.shape != _v_data.shape:
+                    raise ValueError(
+                        f"Spatial dimensions of **{_v1}** {_u.shape} and "
+                        f"**{_v2}** {_v_data.shape} do not match. "
+                        f"Both variables must have the same lat/lon grid."
+                    )
+
+            # ── Lat/lon subsetting from text inputs ───────────────────────────
+            if _plot_lon is not None and _plot_lat is not None:
+                def _coord_idx(arr, lo, hi):
+                    if arr[-1] >= arr[0]:
+                        i0 = int(np.searchsorted(arr, lo, side="left"))
+                        i1 = int(np.searchsorted(arr, hi, side="right"))
+                    else:
+                        i0 = len(arr) - int(np.searchsorted(arr[::-1], hi, side="left"))
+                        i1 = len(arr) - int(np.searchsorted(arr[::-1], lo, side="right"))
+                    return max(0, i0), min(len(arr), max(i1, i0 + 1))
+
+                _xi0, _xi1 = _coord_idx(_plot_lon, float(viz2_lon_min_input.value), float(viz2_lon_max_input.value))
+                _yi0, _yi1 = _coord_idx(_plot_lat, float(viz2_lat_min_input.value), float(viz2_lat_max_input.value))
+                _plot_lon = _plot_lon[_xi0:_xi1]
+                _plot_lat = _plot_lat[_yi0:_yi1]
+                _u = _u[_yi0:_yi1, _xi0:_xi1]
+                if _v_data is not None:
+                    _v_data = _v_data[_yi0:_yi1, _xi0:_xi1]
+
+            # ── Stats ────────────────────────────────────────────────────────
+            _stat_parts = [
+                f"**{_v1}:** min `{float(np.nanmin(_u)):.4g}` · max `{float(np.nanmax(_u)):.4g}`"
+            ]
+            if _needs_v and _v_data is not None:
+                _stat_parts.append(
+                    f"**{_v2}:** min `{float(np.nanmin(_v_data)):.4g}` · max `{float(np.nanmax(_v_data)):.4g}`"
+                )
+                _mag = np.sqrt(_u**2 + _v_data**2)
+                _stat_parts.append(
+                    f"**Magnitude:** min `{float(np.nanmin(_mag)):.4g}` · max `{float(np.nanmax(_mag)):.4g}`"
+                )
+            viz2_map_stats = "    |    ".join(_stat_parts)
+
+            # ── Plot ─────────────────────────────────────────────────────────
+            _theme  = "dark" if viz2_dark_mode.value else "light"
+            _colors = get_theme_colors(_theme)
+            _bg, _txt = _colors["bg"], _colors["text"]
+
+            _fig, _ax = plt.subplots(figsize=(12, 6), dpi=100)
+            _fig.patch.set_facecolor(_bg)
+            _ax.set_facecolor(_bg)
+            _ax.set_xlim(_plot_lon.min(), _plot_lon.max())
+            _ax.set_ylim(_plot_lat.min(), _plot_lat.max())
+            _ax.set_aspect("auto")
+
+            _lon_is_360  = _plot_lon.max() > 180
+            _lon_min_ax  = _plot_lon.min()
+            _lon_max_ax  = _plot_lon.max()
+            _cmap = viz2_colormap.value
+
+            if _style in ("barbs", "streamlines") and _v_data is not None:
+                _speed    = np.sqrt(_u**2 + _v_data**2)
+                _spd_norm = _mcolors.Normalize(vmin=float(np.nanmin(_speed)), vmax=float(np.nanmax(_speed)))
+                _im = _ax.pcolormesh(
+                    _plot_lon, _plot_lat, _speed,
+                    cmap=_cmap, norm=_spd_norm, alpha=0.7, shading="auto", zorder=2,
+                )
+                _overlay_color = "#cccccc" if viz2_dark_mode.value else "#333333"
+                if _style == "barbs":
+                    _bs = max(1, len(_plot_lon) // 20)
+                    _bl = max(1, len(_plot_lat) // 20)
+                    _ax.barbs(
+                        _plot_lon[::_bs], _plot_lat[::_bl],
+                        _u[::_bl, ::_bs] * 1.94384,
+                        _v_data[::_bl, ::_bs] * 1.94384,
+                        length=5, linewidth=0.6, color=_overlay_color,
+                        sizes={"emptybarb": 0.15}, zorder=4,
+                    )
+                else:
+                    _lons_s = _plot_lon.copy()
+                    _lats_s = _plot_lat.copy()
+                    _us = _u.copy()
+                    _vs = _v_data.copy()
+                    if _lats_s[0] > _lats_s[-1]:
+                        _lats_s = _lats_s[::-1]
+                        _us = _us[::-1, :]
+                        _vs = _vs[::-1, :]
+                    _ss = max(1, len(_lons_s) // 150)
+                    _sl = max(1, len(_lats_s) // 150)
+                    _ax.streamplot(
+                        _lons_s[::_ss], _lats_s[::_sl],
+                        _us[::_sl, ::_ss], _vs[::_sl, ::_ss],
+                        color=_overlay_color, linewidth=0.8, density=1.5,
+                        arrowsize=0.72, arrowstyle="-|>", zorder=4,
+                    )
+            else:
+                # Desaturate the colormap by 25% for 1-variable styles
+                import colorsys as _colorsys
+                _rgba = plt.get_cmap(_cmap)(np.linspace(0, 1, 256))
+                _desat_colors = []
+                for r, g, b, a in _rgba:
+                    h, s, v = _colorsys.rgb_to_hsv(r, g, b)
+                    _desat_colors.append(_colorsys.hsv_to_rgb(h, s * 0.68, v) + (a,))
+                _cmap_1d = _mcolors.LinearSegmentedColormap.from_list(
+                    f"{_cmap}_desat", _desat_colors
+                )
+
+                _vmin = float(np.nanpercentile(_u, 2))
+                _vmax = float(np.nanpercentile(_u, 98))
+                if _vmax <= _vmin:
+                    _vmax = _vmin + 1.0
+                if _style == "contourf":
+                    _levels = np.linspace(_vmin, _vmax, 13)
+                    _cf = _ax.contourf(
+                        _plot_lon, _plot_lat, _u,
+                        levels=_levels, cmap=_cmap_1d, extend="both", zorder=2,
+                    )
+                    _cs = _ax.contour(
+                        _plot_lon, _plot_lat, _u,
+                        levels=_levels, colors="k", linewidths=0.4, zorder=3,
+                    )
+                    _ax.clabel(_cs, levels=_levels[::2], fmt="%.4g", fontsize=7, inline=True)
+                    _im = _cf
+                else:
+                    _norm = _mcolors.Normalize(vmin=_vmin, vmax=_vmax)
+                    _im = _ax.pcolormesh(
+                        _plot_lon, _plot_lat, _u,
+                        cmap=_cmap_1d, norm=_norm, shading="auto", zorder=2,
+                    )
+
+            # ── Coastlines ───────────────────────────────────────────────────
+            _shp = _shpreader.natural_earth(resolution="110m", category="physical", name="land")
+            for _geom in _shpreader.Reader(_shp).geometries():
+                _polys = [_geom] if _geom.geom_type == "Polygon" else list(_geom.geoms)
+                for _poly in _polys:
+                    _c = np.array(_poly.exterior.coords)
+                    _lc = _c[:, 0].copy()
+                    _ltc = _c[:, 1]
+                    if _lon_is_360:
+                        _lc = np.where(_lc < 0, _lc + 360, _lc)
+                    if _lc.max() < _lon_min_ax or _lc.min() > _lon_max_ax:
+                        continue
+                    _lc = _lc.astype(float)
+                    _lc[np.abs(np.diff(_lc, prepend=_lc[0])) > 90] = np.nan
+                    _ax.plot(_lc, _ltc, color="#cccccc", linewidth=0.5, zorder=3)
+
+            _cbar_label = f"Magnitude of {_v1} and {_v2}" if _style in ("barbs", "streamlines") else _v1
+            _cbar = _fig.colorbar(_im, ax=_ax, fraction=0.03, pad=0.02)
+            _cbar.set_label(_cbar_label, color=_txt)
+            _cbar.ax.yaxis.set_tick_params(color=_txt)
+            plt.setp(_cbar.ax.yaxis.get_ticklabels(), color=_txt)
+
+            _ax.set_xlabel("Longitude", color=_txt)
+            _ax.set_ylabel("Latitude", color=_txt)
+            _var_label = f"{_v1} {_v2}" if _needs_v else _v1
+            _ax.set_title(f"{_var_label}  ·  {_active_dt}  ·  {_style}", color=_txt)
+            _ax.tick_params(colors=_txt)
+            for _spine in _ax.spines.values():
+                _spine.set_edgecolor(_colors["border"])
+
+            viz2_map_html = mo.as_html(_fig)
+            plt.close(_fig)
+
+        except Exception as _e:
+            viz2_map_err = str(_e)
+            if _fig is not None:
+                plt.close(_fig)
+    return viz2_map_err, viz2_map_html, viz2_map_stats
+
+
+@app.cell
+def _(
+    mo,
+    viz2_colormap,
+    viz2_dark_mode,
+    viz2_datetime_pick,
+    viz2_file1,
+    viz2_file2,
+    viz2_folder,
+    viz2_lat_max_input,
+    viz2_lat_min_input,
+    viz2_lon_max_input,
+    viz2_lon_min_input,
+    viz2_map_err,
+    viz2_map_html,
+    viz2_map_stats,
+    viz2_map_style,
+    viz2_nc_files,
+    viz2_var1,
+    viz2_var2,
+):
+    """Render the Visualize tab."""
+    _root = viz2_folder.value.strip().rstrip("/")
+    _folder_row = mo.hstack(
+        [mo.md("**Folder:**"), viz2_folder],
+        justify="start",
+        gap="0.5rem",
+    )
+
+    if not _root:
+        visualize_tab = mo.vstack([
+            _folder_row,
+            mo.callout(mo.md("Enter a local folder path to browse NetCDF files."), kind="info"),
+        ])
+    elif not viz2_nc_files:
+        import os as _os2
+        _msg = (
+            "No NetCDF files found in that folder."
+            if _os2.path.isdir(_root)
+            else "Path does not exist or is not a directory."
+        )
+        visualize_tab = mo.vstack([
+            _folder_row,
+            mo.callout(mo.md(_msg), kind="warn"),
+        ])
+    else:
+        _count = len(viz2_nc_files)
+        _needs_two = viz2_map_style.value in ("barbs", "streamlines")
+        _f1_selected = viz2_file1.value != "(select a file)"
+        _f2_selected = viz2_file2.value != "(select a file)"
+        _has_var1 = viz2_var1.value != "(none)"
+        _has_var2 = viz2_var2.value != "(none)"
+        _show_dt = _has_var1 and (not _needs_two or _has_var2)
+
+        _row1 = (
+            mo.hstack([viz2_file1, viz2_var1], justify="start", gap="1rem")
+            if _f1_selected else viz2_file1
+        )
+        _row2 = (
+            mo.hstack([viz2_file2, viz2_var2], justify="start", gap="1rem")
+            if _f2_selected else viz2_file2
+        )
+
+        _file_section = (
+            mo.vstack([_row1, _row2], gap="0.5rem")
+            if _needs_two
+            else _row1
+        )
+
+        _items = [
+            _folder_row,
+            mo.md(f"Found **{_count}** NetCDF file{'s' if _count != 1 else ''} in `{_root}`"),
+            mo.hstack([viz2_map_style, viz2_colormap, viz2_dark_mode], justify="start", gap="1rem"),
+            mo.hstack(
+                [viz2_lat_min_input, viz2_lat_max_input, viz2_lon_min_input, viz2_lon_max_input],
+                justify="start", gap="1rem",
+            ),
+            _file_section,
+        ]
+        if _show_dt:
+            _items.append(viz2_datetime_pick)
+            if viz2_map_stats:
+                _items.append(mo.md(viz2_map_stats))
+
+        if viz2_map_err:
+            _items.append(mo.callout(mo.md(f"**Error:** {viz2_map_err}"), kind="danger"))
+        elif viz2_map_html is not None:
+            _items.append(viz2_map_html)
+
+        visualize_tab = mo.vstack(_items)
     return (visualize_tab,)
 
 
 @app.cell
-def _(dim_reduction_tab, explore_tab, mo, spatial_search_tab, visualize_tab):
+def _(
+    dim_reduction_tab,
+    explore_tab,
+    mo,
+    spatial_search_tab,
+    visualize_backup_tab,
+    visualize_tab,
+):
     mo.ui.tabs({
         "Data": explore_tab,
         "Clustering": dim_reduction_tab,
         "Spatial Search": spatial_search_tab,
         "Visualize": visualize_tab,
+        "Visualize Backup": visualize_backup_tab,
     })
     return
 
