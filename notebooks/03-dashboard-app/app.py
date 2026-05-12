@@ -3332,6 +3332,7 @@ def _(
             _lon_min_ax  = _plot_lon.min()
             _lon_max_ax  = _plot_lon.max()
             _cmap = viz2_colormap.value
+            _overlay_color = "#cccccc" if viz2_dark_mode.value else "#333333"
 
             if _style in ("barbs", "streamlines") and _v_data is not None:
                 _speed    = np.sqrt(_u**2 + _v_data**2)
@@ -3340,7 +3341,6 @@ def _(
                     _plot_lon, _plot_lat, _speed,
                     cmap=_cmap, norm=_spd_norm, alpha=0.7, shading="auto", zorder=2,
                 )
-                _overlay_color = "#cccccc" if viz2_dark_mode.value else "#333333"
                 if _style == "barbs":
                     _bs = max(1, len(_plot_lon) // 20)
                     _bl = max(1, len(_plot_lat) // 20)
@@ -3392,7 +3392,7 @@ def _(
                     )
                     _cs = _ax.contour(
                         _plot_lon, _plot_lat, _u,
-                        levels=_levels, colors="k", linewidths=0.4, zorder=3,
+                        levels=_levels, colors=_overlay_color, linewidths=0.4, zorder=3,
                     )
                     _ax.clabel(_cs, levels=_levels[::2], fmt="%.4g", fontsize=7, inline=True)
                     _im = _cf
@@ -3542,7 +3542,6 @@ def _(
     explore_tab,
     mo,
     spatial_search_tab,
-    visualize_backup_tab,
     visualize_tab,
 ):
     mo.ui.tabs({
@@ -3550,7 +3549,6 @@ def _(
         "Clustering": dim_reduction_tab,
         "Spatial Search": spatial_search_tab,
         "Visualize": visualize_tab,
-        "Visualize Backup": visualize_backup_tab,
     })
     return
 
