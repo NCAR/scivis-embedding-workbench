@@ -2980,6 +2980,7 @@ def _(mo):
     viz2_folder = mo.ui.text(
         value="",
         placeholder="/path/to/folder",
+        label="Folder",
         full_width=True,
     )
     return (viz2_folder,)
@@ -3466,11 +3467,7 @@ def _(
 ):
     """Render the Visualize tab."""
     _root = viz2_folder.value.strip().rstrip("/")
-    _folder_row = mo.hstack(
-        [mo.md("**Folder:**"), viz2_folder],
-        justify="start",
-        gap="0.5rem",
-    )
+    _folder_row = viz2_folder
 
     if not _root:
         visualize_tab = mo.vstack([
