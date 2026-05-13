@@ -8,6 +8,8 @@
 [![CodeQL](https://github.com/NCAR/scivis-embedding-workbench/actions/workflows/codeql.yml/badge.svg)](https://github.com/NCAR/scivis-embedding-workbench/actions/workflows/codeql.yml)
 [![Docs](https://img.shields.io/badge/docs-gh--pages-blue)](https://ncar.github.io/scivis-embedding-workbench/)
 
+![Spatial search demo](docs/assets/spatial-search-demo.gif)
+
 ## Getting Started
 
 These steps are intended for someone running the project locally for the first time.
