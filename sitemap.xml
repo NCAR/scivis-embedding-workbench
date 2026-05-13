@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url>
+         <loc>https://NCAR.github.io/scivis-embedding-workbench/</loc>
+         <lastmod>2026-05-13</lastmod>
+    </url>
+    <url>
+         <loc>https://NCAR.github.io/scivis-embedding-workbench/examples/</loc>
+         <lastmod>2026-05-13</lastmod>
+    </url>
+    <url>
+         <loc>https://NCAR.github.io/scivis-embedding-workbench/getting-started/</loc>
+         <lastmod>2026-05-13</lastmod>
+    </url>
+    <url>
+         <loc>https://NCAR.github.io/scivis-embedding-workbench/pipeline/dashboard/</loc>
+         <lastmod>2026-05-13</lastmod>
+    </url>
+    <url>
+         <loc>https://NCAR.github.io/scivis-embedding-workbench/pipeline/data-processing/</loc>
+         <lastmod>2026-05-13</lastmod>
+    </url>
+    <url>
+         <loc>https://NCAR.github.io/scivis-embedding-workbench/pipeline/embeddings/</loc>
+         <lastmod>2026-05-13</lastmod>
+    </url>
+    <url>
+         <loc>https://NCAR.github.io/scivis-embedding-workbench/pipeline/prepare-data/</loc>
+         <lastmod>2026-05-13</lastmod>
+    </url>
+</urlset>
