@@ -28,6 +28,7 @@ def _():
         build_geo_patch_figure, apply_similarity_overlay, render_basemap,
         build_spatial_filter_shapes,
     )
+    from helpers.search import SearchContext, discover_strategies
 
     return (
         ParallelCoordinates, lancedb, mo, np, pd, pl, plt,
@@ -40,6 +41,7 @@ def _():
         build_coastline_traces, make_patch_heatmap, make_selection_shape,
         build_geo_patch_figure, apply_similarity_overlay, render_basemap,
         build_spatial_filter_shapes,
+        SearchContext, discover_strategies,
     )
 
 
@@ -899,15 +901,18 @@ def _(config, map_theme, mo, set_ss_init, src_img_tbl, ss_load_button):
 
 
 @app.cell
-def _(mo):
+def _(discover_strategies, mo):
     ss_n_similar_images = mo.ui.number(start=1, stop=500, step=1, value=50, label="Similar images")
     ss_n_similar_patches = mo.ui.number(start=10, stop=10000, step=10, value=100, label="Max patches")
     ss_max_gallery = mo.ui.number(start=4, stop=100, step=4, value=25, label="Gallery cap")
     ss_refine_factor = mo.ui.number(start=1, stop=50, step=1, value=20, label="Refine factor")
     ss_similarity_toggle = mo.ui.switch(label="Similarity overlay")
+    ss_strategies = discover_strategies()
+    _options = list(ss_strategies.keys())
+    _default = "Image first" if "Image first" in ss_strategies else (_options[0] if _options else None)
     ss_search_mode = mo.ui.dropdown(
-        options=["Image first", "Patch first"],
-        value="Image first",
+        options=_options,
+        value=_default,
         label="Search mode",
     )
     return (
@@ -917,6 +922,7 @@ def _(mo):
         ss_refine_factor,
         ss_search_mode,
         ss_similarity_toggle,
+        ss_strategies,
     )
 
 
@@ -1091,10 +1097,12 @@ def _(set_ss_patch, ss_geo_patch_map, ss_init):
 
 @app.cell
 def _(
+    SearchContext,
     get_ss_patch,
     get_ss_spatial_filter,
     img_emb_tbl,
     patch_emb_tbl,
+    src_img_tbl,
     ss_init,
     ss_metadata_filter,
     ss_n_similar_images,
@@ -1102,15 +1110,17 @@ def _(
     ss_refine_factor,
     ss_search_mode,
     ss_selected_img_id,
+    ss_strategies,
 ):
     import pandas as _pd_ss
 
+    ss_search_error = None
     if ss_init is None or not ss_selected_img_id:
         ss_top_df = None
     else:
         _patch_idx = get_ss_patch() if get_ss_patch() is not None else 0
 
-        # Shared: fetch the query patch embedding
+        # Fetch the query patch embedding (shared across strategies)
         _p_q = (
             patch_emb_tbl.search()
             .where(f"image_id = '{ss_selected_img_id}' AND patch_index = {_patch_idx}")
@@ -1120,101 +1130,47 @@ def _(
             .iloc[0]
         )
 
-        # Shared: metadata and spatial filter clauses
-        _allowed_ids = ss_metadata_filter.value["id"].tolist() if ss_metadata_filter.value is not None and len(ss_metadata_filter.value) > 0 else None
-        _id_clause = ", ".join(f"'{i}'" for i in _allowed_ids) if _allowed_ids else None
+        _allowed_ids = (
+            ss_metadata_filter.value["id"].tolist()
+            if ss_metadata_filter.value is not None and len(ss_metadata_filter.value) > 0
+            else None
+        )
         _spatial = get_ss_spatial_filter()
-        _patch_clause = (
-            f"patch_index IN ({', '.join(str(i) for i in _spatial)})"
-            if _spatial else ""
+
+        _ctx = SearchContext(
+            img_emb_tbl=img_emb_tbl,
+            patch_emb_tbl=patch_emb_tbl,
+            src_img_tbl=src_img_tbl,
+            selected_img_id=ss_selected_img_id,
+            patch_idx=_patch_idx,
+            query_patch_embedding=_p_q["embedding"],
+            n_similar_images=int(ss_n_similar_images.value),
+            n_similar_patches=int(ss_n_similar_patches.value),
+            refine_factor=int(ss_refine_factor.value),
+            allowed_image_ids=_allowed_ids,
+            spatial_patch_indices=_spatial,
         )
 
-        if ss_search_mode.value == "Patch first":
-            # Search patches directly — no image pre-filter
-            _parts = []
-            if _id_clause:
-                _parts.append(f"image_id IN ({_id_clause})")
-            if _patch_clause:
-                _parts.append(_patch_clause)
-            _where = " AND ".join(_parts) if _parts else None
-            _search = (
-                patch_emb_tbl.search(_p_q["embedding"], vector_column_name="embedding")
-                .metric("cosine")
-                .refine_factor(int(ss_refine_factor.value))
-                .select(["image_id", "patch_index"])
-                .limit(ss_n_similar_patches.value)
-            )
-            if _where:
-                _search = _search.where(_where)
-            ss_top_df = _search.to_pandas()
-
+        _strategy = ss_strategies.get(ss_search_mode.value)
+        if _strategy is None:
+            ss_top_df = _pd_ss.DataFrame(columns=["image_id", "patch_index", "_distance"])
+            ss_search_error = f"Unknown search strategy: {ss_search_mode.value!r}"
         else:
-            # Image first: find similar images restricted to spatial region, then search patches
-            _img_q = (
-                img_emb_tbl.search()
-                .where(f"image_id = '{ss_selected_img_id}'")
-                .select(["embedding"])
-                .limit(1)
-                .to_pandas()
-                .iloc[0]
-            )
-
-            # Restrict image candidates to those that have patches in the selected region
-            if _spatial:
-                _spatial_img_ids = (
-                    patch_emb_tbl.search()
-                    .where(_patch_clause)
-                    .select(["image_id"])
-                    .limit(100_000)
-                    .to_pandas()["image_id"]
-                    .unique()
-                    .tolist()
-                )
-                if _allowed_ids:
-                    _allowed_set = set(_allowed_ids)
-                    _spatial_img_ids = [i for i in _spatial_img_ids if i in _allowed_set]
-                _img_where = (
-                    f"image_id IN ({', '.join(repr(i) for i in _spatial_img_ids)})"
-                    if _spatial_img_ids else None
-                )
-                _no_candidates = not _spatial_img_ids
-            elif _id_clause:
-                _img_where = f"image_id IN ({_id_clause})"
-                _no_candidates = False
-            else:
-                _img_where = None
-                _no_candidates = False
-
-            if _no_candidates:
+            try:
+                ss_top_df = _strategy.search(_ctx)
+            except Exception as _e:
                 ss_top_df = _pd_ss.DataFrame(columns=["image_id", "patch_index", "_distance"])
-            else:
-                _search = (
-                    img_emb_tbl.search(_img_q["embedding"], vector_column_name="embedding")
-                    .metric("cosine")
-                    .select(["image_id"])
-                )
-                if _img_where:
-                    _search = _search.where(_img_where)
-                _sim_ims = _search.limit(ss_n_similar_images.value).to_pandas()
+                ss_search_error = f"{_strategy.name} failed: {type(_e).__name__}: {_e}"
+    return ss_search_error, ss_top_df
 
-                if _sim_ims.empty:
-                    ss_top_df = _pd_ss.DataFrame(columns=["image_id", "patch_index", "_distance"])
-                else:
-                    _img_filter = ", ".join(f"'{i}'" for i in _sim_ims["image_id"].tolist())
-                    _where = f"image_id IN ({_img_filter})"
-                    if _patch_clause:
-                        _where += f" AND {_patch_clause}"
 
-                    ss_top_df = (
-                        patch_emb_tbl.search(_p_q["embedding"], vector_column_name="embedding")
-                        .where(_where)
-                        .metric("cosine")
-                        .refine_factor(int(ss_refine_factor.value))
-                        .select(["image_id", "patch_index"])
-                        .limit(ss_n_similar_patches.value)
-                        .to_pandas()
-                    )
-    return (ss_top_df,)
+@app.cell
+def _(mo, ss_search_error):
+    if ss_search_error:
+        ss_search_error_ui = mo.callout(mo.md(f"**Search strategy error**\n\n`{ss_search_error}`"), kind="warn")
+    else:
+        ss_search_error_ui = None
+    return (ss_search_error_ui,)
 
 
 @app.cell
@@ -1408,6 +1364,7 @@ def _(
     ss_n_similar_images,
     ss_n_similar_patches,
     ss_refine_factor,
+    ss_search_error_ui,
     ss_search_mode,
     ss_similarity_toggle,
     ss_spatial_filter_map,
@@ -1415,6 +1372,8 @@ def _(
     _items = [mo.hstack([ss_load_button], justify="start")]
     if ss_init_status is not None:
         _items.append(ss_init_status)
+    if ss_search_error_ui is not None:
+        _items.append(ss_search_error_ui)
     if ss_init is not None:
         _sel = get_ss_patch()
         _label_q = f"**Selected patch:** `{_sel}`" if _sel is not None else "*Click a patch to select it*"

@@ -1,0 +1,44 @@
+"""Template for a custom search strategy.
+
+To use this:
+  1. Copy this file to `my_strategy.py` (any name, must end in .py — files
+     ending in .example are ignored by the auto-scanner).
+  2. Edit the `name`, `description`, and `search()` body below.
+  3. Restart marimo (`marimo edit app.py`). Your strategy will appear in the
+     "Search mode" dropdown automatically.
+
+The contract:
+  - Input:  a `SearchContext` (see helpers/search/base.py) with the LanceDB
+            tables, the query image_id + patch_index + patch embedding, the
+            knobs (n_similar_images, n_similar_patches, refine_factor), and
+            the active filters (allowed_image_ids, spatial_patch_indices).
+  - Output: a pandas DataFrame with columns `image_id`, `patch_index`,
+            `_distance`. (`_distance` is LanceDB's standard cosine-distance
+            column name; lower = more similar.)
+
+Filter semantics (apply both if both are non-None):
+  - `allowed_image_ids`  — only return rows whose `image_id` is in this list
+  - `spatial_patch_indices` — only return rows whose `patch_index` is in this list
+"""
+import pandas as pd
+
+from ..base import SearchContext, SearchStrategy
+
+
+class MyStrategy(SearchStrategy):
+    name = "My strategy"                       # Shown in the dropdown — must be unique
+    description = "One-line description shown in tooltips and docs."
+
+    def search(self, ctx: SearchContext) -> pd.DataFrame:
+        # Example: trivial patch-only search with no filters. Replace with your
+        # own logic. Use `ctx.patch_emb_tbl`, `ctx.img_emb_tbl`, `ctx.src_img_tbl`.
+        q = (
+            ctx.patch_emb_tbl.search(
+                ctx.query_patch_embedding, vector_column_name="embedding"
+            )
+            .metric("cosine")
+            .refine_factor(int(ctx.refine_factor))
+            .select(["image_id", "patch_index"])
+            .limit(ctx.n_similar_patches)
+        )
+        return q.to_pandas()
