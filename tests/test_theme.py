@@ -1,16 +1,15 @@
-"""Tests for get_theme_colors() centralized theme helper in app.py."""
+"""Tests for get_theme_colors() centralized theme helper."""
 import re
 from pathlib import Path
 
-# Extract just the get_theme_colors function from app.py without importing the
-# full Marimo app (which has side-effects: anywidget, lancedb, etc.)
-_APP_PATH = Path(__file__).parent.parent / "notebooks" / "03-dashboard-app" / "app.py"
-_src = _APP_PATH.read_text()
+# Extract just the get_theme_colors function from helpers/viz.py without
+# importing the marimo app (which has side-effects: anywidget, lancedb, etc.)
+_VIZ_PATH = Path(__file__).parent.parent / "notebooks" / "03-dashboard-app" / "helpers" / "viz.py"
+_src = _VIZ_PATH.read_text()
 
-# Pull the function source: starts at "def get_theme_colors" and ends at the
-# next top-level definition (@app.function / @app.cell / def at col 0)
-_match = re.search(r"(^def get_theme_colors\b.*?)(?=^@app\.|^def |\Z)", _src, re.MULTILINE | re.DOTALL)
-assert _match, "get_theme_colors not found in app.py"
+# Pull the function source: starts at "def get_theme_colors" and ends at the next top-level def
+_match = re.search(r"(^def get_theme_colors\b.*?)(?=^def |\Z)", _src, re.MULTILINE | re.DOTALL)
+assert _match, "get_theme_colors not found in helpers/viz.py"
 
 _ns: dict = {}
 exec(_match.group(1), _ns)
