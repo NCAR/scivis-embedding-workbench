@@ -1,50 +1,52 @@
-"""Tests for pure @app.function helpers extracted from app.py."""
+"""Tests for pure helpers extracted into notebooks/03-dashboard-app/helpers/."""
 import re
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-# Extract each function from app.py source using regex (same pattern as test_theme.py).
+# Extract each function from helpers/data.py or helpers/viz.py source using regex.
 # This avoids importing the full Marimo app, which has heavy side-effects (lancedb,
 # IPython, wigglystuff, cartopy, etc.).
-_APP_SRC = (Path(__file__).parent.parent / "notebooks" / "03-dashboard-app" / "app.py").read_text()
+_HELPERS_DIR = Path(__file__).parent.parent / "notebooks" / "03-dashboard-app" / "helpers"
+_DATA_SRC = (_HELPERS_DIR / "data.py").read_text()
+_VIZ_SRC = (_HELPERS_DIR / "viz.py").read_text()
 
 
-def _extract(fn_name: str):
-    """Pull a top-level function definition out of app.py and exec it."""
+def _extract(fn_name: str, src: str):
+    """Pull a top-level function definition out of a helper module and exec it."""
     m = re.search(
-        rf"(^def {fn_name}\b.*?)(?=^@app\.|^def |\Z)",
-        _APP_SRC,
+        rf"(^def {fn_name}\b.*?)(?=^def |\Z)",
+        src,
         re.MULTILINE | re.DOTALL,
     )
-    assert m, f"{fn_name} not found in app.py"
+    assert m, f"{fn_name} not found"
     ns: dict = {}
     exec(m.group(1), ns)  # noqa: S102
     return ns[fn_name]
 
 
-def _extract_group(*fn_names: str) -> dict:
+def _extract_group(src: str, *fn_names: str) -> dict:
     """Extract multiple functions into a shared namespace so they can call each
     other (e.g. render_thumbnail_gallery calls get_theme_colors)."""
     ns: dict = {}
     for fn_name in fn_names:
         m = re.search(
-            rf"(^def {fn_name}\b.*?)(?=^@app\.|^def |\Z)",
-            _APP_SRC,
+            rf"(^def {fn_name}\b.*?)(?=^def |\Z)",
+            src,
             re.MULTILINE | re.DOTALL,
         )
-        assert m, f"{fn_name} not found in app.py"
+        assert m, f"{fn_name} not found"
         exec(m.group(1), ns)  # noqa: S102
     return ns
 
 
-list_experiments       = _extract("list_experiments")
-resolve_source_path    = _extract("resolve_source_path")
-compute_thumb_dimensions = _extract("compute_thumb_dimensions")
-apply_brush_filter     = _extract("apply_brush_filter")
+list_experiments       = _extract("list_experiments",       _DATA_SRC)
+resolve_source_path    = _extract("resolve_source_path",    _DATA_SRC)
+compute_thumb_dimensions = _extract("compute_thumb_dimensions", _DATA_SRC)
+apply_brush_filter     = _extract("apply_brush_filter",     _DATA_SRC)
 
-_gallery_ns = _extract_group("get_theme_colors", "render_thumbnail_gallery")
+_gallery_ns = _extract_group(_VIZ_SRC, "get_theme_colors", "render_thumbnail_gallery")
 render_thumbnail_gallery = _gallery_ns["render_thumbnail_gallery"]
 
 

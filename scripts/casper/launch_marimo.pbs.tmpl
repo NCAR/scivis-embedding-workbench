@@ -1,0 +1,31 @@
+#!/bin/bash
+#PBS -N marimo
+#PBS -q {{QUEUE}}
+#PBS -A {{ACCOUNT}}
+#PBS -l select=1:ncpus={{NCPUS}}:mem={{MEM}}:ngpus={{NGPUS}}:gpu_type={{GPU_TYPE}}
+#PBS -l walltime={{WALLTIME}}
+#PBS -j oe
+#PBS -o {{REMOTE_PROJECT_DIR}}/.marimo-pbs.log
+
+set -euo pipefail
+
+NODE="$(hostname -s)"
+SESSION_FILE="$HOME/.marimo-session.json"
+
+cat > "$SESSION_FILE" <<EOF
+{
+  "node": "${NODE}",
+  "port": {{PORT}},
+  "token": "{{TOKEN}}",
+  "jobid": "${PBS_JOBID:-unknown}",
+  "project_dir": "{{REMOTE_PROJECT_DIR}}"
+}
+EOF
+
+cd "{{REMOTE_PROJECT_DIR}}"
+
+exec uv run marimo edit \
+    --host 0.0.0.0 \
+    --port {{PORT}} \
+    --headless \
+    --token-password "{{TOKEN}}"

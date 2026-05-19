@@ -1,0 +1,278 @@
+#!/usr/bin/env bash
+# casper-marimo — one-command launcher for Marimo on NCAR Casper.
+#
+# Auth model: NO modifications to ~/.ssh/config required. Each
+# `casper-marimo start` triggers TWO ssh connections to Casper:
+#   1. orchestration (upload PBS, qsub, poll qstat, read session info)
+#   2. background tunnel (local-port -> compute-node:port via the gateway)
+# Each connection prompts for password + Duo push. `status` and `stop`
+# trigger at most one ssh each.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="$SCRIPT_DIR/casper-marimo.env"
+ENV_EXAMPLE="$SCRIPT_DIR/casper-marimo.env.example"
+TEMPLATE="$SCRIPT_DIR/launch_marimo.pbs.tmpl"
+STATE_DIR="$HOME/.casper-marimo"
+STATE_FILE="$STATE_DIR/session.json"
+TUNNEL_PID_FILE="$STATE_DIR/tunnel.pid"
+
+mkdir -p "$STATE_DIR"
+
+# ---------- helpers -----------------------------------------------------------
+
+bold() { printf '\033[1m%s\033[0m\n' "$*"; }
+err()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; }
+note() { printf '  %s\n' "$*"; }
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || { err "missing required command: $1"; exit 1; }
+}
+
+prompt() {
+  local label="$1" default="$2" reply=""
+  printf '> %-9s [%s]: ' "$label" "$default" >&2
+  IFS= read -r reply
+  printf '%s' "${reply:-$default}"
+}
+
+require_cmd ssh
+require_cmd openssl
+require_cmd python3
+
+if [[ ! -f "$ENV_FILE" ]]; then
+  err "missing $ENV_FILE"
+  note "Run:  cp '$ENV_EXAMPLE' '$ENV_FILE'  then edit if needed."
+  exit 1
+fi
+
+# shellcheck source=/dev/null
+set -a; source "$ENV_FILE"; set +a
+
+for var in PBS_QUEUE PBS_ACCOUNT REMOTE_PROJECT_DIR \
+           DEFAULT_GPU_TYPE DEFAULT_NGPUS DEFAULT_NCPUS DEFAULT_MEM DEFAULT_WALLTIME \
+           LOCAL_PORT REMOTE_PORT GATEWAY_USER GATEWAY_HOST; do
+  if [[ -z "${!var:-}" ]]; then
+    err "$var is not set in $ENV_FILE"
+    exit 1
+  fi
+done
+
+GATEWAY="${GATEWAY_USER}@${GATEWAY_HOST}"
+
+# ---------- start -------------------------------------------------------------
+
+cmd_start() {
+  bold "[1/5] Loaded config from $ENV_FILE"
+
+  bold "[2/5] Resource request (press Enter for default):"
+  local queue account gpu_type ngpus ncpus mem walltime
+  queue="$(prompt    'Queue'    "$PBS_QUEUE")"
+  account="$(prompt  'Account'  "$PBS_ACCOUNT")"
+  gpu_type="$(prompt 'GPU type' "$DEFAULT_GPU_TYPE")"
+  ngpus="$(prompt    '# GPUs'   "$DEFAULT_NGPUS")"
+  ncpus="$(prompt    '# CPUs'   "$DEFAULT_NCPUS")"
+  mem="$(prompt      'Memory'   "$DEFAULT_MEM")"
+  walltime="$(prompt 'Walltime' "$DEFAULT_WALLTIME")"
+
+  local token; token="$(openssl rand -hex 16)"
+
+  local rendered="$STATE_DIR/launch.pbs"
+  python3 - "$TEMPLATE" "$rendered" \
+      "$queue" "$account" "$gpu_type" "$ngpus" "$ncpus" "$mem" "$walltime" \
+      "$REMOTE_PROJECT_DIR" "$REMOTE_PORT" "$token" <<'PY'
+import sys, pathlib
+src, dst, queue, account, gpu, ngpus, ncpus, mem, walltime, project_dir, port, token = sys.argv[1:]
+text = pathlib.Path(src).read_text()
+for key, val in {
+    "QUEUE": queue, "ACCOUNT": account, "GPU_TYPE": gpu,
+    "NGPUS": ngpus, "NCPUS": ncpus, "MEM": mem, "WALLTIME": walltime,
+    "REMOTE_PROJECT_DIR": project_dir, "PORT": port, "TOKEN": token,
+}.items():
+    text = text.replace("{{" + key + "}}", val)
+pathlib.Path(dst).write_text(text)
+PY
+
+  # Build a single remote shell script: upload PBS, qsub, poll qstat, print session.
+  local remote_script="$STATE_DIR/remote.sh"
+  {
+    cat <<'RPRE'
+set -euo pipefail
+cat > "$HOME/.marimo-launch.pbs" <<'PBS_END'
+RPRE
+    cat "$rendered"
+    cat <<'RPOST'
+PBS_END
+JOBID="$(qsub "$HOME/.marimo-launch.pbs" | tr -d '[:space:]')"
+echo "  jobid=$JOBID" >&2
+NODE=""
+ELAPSED=0
+while :; do
+  OUT="$(qstat -f "$JOBID" 2>/dev/null || true)"
+  STATE="$(printf '%s\n' "$OUT" | awk -F' = ' '/job_state/ {print $2; exit}' | tr -d '[:space:]')"
+  if [ "$STATE" = "R" ]; then
+    NODE="$(printf '%s\n' "$OUT" | awk -F' = ' '/exec_host/ {print $2; exit}' | sed -E 's|[/.].*||' | tr -d '[:space:]')"
+    [ -n "$NODE" ] && break
+  fi
+  echo "  waiting (state=${STATE:-queued}, elapsed=${ELAPSED}s)…" >&2
+  sleep 5
+  ELAPSED=$((ELAPSED + 5))
+done
+# Allow marimo a moment to write its session file
+for i in $(seq 1 60); do
+  [ -f "$HOME/.marimo-session.json" ] && break
+  sleep 1
+done
+printf '===SESSION_BEGIN===\n'
+[ -f "$HOME/.marimo-session.json" ] && cat "$HOME/.marimo-session.json" || printf '{}'
+printf '\n===SESSION_END===\n'
+printf 'NODE=%s\n'  "$NODE"
+printf 'JOBID=%s\n' "$JOBID"
+RPOST
+  } > "$remote_script"
+
+  bold "[3/5] Connecting to Casper — password + Duo prompt #1 …"
+  local remote_out
+  remote_out="$(ssh "$GATEWAY" bash -s < "$remote_script")"
+
+  local session_json node jobid
+  session_json="$(printf '%s\n' "$remote_out" | awk '/^===SESSION_BEGIN===$/,/^===SESSION_END===$/' | sed '1d;$d')"
+  node="$(printf  '%s\n' "$remote_out" | awk -F= '/^NODE=/  {print $2}')"
+  jobid="$(printf '%s\n' "$remote_out" | awk -F= '/^JOBID=/ {print $2}')"
+
+  if [[ -z "$node" || -z "$jobid" ]]; then
+    err "failed to parse node/jobid from remote output:"
+    printf '%s\n' "$remote_out" >&2
+    exit 1
+  fi
+
+  python3 - "$STATE_FILE" "$jobid" "$node" "$token" "$REMOTE_PORT" <<PY
+import json, sys
+path, jobid, node, token, port = sys.argv[1:]
+raw = """$session_json"""
+try:
+    data = json.loads(raw) if raw.strip() else {}
+except json.JSONDecodeError:
+    data = {}
+data["jobid"] = jobid
+data["node"]  = node
+data.setdefault("token", token)
+data.setdefault("port", int(port))
+with open(path, "w") as f:
+    json.dump(data, f, indent=2)
+PY
+
+  note "Job running on $node (jobid=$jobid)."
+
+  # Kill any stale tunnel
+  if [[ -f "$TUNNEL_PID_FILE" ]]; then
+    local old_pid; old_pid="$(cat "$TUNNEL_PID_FILE" 2>/dev/null || true)"
+    if [[ -n "$old_pid" ]] && kill -0 "$old_pid" 2>/dev/null; then
+      kill "$old_pid" 2>/dev/null || true
+    fi
+    rm -f "$TUNNEL_PID_FILE"
+  fi
+
+  bold "[4/5] Opening SSH tunnel — password + Duo prompt #2 …"
+  # The destination "${node}" is resolved by the gateway (which can reach
+  # the compute node directly), so we don't need a second ssh hop or its
+  # own Duo prompt to the compute host.
+  ssh -fN -L "${LOCAL_PORT}:${node}:${REMOTE_PORT}" "$GATEWAY"
+
+  local tunnel_pid
+  tunnel_pid="$(pgrep -f "ssh -fN -L ${LOCAL_PORT}:${node}:${REMOTE_PORT} ${GATEWAY}" | head -n1 || true)"
+  [[ -n "$tunnel_pid" ]] && printf '%s\n' "$tunnel_pid" > "$TUNNEL_PID_FILE"
+
+  local url="http://localhost:${LOCAL_PORT}/?access_token=${token}"
+
+  bold "[5/5] Done."
+  note "URL  : $url"
+  note "Node : $node"
+  note "Job  : $jobid"
+  note "Tunl : pid=${tunnel_pid:-?}"
+  note "Run 'casper-marimo stop' to end the session."
+
+  open "$url" 2>/dev/null || true
+}
+
+# ---------- status / stop -----------------------------------------------------
+
+cmd_status() {
+  if [[ ! -f "$STATE_FILE" ]]; then
+    note "No active session recorded."
+    return 0
+  fi
+  python3 - "$STATE_FILE" "$TUNNEL_PID_FILE" <<'PY'
+import json, os, subprocess, sys
+state, pidfile = sys.argv[1], sys.argv[2]
+data = json.load(open(state))
+print(f"  jobid : {data.get('jobid','?')}")
+print(f"  node  : {data.get('node','?')}")
+print(f"  port  : {data.get('port','?')}")
+tok = data.get('token','')
+print(f"  token : {tok[:6] + '…' if tok else '?'}")
+pid = open(pidfile).read().strip() if os.path.exists(pidfile) else ""
+alive = bool(pid) and subprocess.call(
+    ["kill", "-0", pid], stderr=subprocess.DEVNULL) == 0
+print(f"  tunnel: pid={pid or '—'} alive={'yes' if alive else 'no'}")
+PY
+  note "(Run 'casper-marimo status --remote' to also check PBS job state — costs 1 Duo prompt.)"
+  if [[ "${1:-}" == "--remote" ]]; then
+    local jobid
+    jobid="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("jobid",""))' "$STATE_FILE" 2>/dev/null || true)"
+    if [[ -n "$jobid" ]]; then
+      bold "Querying PBS — password + Duo prompt …"
+      local state
+      state="$(ssh "$GATEWAY" "qstat -f '$jobid' 2>/dev/null | awk -F' = ' '/job_state/ {print \$2; exit}'" | tr -d '[:space:]' || true)"
+      note "remote job state: ${state:-unknown}"
+    fi
+  fi
+}
+
+cmd_stop() {
+  if [[ ! -f "$STATE_FILE" ]]; then
+    note "No active session recorded — nothing to stop."
+    return 0
+  fi
+  local jobid
+  jobid="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("jobid",""))' "$STATE_FILE" 2>/dev/null || true)"
+  if [[ -n "$jobid" ]]; then
+    bold "qdel $jobid — password + Duo prompt …"
+    ssh "$GATEWAY" "qdel '$jobid'" || true
+  fi
+  if [[ -f "$TUNNEL_PID_FILE" ]]; then
+    local pid; pid="$(cat "$TUNNEL_PID_FILE" || true)"
+    if [[ -n "$pid" ]]; then
+      bold "Killing local tunnel pid=$pid"
+      kill "$pid" 2>/dev/null || true
+    fi
+    rm -f "$TUNNEL_PID_FILE"
+  fi
+  rm -f "$STATE_FILE"
+  note "Session ended."
+}
+
+# ---------- entry point -------------------------------------------------------
+
+case "${1:-start}" in
+  start)  cmd_start ;;
+  stop)   cmd_stop ;;
+  status) shift || true; cmd_status "${1:-}" ;;
+  -h|--help|help)
+    cat <<EOF
+Usage: casper-marimo [start|stop|status]
+
+  start             Submit a PBS GPU job, wait for it, open a tunnel,
+                    and launch the marimo URL in your browser.
+                    Triggers TWO password+Duo prompts (orchestration + tunnel).
+
+  stop              qdel the current job and tear down the local SSH tunnel.
+                    Triggers ONE password+Duo prompt (qdel).
+
+  status            Print local session state (no ssh, no Duo prompt).
+  status --remote   Same, plus query PBS for live job state (ONE Duo prompt).
+EOF
+    ;;
+  *) err "unknown subcommand: $1"; exit 2 ;;
+esac

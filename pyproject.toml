@@ -74,6 +74,9 @@ omit = [
 show_missing = true
 skip_empty = true
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [tool.marimo.runtime]
 output_max_bytes = 25_000_000
 
