@@ -28,3 +28,7 @@ Thumbs.db
 .venv/
 
 uv.lock
+
+# ---- Personal HPC tooling: ignore only the filled-in env file ----
+# The rest of scripts/casper/ (launcher, template, .env.example, README) is tracked.
+/scripts/casper/casper-marimo.env
