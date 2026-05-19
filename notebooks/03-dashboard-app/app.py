@@ -30,16 +30,38 @@ def _():
     )
 
     return (
-        ParallelCoordinates, lancedb, mo, np, pd, pl, plt,
-        list_experiments, load_config_dict, resolve_source_path, get_spatial_extent,
-        load_embedding_matrix, fetch_metadata_for_ids, fetch_thumbnails_batch,
-        fetch_attention_maps, get_thumb_dimensions, compute_thumb_dimensions,
-        run_pca_best, run_umap_best, apply_brush_filter,
-        get_theme_colors, make_extent_map, make_scree_plot,
-        composite_attention_overlay, render_thumbnail_gallery,
-        build_coastline_traces, make_patch_heatmap, make_selection_shape,
-        build_geo_patch_figure, apply_similarity_overlay, render_basemap,
+        ParallelCoordinates,
+        apply_brush_filter,
+        apply_similarity_overlay,
+        build_coastline_traces,
+        build_geo_patch_figure,
         build_spatial_filter_shapes,
+        composite_attention_overlay,
+        compute_thumb_dimensions,
+        fetch_attention_maps,
+        fetch_metadata_for_ids,
+        fetch_thumbnails_batch,
+        get_spatial_extent,
+        get_theme_colors,
+        get_thumb_dimensions,
+        lancedb,
+        list_experiments,
+        load_config_dict,
+        load_embedding_matrix,
+        make_extent_map,
+        make_patch_heatmap,
+        make_scree_plot,
+        make_selection_shape,
+        mo,
+        np,
+        pd,
+        pl,
+        plt,
+        render_basemap,
+        render_thumbnail_gallery,
+        resolve_source_path,
+        run_pca_best,
+        run_umap_best,
     )
 
 
@@ -56,7 +78,7 @@ def _(mo):
 
 
 @app.cell
-def _(embedding_db_path, mo):
+def _(embedding_db_path, list_experiments, mo):
     _experiments = list_experiments(embedding_db_path.value)
     if _experiments:
         experiment_selector = mo.ui.dropdown(
@@ -70,7 +92,13 @@ def _(embedding_db_path, mo):
 
 
 @app.cell
-def _(embedding_db_path, experiment_selector, lancedb):
+def _(
+    embedding_db_path,
+    experiment_selector,
+    lancedb,
+    load_config_dict,
+    resolve_source_path,
+):
     if not embedding_db_path.value or experiment_selector.value is None:
         db = config = img_emb_tbl = patch_emb_tbl = src_img_tbl = None
     else:
@@ -121,6 +149,7 @@ def _(
     embedding_db_path,
     experiment_selector,
     img_emb_tbl,
+    make_extent_map,
     map_theme,
     mo,
     patch_emb_tbl,
@@ -240,11 +269,14 @@ def _(mo):
 @app.cell
 def _(
     experiment_selector,
+    fetch_metadata_for_ids,
     get_pca,
     img_emb_tbl,
+    load_embedding_matrix,
     mo,
     n_vectors,
     run_pca,
+    run_pca_best,
     set_pca,
     src_img_tbl,
 ):
@@ -272,7 +304,7 @@ def _(
 
 
 @app.cell
-def _(get_pca, map_theme, mo):
+def _(get_pca, make_scree_plot, map_theme, mo):
     _r = get_pca()
     if _r is None:
         scree_html = None
@@ -468,14 +500,21 @@ def _(normalize_toggle, np, parcoord_data_cols, parcoord_widget):
 
 @app.cell
 def _(
+    apply_brush_filter,
     attention_toggle,
+    composite_attention_overlay,
     config,
+    fetch_attention_maps,
+    fetch_thumbnails_batch,
     get_pca,
+    get_theme_colors,
+    get_thumb_dimensions,
     img_emb_tbl,
     map_theme,
     mo,
     parcoord_data_cols,
     parcoord_widget,
+    render_thumbnail_gallery,
     src_img_tbl,
 ):
     _r = get_pca()
@@ -585,10 +624,13 @@ def _(mo):
 @app.cell
 def _(
     experiment_selector,
+    fetch_metadata_for_ids,
     get_umap_result,
     img_emb_tbl,
+    load_embedding_matrix,
     mo,
     run_umap,
+    run_umap_best,
     set_umap_result,
     src_img_tbl,
     umap_min_dist,
@@ -648,7 +690,7 @@ def _(get_umap_result, mo, np):
 
 
 @app.cell
-def _(get_umap_result, map_theme, mo, np, umap_color_select):
+def _(get_theme_colors, get_umap_result, map_theme, mo, np, umap_color_select):
     import plotly.graph_objects as _go_umap
     _r = get_umap_result()
     if _r is None:
@@ -778,7 +820,17 @@ def _(get_umap_result, map_theme, mo, np, umap_color_select):
 
 
 @app.cell
-def _(get_umap_result, map_theme, mo, np, src_img_tbl, umap_scatter):
+def _(
+    fetch_thumbnails_batch,
+    get_thumb_dimensions,
+    get_umap_result,
+    map_theme,
+    mo,
+    np,
+    render_thumbnail_gallery,
+    src_img_tbl,
+    umap_scatter,
+):
     _r = get_umap_result()
     if _r is None or src_img_tbl is None or not hasattr(umap_scatter, "value"):
         umap_gallery_ui = None
@@ -867,7 +919,18 @@ def _(mo):
 
 
 @app.cell
-def _(config, map_theme, mo, set_ss_init, src_img_tbl, ss_load_button):
+def _(
+    build_coastline_traces,
+    config,
+    get_spatial_extent,
+    make_patch_heatmap,
+    map_theme,
+    mo,
+    render_basemap,
+    set_ss_init,
+    src_img_tbl,
+    ss_load_button,
+):
     if not ss_load_button.value:
         ss_init = None
         ss_init_status = mo.callout(
@@ -990,7 +1053,13 @@ def _(ss_available_dates, ss_available_ids, ss_date_picker):
 
 
 @app.cell
-def _(get_ss_spatial_filter, mo, ss_init):
+def _(
+    build_geo_patch_figure,
+    build_spatial_filter_shapes,
+    get_ss_spatial_filter,
+    mo,
+    ss_init,
+):
     if ss_init is None:
         ss_spatial_filter_map = mo.callout(mo.md("Load spatial search first."), kind="neutral")
     else:
@@ -1051,7 +1120,15 @@ def _(
 
 
 @app.cell
-def _(get_ss_patch, mo, src_img_tbl, ss_init, ss_selected_img_id):
+def _(
+    build_geo_patch_figure,
+    get_ss_patch,
+    make_selection_shape,
+    mo,
+    src_img_tbl,
+    ss_init,
+    ss_selected_img_id,
+):
     import io as _io_ss
     import numpy as _np_ss
     from PIL import Image as _Image_ss
@@ -1219,9 +1296,12 @@ def _(
 
 @app.cell
 def _(
+    apply_similarity_overlay,
+    compute_thumb_dimensions,
     get_ss_spatial_filter,
     map_theme,
     mo,
+    render_thumbnail_gallery,
     src_img_tbl,
     ss_available_ids,
     ss_init,
@@ -1807,6 +1887,7 @@ def _(get_viz_vmax, get_viz_vmin, mo):
 
 @app.cell
 def _(
+    get_theme_colors,
     get_viz_ds,
     get_viz_err,
     map_theme,
