@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.4"
+__generated_with = "0.23.6"
 app = marimo.App(layout_file="layouts/app.grid.json")
 
 
@@ -1897,6 +1897,7 @@ def _(get_viz_vmax, get_viz_vmin, mo):
 
 @app.cell
 def _(
+    get_theme_colors,
     get_viz_ds,
     get_viz_ds2,
     get_viz_err,
@@ -1959,14 +1960,28 @@ def _(
         ]
     _header = mo.vstack(_header_items)
 
+    def _card(title, content):
+        _bdr = "#444444" if _theme == "dark" else "#dddddd"
+        _cbg = "#252525" if _theme == "dark" else "#f7f8fa"
+        _lbl = (
+            f'<div style="font-size:11px;font-weight:600;letter-spacing:.06em;'
+            f'text-transform:uppercase;color:{_colors["text"]};opacity:.55;margin-bottom:10px">'
+            f'{title}</div>'
+        ) if title else ""
+        return mo.Html(
+            f'<div style="border:1px solid {_bdr};border-radius:8px;'
+            f'padding:14px 16px;background:{_cbg};margin-bottom:6px">'
+            + _lbl + content.text + '</div>'
+        )
+
     if _err is not None:
         visualize_backup_tab = mo.vstack([
-            _header,
+            _card("Source", _header),
             mo.callout(mo.md(f"**Load error:** `{_err}`"), kind="danger"),
         ])
     elif _meta is None:
         visualize_backup_tab = mo.vstack([
-            _header,
+            _card("Source", _header),
             mo.callout(
                 mo.md(
                     "Enter a folder path to browse available NetCDF files, "
@@ -2262,12 +2277,18 @@ def _(
             )
 
             visualize_backup_tab = mo.vstack([
-                _header, _info_md, _controls, _shape_note, _plot_html,
+                _card("Source", _header),
+                _card("Dataset", _info_md),
+                _card("Controls", _controls),
+                _shape_note,
+                _plot_html,
             ])
 
         except Exception as _render_err:
             visualize_backup_tab = mo.vstack([
-                _header, _info_md, _controls,
+                _card("Source", _header),
+                _card("Dataset", _info_md),
+                _card("Controls", _controls),
                 mo.callout(mo.md(f"**Render error:** `{_render_err}`"), kind="danger"),
             ])
     return
@@ -2330,6 +2351,12 @@ def _(mo):
 def _(mo):
     viz2_dark_mode = mo.ui.switch(value=True, label="Dark mode")
     return (viz2_dark_mode,)
+
+
+@app.cell
+def _(mo):
+    viz2_reverse_cmap = mo.ui.switch(value=False, label="Reverse colormap")
+    return (viz2_reverse_cmap,)
 
 
 @app.cell
@@ -2447,6 +2474,7 @@ def _(mo, viz2_timestamps):
 
 @app.cell
 def _(
+    get_theme_colors,
     mo,
     np,
     plt,
@@ -2461,6 +2489,7 @@ def _(
     viz2_lon_max_input,
     viz2_lon_min_input,
     viz2_map_style,
+    viz2_reverse_cmap,
     viz2_var1,
     viz2_var2,
 ):
@@ -2630,7 +2659,7 @@ def _(
             _lon_is_360  = _plot_lon.max() > 180
             _lon_min_ax  = _plot_lon.min()
             _lon_max_ax  = _plot_lon.max()
-            _cmap = viz2_colormap.value
+            _cmap = viz2_colormap.value + ("_r" if viz2_reverse_cmap.value else "")
             _overlay_color = "#cccccc" if viz2_dark_mode.value else "#333333"
 
             if _style in ("barbs", "streamlines") and _v_data is not None:
@@ -2760,16 +2789,33 @@ def _(
     viz2_map_stats,
     viz2_map_style,
     viz2_nc_files,
+    viz2_reverse_cmap,
     viz2_var1,
     viz2_var2,
 ):
     """Render the Visualize tab."""
     _root = viz2_folder.value.strip().rstrip("/")
     _folder_row = viz2_folder
+    _dark = viz2_dark_mode.value
+    _bdr2 = "#444444" if _dark else "#dddddd"
+    _cbg2 = "#252525" if _dark else "#f7f8fa"
+    _txt2 = "#e0e0e0" if _dark else "#222222"
+
+    def _card2(title, content):
+        _lbl = (
+            f'<div style="font-size:11px;font-weight:600;letter-spacing:.06em;'
+            f'text-transform:uppercase;color:{_txt2};opacity:.55;margin-bottom:10px">'
+            f'{title}</div>'
+        ) if title else ""
+        return mo.Html(
+            f'<div style="border:1px solid {_bdr2};border-radius:8px;'
+            f'padding:14px 16px;background:{_cbg2};margin-bottom:6px">'
+            + _lbl + content.text + '</div>'
+        )
 
     if not _root:
         visualize_tab = mo.vstack([
-            _folder_row,
+            _card2("Source", _folder_row),
             mo.callout(mo.md("Enter a local folder path to browse NetCDF files."), kind="info"),
         ])
     elif not viz2_nc_files:
@@ -2780,7 +2826,7 @@ def _(
             else "Path does not exist or is not a directory."
         )
         visualize_tab = mo.vstack([
-            _folder_row,
+            _card2("Source", _folder_row),
             mo.callout(mo.md(_msg), kind="warn"),
         ])
     else:
@@ -2807,27 +2853,36 @@ def _(
             else _row1
         )
 
-        _items = [
+        _source_content = mo.vstack([
             _folder_row,
             mo.md(f"Found **{_count}** NetCDF file{'s' if _count != 1 else ''} in `{_root}`"),
-            mo.hstack([viz2_map_style, viz2_colormap, viz2_dark_mode], justify="start", gap="1rem"),
+            _file_section,
+        ])
+
+        _display_items = [
+            mo.hstack([viz2_map_style, viz2_colormap, viz2_reverse_cmap, viz2_dark_mode], justify="start", gap="1rem"),
             mo.hstack(
                 [viz2_lat_min_input, viz2_lat_max_input, viz2_lon_min_input, viz2_lon_max_input],
                 justify="start", gap="1rem",
             ),
-            _file_section,
         ]
         if _show_dt:
-            _items.append(viz2_datetime_pick)
-            if viz2_map_stats:
-                _items.append(mo.md(viz2_map_stats))
+            _display_items.append(viz2_datetime_pick)
+        _display_content = mo.vstack(_display_items)
 
+        _output_items = []
+        if _show_dt and viz2_map_stats:
+            _output_items.append(mo.md(viz2_map_stats))
         if viz2_map_err:
-            _items.append(mo.callout(mo.md(f"**Error:** {viz2_map_err}"), kind="danger"))
+            _output_items.append(mo.callout(mo.md(f"**Error:** {viz2_map_err}"), kind="danger"))
         elif viz2_map_html is not None:
-            _items.append(viz2_map_html)
+            _output_items.append(viz2_map_html)
 
-        visualize_tab = mo.vstack(_items)
+        visualize_tab = mo.vstack([
+            _card2("Source", _source_content),
+            _card2("Display", _display_content),
+            *_output_items,
+        ])
     return (visualize_tab,)
 
 
