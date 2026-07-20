@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.20.4"
+__generated_with = "0.23.13"
 app = marimo.App()
 
 
@@ -82,12 +82,12 @@ def _(Path, lancedb):
 
     # Folder holding the source images to ingest
     # image_dir = PROJECT_ROOT / "data" / "processed_rgb_rect"  # local Mac / rectangular daily
-    image_dir = PROJECT_ROOT / "data" / "preprocessed_rgb_hourly"
+    image_dir = PROJECT_ROOT / "data" / "dyamond_visible_cloud"
 
     # ── Database ─────────────────────────────────────────────────────────────
     # Project name — used as the subfolder inside shared_source/ that holds
     # this dataset's LanceDB database. Rename this to separate datasets.
-    SOURCE_PROJECT = "era5_hrly_2016_2018_images"
+    SOURCE_PROJECT = "dyamond_visible_clouds"
 
     # LanceDB storage directory — each project lives in its own subfolder
     db_dir = PROJECT_ROOT / "data" / "lancedb" / "shared_source" / SOURCE_PROJECT
@@ -100,8 +100,8 @@ def _(Path, lancedb):
     # Stored image width and height in pixels.
     # Both must be multiples of 16 for DINO patch compatibility.
     # For a 7:2 geographic aspect ratio (lon 70° × lat 20°) use WIDTH=896, HEIGHT=256.
-    WIDTH  = 896
-    HEIGHT = 256
+    WIDTH  = 2880
+    HEIGHT = 720
 
     # Square thumbnail size stored alongside each image for quick previews
     THUMB_RESOLUTION = 64
@@ -111,14 +111,14 @@ def _(Path, lancedb):
 
     # ── Temporal extent ──────────────────────────────────────────────────────
     # Date range covered by this dataset (ISO-8601, inclusive)
-    TEMPORAL_START = "2016-01-01"
-    TEMPORAL_END   = "2018-12-31"
+    TEMPORAL_START = "2020-01-20"
+    TEMPORAL_END   = "2021-01-19"
 
     # ── Filename format ───────────────────────────────────────────────────────
     # strptime pattern used to parse the image timestamp from the filename.
     # Must match the actual filenames in image_dir.
     # DT_FORMAT = "%Y%m%d_rgb.jpeg"      # daily: e.g. 20160101_rgb.jpeg
-    DT_FORMAT = "%Y%m%d_%H_rgb.jpeg"     # hourly: e.g. 20171222_16_rgb.jpeg
+    DT_FORMAT = "Dyamond_GEOS_16_qiql_%Y-%m-%d_%H-00-00.png"     # hourly: e.g. 20171222_16_rgb.jpeg
 
     # ── Temporal subsampling ──────────────────────────────────────────────────
     # If the source folder contains finer-grained data than you need, set this
@@ -143,7 +143,6 @@ def _(Path, lancedb):
         HEIGHT,
         IMG_RAW_TBL_NAME,
         INGEST_RESOLUTION,
-        JPEG_QUALITY,
         PROJECT_ROOT,
         TEMPORAL_END,
         TEMPORAL_START,
@@ -167,7 +166,6 @@ def _(mo):
 @app.cell
 def _(
     HEIGHT,
-    JPEG_QUALITY,
     TEMPORAL_END,
     TEMPORAL_START,
     THUMB_RESOLUTION,
@@ -180,79 +178,35 @@ def _(
 
     metadata_dict = {
         # --- 1. CORE IDENTITY ---
-        "dataset_name": "ERA5 Hurricane Training Data (RGB Composites)",
-        "description": "Hourly weather composites at 3h resolution (MSL Anomaly, Wind, TCWV) for hurricane detection.",
-        "author": "cherukuru",
-        "generated_by_script": "e5_channels.ipynb",
+        "dataset_name": "DYAMOND Visible-Spectrum Cloud Imagery (True Color)",
+        "description": "qi+ql average images made with Blender",
+        "author": "Matt Rehme",
+        "generated_by_script": "No script- Blender",
         "created_at": datetime.now(timezone.utc).isoformat(),  # Dynamic Timestamp
         "row_count": 0,  # updated dynamically after ingestion
         # --- 2. SOURCE PROVENANCE (Sorted by Importance) ---
         "source_metadata": {
-            "data_source": "ECMWF: https://cds.climate.copernicus.eu, Copernicus Climate Data Store",
-            "conventions": "CF-1.6",
-            "conversion_logic": "CISL RDA: Conversion from ECMWF GRIB1 data to netCDF4",
-            "netcdf_version": "4.6.3",
-            "conversion_platform": "Linux r8i6n32 4.12.14-94.41-default #1 SMP",
+            "data_source": "IEEE Vis Scivis contest, DYAMOND dataset",
         },
         # --- 3. OUTPUT SPECIFICATIONS ---
         "image_specs": {
             "resolution": [WIDTH, HEIGHT],
             "thumb_resolution": [THUMB_RESOLUTION, THUMB_RESOLUTION],
-            "format": "JPEG",
-            "quality": JPEG_QUALITY,
-            "resampling": "Bilinear",
+            "format": "PNG",
             "projection": "Plate Carrée (Equirectangular)",
         },
         # --- 4. SPATIAL & TEMPORAL BOUNDS ---
         "spatial_extent": {
-            "lat_min": 15.0,
-            "lat_max": 35.0,
-            "lon_min": 260.0,
-            "lon_max": 330.0,
-            "notes": "North Atlantic / Caribbean (approx 100W to 30W)",
+            "lat_min": -45.0,
+            "lat_max": 45.0,
+            "lon_min": 0.0,
+            "lon_max": 360.0,
+            "notes": "whole earth, equatorial and mid latitudes",
         },
         "temporal_extent": {
             "start": TEMPORAL_START,
             "end": TEMPORAL_END,
-            "interval": "3h",  # updated dynamically after ingestion
-        },
-        # --- 5. PHYSICS & CHANNELS ---
-        "channels": {
-            "red": {
-                "variable": "MSL Pressure Anomaly",
-                "range": [-20.0, 20.0],
-                "unit": "hPa",
-                "logic": "Inverted (Low Pressure = Bright Red)",
-            },
-            "green": {"variable": "10m Wind Speed (Hourly)", "range": [0.0, 35.0], "unit": "m/s", "logic": "Linear"},
-            "blue": {
-                "variable": "Total Column Water Vapor (Hourly)",
-                "range": [20.0, 70.0],
-                "unit": "kg/m^2",
-                "logic": "Square Root Scaled",
-            },
-        },
-        # --- 6. HURRICANE EVENT LABELS ---
-        "hurricane_source": {
-            "dataset": "IBTrACS v04r01",
-            "full_name": "International Best Track Archive for Climate Stewardship",
-            "url": "https://www.ncei.noaa.gov/products/international-best-track-archive",
-            "basin": "North Atlantic (NA)",
-            "wind_unit": "knots (WMO standard)",
-            "coordinate_system": "degrees_north / degrees_east (negative for west)",
-        },
-        "hurricane_matching": {
-            "logic": "TBD",  # updated dynamically after enrichment
-            "columns": "hurricane_present, n_storms, max_wind_kts, max_category, storm_ids, storm_lats, storm_lons",
-        },
-        "saffir_simpson_scale": {
-            "-1 (TD)": "< 34 kts",
-            "0 (TS)": "34-63 kts",
-            "1 (Cat1)": "64-82 kts",
-            "2 (Cat2)": "83-95 kts",
-            "3 (Cat3)": "96-112 kts",
-            "4 (Cat4)": "113-136 kts",
-            "5 (Cat5)": ">= 137 kts",
+            "interval": "12h",  # updated dynamically after ingestion
         },
     }
 
@@ -271,14 +225,6 @@ def _(IMG_RAW_TBL_NAME, arrow_metadata, db, pa):
             pa.field("dt", pa.timestamp("s")),
             pa.field("image_blob", pa.binary()),
             pa.field("thumb_blob", pa.binary()),
-            # --- Hurricane event columns (populated after ingestion) ---
-            pa.field("hurricane_present", pa.bool_()),
-            pa.field("n_storms", pa.int32()),
-            pa.field("max_wind_kts", pa.float32()),
-            pa.field("max_category", pa.int32()),
-            pa.field("storm_ids", pa.string()),
-            pa.field("storm_lats", pa.string()),
-            pa.field("storm_lons", pa.string()),
         ],
         metadata=arrow_metadata,
     )
