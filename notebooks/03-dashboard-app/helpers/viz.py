@@ -36,8 +36,10 @@ def get_theme_colors(theme: str) -> dict:
 def make_extent_map(lat_min, lat_max, lon_min, lon_max, spatial_h, spatial_w, patch_size=16, theme="light", experiment=""):
     """Cartopy map cropped to spatial extent with patch grid line overlay."""
     import matplotlib.pyplot as plt
+    import matplotlib.ticker as mticker
     import cartopy.crs as ccrs
     import cartopy.feature as cfeature
+    from cartopy.mpl.ticker import LongitudeFormatter, LatitudeFormatter
     colors = get_theme_colors(theme)
     proj = ccrs.PlateCarree()
     fig, ax = plt.subplots(figsize=(8, 5), subplot_kw={"projection": proj})
@@ -47,11 +49,13 @@ def make_extent_map(lat_min, lat_max, lon_min, lon_max, spatial_h, spatial_w, pa
     ax.add_feature(cfeature.OCEAN.with_scale("110m"), facecolor=colors["ocean"], zorder=0)
     ax.add_feature(cfeature.LAND.with_scale("110m"),  facecolor=colors["land"],  zorder=1)
     ax.add_feature(cfeature.COASTLINE.with_scale("110m"), edgecolor=colors["coast"], linewidth=0.8, zorder=2)
-    gl = ax.gridlines(crs=proj, draw_labels=True, linewidth=0)
-    gl.top_labels = False
-    gl.right_labels = False
-    gl.xlabel_style = {"color": colors["text"], "fontsize": 8}
-    gl.ylabel_style = {"color": colors["text"], "fontsize": 8}
+    # NOTE: gridlines(draw_labels=True) triggers a cartopy 0.25 / matplotlib 3.11 bug
+    # (shapely LinearRing exception in _draw_gridliner). Use axis ticks instead.
+    ax.xaxis.set_major_locator(mticker.MaxNLocator(nbins=5))
+    ax.yaxis.set_major_locator(mticker.MaxNLocator(nbins=5))
+    ax.xaxis.set_major_formatter(LongitudeFormatter())
+    ax.yaxis.set_major_formatter(LatitudeFormatter())
+    ax.tick_params(colors=colors["text"], labelsize=8)
     n_rows, n_cols = spatial_h, spatial_w
     img_h = n_rows * patch_size
     img_w = n_cols * patch_size
