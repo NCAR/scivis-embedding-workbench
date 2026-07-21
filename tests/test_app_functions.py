@@ -2,6 +2,9 @@
 import re
 from pathlib import Path
 
+import matplotlib
+matplotlib.use("Agg")  # headless CI: no display available
+
 import numpy as np
 import pytest
 
@@ -48,6 +51,11 @@ apply_brush_filter     = _extract("apply_brush_filter",     _DATA_SRC)
 
 _gallery_ns = _extract_group(_VIZ_SRC, "get_theme_colors", "render_thumbnail_gallery")
 render_thumbnail_gallery = _gallery_ns["render_thumbnail_gallery"]
+
+_map_ns = _extract_group(_VIZ_SRC, "get_theme_colors", "make_extent_map")
+make_extent_map = _map_ns["make_extent_map"]
+render_basemap = _extract("render_basemap", _VIZ_SRC)
+build_coastline_traces = _extract("build_coastline_traces", _VIZ_SRC)
 
 
 # ── list_experiments ──────────────────────────────────────────────────────────
@@ -328,3 +336,101 @@ def test_render_formats_normal_datetime():
     thumbs = [("img_0.jpg", b"\xff\xd8\xff", datetime(2017, 9, 6, 14, 0))]
     _count, html = render_thumbnail_gallery(thumbs, n_filtered=1, max_display=10)
     assert "2017-09-06 14:00" in html
+
+
+# ── make_extent_map / render_basemap / build_coastline_traces ────────────────
+# Regression tests for two longitude-convention bugs:
+#  1. Collapse: cartopy's PlateCarree normalizes lon 0 and lon 360 to the same
+#     point, so set_extent([0, 360, ...]) collapses to a zero-width view
+#     instead of showing the full globe.
+#  2. Orientation: even once uncollapsed, a default-centered (central_longitude=0)
+#     projection always displays the Atlantic-centered -180..180 view regardless
+#     of the requested lon_min/lon_max, so a 0-360 dataset (column 0 = lon 0,
+#     e.g. Greenwich) renders with Greenwich in the *middle* instead of at the
+#     left edge — misaligned with the source image's own pixel convention.
+
+def test_make_extent_map_span_matches_requested_extent():
+    """The displayed lon span (in axes-native x-units) must equal the
+    requested lon_max - lon_min, regardless of a collapsed 0-360 span or of
+    which central longitude the axes ends up using to display it."""
+    cases = [
+        (0.0, 360.0, 359.9),      # DYAMOND-style global; clamped to avoid collapse
+        (-180.0, 180.0, 359.9),   # equivalent global convention
+        (200.0, 210.0, 10.0),     # small region above 180
+        (260.0, 330.0, 70.0),     # ERA5-style region
+    ]
+    for lon_min, lon_max, expected_span in cases:
+        fig = make_extent_map(
+            lat_min=-90, lat_max=90, lon_min=lon_min, lon_max=lon_max,
+            spatial_h=4, spatial_w=4,
+        )
+        xlim = fig.axes[0].get_xlim()
+        assert xlim[1] - xlim[0] == pytest.approx(expected_span, abs=1.0), (lon_min, lon_max)
+
+
+def test_make_extent_map_0_360_places_greenwich_at_left_edge():
+    """For a 0-360 dataset, lon=0 (Greenwich) must land on the left edge and
+    lon=360 on the right edge — matching the source image's pixel convention
+    (column 0 = lon 0) — not the middle, which is what a default
+    central_longitude=0 projection would (incorrectly) show."""
+    import cartopy.crs as ccrs
+    fig = make_extent_map(
+        lat_min=-90, lat_max=90, lon_min=0.0, lon_max=360.0,
+        spatial_h=4, spatial_w=4,
+    )
+    ax = fig.axes[0]
+    data_crs = ccrs.PlateCarree()
+    xlim = ax.get_xlim()
+    x_at_lon0, _ = ax.projection.transform_point(0.0, 0.0, data_crs)
+    assert x_at_lon0 == pytest.approx(xlim[0], abs=1.0)
+
+
+def test_make_extent_map_regional_extent_places_lon_min_at_left_edge():
+    """Same orientation guarantee for a non-global regional extent."""
+    import cartopy.crs as ccrs
+    fig = make_extent_map(
+        lat_min=10, lat_max=20, lon_min=200.0, lon_max=210.0,
+        spatial_h=4, spatial_w=4,
+    )
+    ax = fig.axes[0]
+    data_crs = ccrs.PlateCarree()
+    xlim = ax.get_xlim()
+    x_at_lon_min, _ = ax.projection.transform_point(200.0, 15.0, data_crs)
+    assert x_at_lon_min == pytest.approx(xlim[0], abs=1.0)
+
+
+def test_render_basemap_0_360_extent_not_blank():
+    """A collapsed extent would render an (almost) uniform-color raster."""
+    arr = render_basemap(
+        lat_min=-90, lat_max=90, lon_min=0.0, lon_max=360.0, target_w=64,
+    )
+    # Blank/collapsed output is a single flat color (std ~ 0); a real globe
+    # render has clear ocean/land/coastline contrast.
+    assert arr.std() > 10
+
+
+def test_build_coastline_traces_0_360_covers_both_hemispheres():
+    """Western-hemisphere coastlines (native negative longitude, e.g. the
+    Americas around lon -170 to -30) must wrap into the 190-330 stretch of a
+    0-360 display instead of being dropped. A single stray near-180 point
+    from floating-point rounding at the antimeridian doesn't count — require
+    a real cluster of wrapped points, not just one."""
+    traces = build_coastline_traces(
+        lat_min=-90, lat_max=90, lon_min=0.0, lon_max=360.0, n_rows=14, n_cols=14,
+    )
+    xs = np.concatenate([np.array(t.x) for t in traces])
+    assert (xs < 180).sum() > 100    # eastern hemisphere present
+    assert (xs > 200).sum() > 100    # western hemisphere wrapped into view
+
+
+def test_build_coastline_traces_regional_extent_pulls_fewer_lines():
+    """A small regional extent should pull in far fewer coastline lines than
+    a full-globe extent (some individual lines, e.g. Antarctica, span nearly
+    the whole longitude range and are kept whole rather than clipped)."""
+    regional = build_coastline_traces(
+        lat_min=10, lat_max=20, lon_min=20.0, lon_max=30.0, n_rows=4, n_cols=4,
+    )
+    full_globe = build_coastline_traces(
+        lat_min=-90, lat_max=90, lon_min=0.0, lon_max=360.0, n_rows=14, n_cols=14,
+    )
+    assert len(regional) < len(full_globe)

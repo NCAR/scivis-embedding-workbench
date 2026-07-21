@@ -41,11 +41,21 @@ def make_extent_map(lat_min, lat_max, lon_min, lon_max, spatial_h, spatial_w, pa
     import cartopy.feature as cfeature
     from cartopy.mpl.ticker import LongitudeFormatter, LatitudeFormatter
     colors = get_theme_colors(theme)
-    proj = ccrs.PlateCarree()
+    # A lon span of exactly 360 (e.g. 0-360 datasets) makes cartopy normalize
+    # both endpoints to the same longitude, collapsing set_extent to a point.
+    lon_max = min(lon_max, lon_min + 359.9)
+    # data_crs is absolute lon/lat (what lon_min/lon_max/grid coords are expressed
+    # in); the axes projection is centered on the extent's midpoint so lon_min
+    # lands on the left edge and lon_max on the right, matching the source
+    # image's own pixel convention (e.g. a 0-360 dataset has column 0 = lon 0,
+    # not the Atlantic-centered -180..180 that a default-centered projection
+    # would show).
+    data_crs = ccrs.PlateCarree()
+    proj = ccrs.PlateCarree(central_longitude=(lon_min + lon_max) / 2.0)
     fig, ax = plt.subplots(figsize=(8, 5), subplot_kw={"projection": proj})
     fig.patch.set_facecolor(colors["bg"])
     ax.set_facecolor(colors["bg"])
-    ax.set_extent([lon_min, lon_max, lat_min, lat_max], crs=proj)
+    ax.set_extent([lon_min, lon_max, lat_min, lat_max], crs=data_crs)
     ax.add_feature(cfeature.OCEAN.with_scale("110m"), facecolor=colors["ocean"], zorder=0)
     ax.add_feature(cfeature.LAND.with_scale("110m"),  facecolor=colors["land"],  zorder=1)
     ax.add_feature(cfeature.COASTLINE.with_scale("110m"), edgecolor=colors["coast"], linewidth=0.8, zorder=2)
@@ -63,10 +73,10 @@ def make_extent_map(lat_min, lat_max, lon_min, lon_max, spatial_h, spatial_w, pa
     lon_step = (lon_max - lon_min) / n_cols
     for i in range(1, n_rows):
         ax.plot([lon_min, lon_max], [lat_min + i * lat_step] * 2,
-                transform=proj, color=colors["grid"], linewidth=0.4, zorder=3)
+                transform=data_crs, color=colors["grid"], linewidth=0.4, zorder=3)
     for j in range(1, n_cols):
         ax.plot([lon_min + j * lon_step] * 2, [lat_min, lat_max],
-                transform=proj, color=colors["grid"], linewidth=0.4, zorder=3)
+                transform=data_crs, color=colors["grid"], linewidth=0.4, zorder=3)
     _title = f"{img_w}×{img_h}px  |  {n_rows}×{n_cols} patch grid ({n_rows * n_cols} patches)"
     if experiment:
         _title = f"{experiment}  —  {_title}"
@@ -300,53 +310,50 @@ def build_coastline_traces(lat_min, lat_max, lon_min, lon_max, n_rows, n_cols):
     lon_step = (lon_max - lon_min) / n_cols
     buffer = max(lat_step, lon_step)
 
-    lon_offset = 360 if lon_min > 180 else 0
-    lon_min_180 = lon_min - lon_offset
-    lon_max_180 = lon_max - lon_offset
-
     try:
         import cartopy.feature as cfeature
-        from shapely.geometry import box as shapely_box
     except ImportError as e:
         raise ImportError(
             "cartopy is required for coastline rendering. "
             "Install with: pip install cartopy"
         ) from e
 
-    bbox = shapely_box(
-        lon_min_180 - buffer, lat_min - buffer,
-        lon_max_180 + buffer, lat_max + buffer,
-    )
     try:
         coast_geoms = list(cfeature.COASTLINE.with_scale("110m").geometries())
     except Exception:
         coast_geoms = []
 
+    # Coastline data is natively in [-180, 180]. Try each wraparound shift so
+    # extents using a [0, 360) convention still pick up geometry that would
+    # otherwise fall outside [lon_min, lon_max] (e.g. the Americas at native
+    # negative longitude, which belong near the 180-360 side of the extent).
     traces = []
     for geom in coast_geoms:
         try:
-            if not geom.intersects(bbox):
-                continue
             lines = list(geom.geoms) if hasattr(geom, "geoms") else [geom]
-            for line in lines:
-                try:
-                    xy = np.array(line.coords)
-                    if xy.ndim != 2 or xy.shape[0] < 2:
-                        continue
-                    traces.append(go.Scatter(
-                        x=[xi + lon_offset for xi in xy[:, 0].tolist()],
-                        y=xy[:, 1].tolist(),
-                        mode="lines",
-                        line=dict(color="white", width=1.5),
-                        opacity=0.8,
-                        showlegend=False,
-                        hoverinfo="skip",
-                        name="coastline",
-                    ))
-                except Exception:
-                    continue
         except Exception:
             continue
+        for line in lines:
+            try:
+                xy = np.array(line.coords)
+                if xy.ndim != 2 or xy.shape[0] < 2:
+                    continue
+            except Exception:
+                continue
+            for shift in (0, 360, -360):
+                x_shifted = xy[:, 0] + shift
+                if x_shifted.max() < lon_min - buffer or x_shifted.min() > lon_max + buffer:
+                    continue
+                traces.append(go.Scatter(
+                    x=x_shifted.tolist(),
+                    y=xy[:, 1].tolist(),
+                    mode="lines",
+                    line=dict(color="white", width=1.5),
+                    opacity=0.8,
+                    showlegend=False,
+                    hoverinfo="skip",
+                    name="coastline",
+                ))
     return traces
 
 
@@ -500,19 +507,25 @@ def render_basemap(lat_min, lat_max, lon_min, lon_max, target_w=512, theme="ligh
     _coast = "#aaaaaa" if _is_dark else "#555555"
     _bg    = "#1a1a1a" if _is_dark else "#ffffff"
 
-    lon_offset = 360 if lon_min > 180 else 0
-    lon_min_180 = lon_min - lon_offset
-    lon_max_180 = lon_max - lon_offset
+    # A lon span of exactly 360 (e.g. 0-360 datasets) makes cartopy normalize
+    # both endpoints to the same longitude, collapsing set_extent to a point.
+    lon_max_c = min(lon_max, lon_min + 359.9)
+    # data_crs is absolute lon/lat; the axes projection is centered on the
+    # extent's midpoint so lon_min lands on the left edge and lon_max on the
+    # right, matching the source image's own pixel convention (e.g. a 0-360
+    # dataset has column 0 = lon 0, not an Atlantic-centered -180..180 view).
+    data_crs = ccrs.PlateCarree()
+    proj = ccrs.PlateCarree(central_longitude=(lon_min + lon_max) / 2.0)
     aspect = (lon_max - lon_min) / max(lat_max - lat_min, 1e-6)
     target_h = max(1, int(target_w / aspect))
 
     fig, ax = plt.subplots(
         figsize=(target_w / 100, target_h / 100), dpi=100,
-        subplot_kw={"projection": ccrs.PlateCarree()},
+        subplot_kw={"projection": proj},
     )
     fig.patch.set_facecolor(_bg)
     ax.set_facecolor(_bg)
-    ax.set_extent([lon_min_180, lon_max_180, lat_min, lat_max], crs=ccrs.PlateCarree())
+    ax.set_extent([lon_min, lon_max_c, lat_min, lat_max], crs=data_crs)
     ax.add_feature(cfeature.OCEAN.with_scale("110m"),    color=_ocean, zorder=0)
     ax.add_feature(cfeature.LAND.with_scale("110m"),     color=_land,  zorder=1)
     ax.add_feature(cfeature.COASTLINE.with_scale("110m"), edgecolor=_coast, linewidth=0.8, zorder=2)
