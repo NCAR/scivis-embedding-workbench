@@ -159,7 +159,8 @@
           0,
           24,
           48
-        ]
+        ],
+        "scrollable": true
       },
       {
         "position": null
