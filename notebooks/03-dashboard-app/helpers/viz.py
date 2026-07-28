@@ -588,6 +588,7 @@ def build_gallery_figure(thumb_arrays, captions, n_cols, thumb_w, thumb_h, theme
             visible=False, range=[-n_rows * cell_h, 5],
             scaleanchor="x", scaleratio=1, fixedrange=True,
         ),
+        autosize=True,
         height=n_rows * cell_h + 20,
         margin=dict(l=0, r=0, t=0, b=0),
         clickmode="event+select",

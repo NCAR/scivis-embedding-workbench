@@ -1538,9 +1538,14 @@ def _(
         ss_gallery_plot = mo.ui.plotly(_gallery_fig)
 
         _visual_tab = mo.vstack([ss_gallery_render["status"], ss_gallery_plot])
+        # Fix the tab panel's height to the (taller) gallery figure so
+        # switching to the Data tab's (shorter) table doesn't visibly
+        # resize the panel — it just scrolls within a stable frame.
+        _panel_h = (_gallery_fig.layout.height or 400) + 60
+        _tabs = mo.ui.tabs({"Visuals": _visual_tab, "Data": ss_gallery_render["data_tab"]})
         ss_gallery_ui = mo.vstack([
             mo.hstack([ss_similarity_toggle], justify="end"),
-            mo.ui.tabs({"Visuals": _visual_tab, "Data": ss_gallery_render["data_tab"]}),
+            mo.Html(f'<div style="min-height:{_panel_h}px;max-height:{_panel_h}px;overflow-y:auto;">{_tabs.text}</div>'),
         ])
     return ss_gallery_plot, ss_gallery_ui
 
@@ -1689,11 +1694,20 @@ def _(
             "Settings": mo.vstack([ss_search_mode, ss_n_similar_images, ss_n_similar_patches, ss_max_gallery, ss_refine_factor, ss_similarity_toggle, ss_patch_color, ss_patch_thickness]),
         })
         _gallery = ss_gallery_ui if ss_gallery_ui is not None else mo.md("")
-        # Composed with mo.hstack/mo.vstack (not raw-HTML .text splicing) to
-        # keep nested UI elements reactive. ss_fullres_ui is always a valid
-        # element (placeholder or the preview), never None.
+        # ss_fullres_ui is always a valid element (placeholder or the
+        # preview), never None, and no longer contains a button (the Close
+        # button was removed), so raw-HTML .text splicing is safe here.
+        # mo.hstack's automatic min-width:0 fix only applies to children
+        # that are themselves nested mo.hstack/mo.vstack results — it skips
+        # _search_panel (a mo.ui.tabs), so its fixed-width plots (~600px)
+        # were preventing that column from shrinking and pushing the
+        # gallery column off the right edge on narrower viewports. Explicit
+        # flex divs with min-width:0 (matching the Explore tab's pattern)
+        # let both columns actually shrink to fit.
         _gallery_col = mo.vstack([ss_fullres_ui, _gallery], gap=1)
-        _items.append(mo.hstack([_search_panel, _gallery_col], align="start", gap=1, widths="equal"))
+        _s = f'<div style="flex:1 1 0;min-width:0;overflow:auto;">{_search_panel.text}</div>'
+        _g = f'<div style="flex:1 1 0;min-width:0;overflow:auto;">{_gallery_col.text}</div>'
+        _items.append(mo.Html(f'<div style="display:flex;align-items:flex-start;gap:8px;width:100%;">{_s}{_g}</div>'))
     elif ss_gallery_ui is not None:
         _items.append(ss_gallery_ui)
     spatial_search_tab = mo.vstack(_items)
