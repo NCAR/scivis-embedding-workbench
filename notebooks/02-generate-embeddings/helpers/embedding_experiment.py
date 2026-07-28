@@ -228,6 +228,27 @@ def load_config(db_uri, config_table_name: str) -> dict:
     return dict(zip(df["key"], df["value"]))
 
 
+def pick_num_sub_vectors(embedding_dim: int, sub_vector_dim: int = 8) -> int:
+    """Choose an IVF-PQ num_sub_vectors that divides embedding_dim evenly.
+
+    LanceDB requires embedding_dim % num_sub_vectors == 0. Aims for
+    `sub_vector_dim` dimensions per sub-vector (768 -> 96, 1024 -> 128) and
+    falls back to the nearest valid divisor when that doesn't divide evenly.
+
+    Raises ValueError if embedding_dim is not a positive int.
+    """
+    if not isinstance(embedding_dim, int) or embedding_dim <= 0:
+        raise ValueError(f"embedding_dim must be a positive int, got {embedding_dim!r}")
+
+    target = max(1, round(embedding_dim / sub_vector_dim))
+    if embedding_dim % target == 0:
+        return target
+
+    divisors = [d for d in range(1, embedding_dim + 1) if embedding_dim % d == 0]
+    # Ties break toward the larger divisor (smaller sub-vectors, finer quantization)
+    return min(divisors, key=lambda d: (abs(d - target), -d))
+
+
 def upsert_config(db_uri, config_table_name: str, updates: dict) -> None:
     """Upsert key/value pairs into an existing config table."""
     db = lancedb.connect(str(db_uri))

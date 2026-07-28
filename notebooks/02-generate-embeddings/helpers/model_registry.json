@@ -15,6 +15,14 @@
     "default_workers": 5,
     "default_scan_batch": 1000
   },
+  "dinov3_sat_rect": {
+    "script": "v5_dino_embeddings_lancedb.py",
+    "default_model": "vit_large_patch16_dinov3.sat493m",
+    "description": "DINOv3 ViT-L pretrained on SAT-493M satellite imagery (RGB, 0.6 m Maxar); rectangular support. Gated on HuggingFace.",
+    "default_batch": 32,
+    "default_workers": 5,
+    "default_scan_batch": 1000
+  },
   "openclip": {
     "script": "v1_openclip_embeddings_lancedb.py",
     "default_model": "ViT-L-14",
