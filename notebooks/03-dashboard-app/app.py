@@ -13,7 +13,7 @@ def _():
     import pandas as pd
     import polars as pl
     import matplotlib.pyplot as plt
-    from wigglystuff import ParallelCoordinates
+    from wigglystuff import ParallelCoordinates, ColorPicker
 
     from helpers.data import (
         list_experiments, load_config_dict, resolve_source_path, get_spatial_extent,
@@ -30,6 +30,7 @@ def _():
     )
 
     return (
+        ColorPicker,
         ParallelCoordinates,
         annotate_patch_image,
         apply_brush_filter,
@@ -966,7 +967,7 @@ def _(
 
 
 @app.cell
-def _(mo):
+def _(ColorPicker, mo):
     ss_n_similar_images = mo.ui.number(start=1, stop=500, step=1, value=50, label="Similar images")
     ss_n_similar_patches = mo.ui.number(start=10, stop=10000, step=10, value=100, label="Max patches")
     ss_max_gallery = mo.ui.number(start=4, stop=100, step=4, value=25, label="Gallery cap")
@@ -977,10 +978,17 @@ def _(mo):
         value="Image first",
         label="Search mode",
     )
+    ss_patch_color = mo.ui.anywidget(ColorPicker(color="#000000"))
+    ss_patch_thickness = mo.ui.slider(
+        start=1, stop=10, step=1, value=2,
+        label="Matched patch box thickness", show_value=True,
+    )
     return (
         ss_max_gallery,
         ss_n_similar_images,
         ss_n_similar_patches,
+        ss_patch_color,
+        ss_patch_thickness,
         ss_refine_factor,
         ss_search_mode,
         ss_similarity_toggle,
@@ -1301,7 +1309,6 @@ def _(
 @app.cell
 def _(
     annotate_patch_image,
-    build_gallery_figure,
     compute_thumb_dimensions,
     get_ss_spatial_filter,
     map_theme,
@@ -1312,6 +1319,8 @@ def _(
     ss_init,
     ss_max_gallery,
     ss_metadata_filter,
+    ss_patch_color,
+    ss_patch_thickness,
     ss_similarity_toggle,
     ss_top_df,
 ):
@@ -1319,10 +1328,23 @@ def _(
     from PIL import Image as _Image_g
     import pandas as _pd_g
 
+    _box_color = (
+        ss_patch_color.value.get("color", "#000000")
+        if isinstance(ss_patch_color.value, dict) else "#000000"
+    )
+
     if ss_top_df is None or ss_init is None:
-        ss_gallery_ui = None
         ss_gallery_meta = None
-        ss_gallery_plot = None
+        ss_gallery_render = None
+    elif len(ss_top_df) == 0:
+        # e.g. a spatial-region selection with no matching patches. Handled
+        # distinctly from "no search run yet" (above) so the gallery can
+        # show a "no results" message instead of staying blank — and
+        # separately from the branch below because pc.field(...).isin([])
+        # raises ArrowTypeError (pyarrow can't infer a type from an empty
+        # list), which the id-lookup scanners there would otherwise hit.
+        ss_gallery_meta = None
+        ss_gallery_render = {"empty": True}
     else:
         _d = ss_init
         _MAX = int(ss_max_gallery.value)
@@ -1405,6 +1427,7 @@ def _(
             _blob = annotate_patch_image(
                 _r["image_blob"], _data["patch_index"], _matched,
                 _n_rows, _n_cols, ss_similarity_toggle.value,
+                box_color=_box_color, box_width=ss_patch_thickness.value,
             )
             _im_t = _Image_g.open(_io_g.BytesIO(_blob)).resize((_thumb_w, _thumb_h), _Image_g.LANCZOS).convert("RGB")
             _thumb_arrays.append(np.array(_im_t))
@@ -1416,12 +1439,6 @@ def _(
             )
             _dt_labels[_img_id] = _dt_label
             _captions.append(f"{_dt_label}  ·  d={_data['_distance']:.2f}")
-
-        _gallery_fig = build_gallery_figure(
-            _thumb_arrays, _captions, n_cols=5,
-            thumb_w=_thumb_w, thumb_h=_thumb_h, theme=_theme,
-        )
-        ss_gallery_plot = mo.ui.plotly(_gallery_fig)
 
         _n_patches = len(ss_top_df)
         _n_images = ss_top_df["image_id"].nunique()
@@ -1468,13 +1485,64 @@ def _(
             .reset_index(drop=True)
         )
 
-        _visual_tab = mo.vstack([_status, ss_gallery_plot])
         _data_tab = mo.ui.table(_df_merged, selection=None)
+
+        # Bundled (rather than built here) so the cheap step of rebuilding
+        # the figure with a selection highlight — see the cell below —
+        # doesn't have to redo this cell's expensive per-thumbnail fetch/
+        # annotate/resize work on every click.
+        ss_gallery_render = {
+            "thumb_arrays": _thumb_arrays,
+            "captions": _captions,
+            "theme": _theme,
+            "thumb_w": _thumb_w,
+            "thumb_h": _thumb_h,
+            "status": _status,
+            "data_tab": _data_tab,
+        }
+    return ss_gallery_meta, ss_gallery_render
+
+
+@app.cell
+def _(
+    build_gallery_figure,
+    get_ss_selected_id,
+    mo,
+    ss_gallery_meta,
+    ss_gallery_render,
+    ss_similarity_toggle,
+):
+    # Split out from the cell above so that highlighting the selected
+    # thumbnail (which changes on every gallery click) only rebuilds the
+    # cheap Plotly figure from already-computed thumbnail arrays, instead
+    # of redoing that cell's LanceDB fetch + PIL annotate/resize per image.
+    if ss_gallery_render is None:
+        ss_gallery_plot = None
+        ss_gallery_ui = None
+    elif ss_gallery_render.get("empty"):
+        ss_gallery_plot = None
+        ss_gallery_ui = mo.callout(
+            mo.md("*No results — no patches matched this query with the current filters/region.*"),
+            kind="warn",
+        )
+    else:
+        _sel_id = get_ss_selected_id()
+        _gallery_ids = ss_gallery_meta["gallery_ids"]
+        _selected_idx = _gallery_ids.index(_sel_id) if _sel_id in _gallery_ids else None
+
+        _gallery_fig = build_gallery_figure(
+            ss_gallery_render["thumb_arrays"], ss_gallery_render["captions"], n_cols=5,
+            thumb_w=ss_gallery_render["thumb_w"], thumb_h=ss_gallery_render["thumb_h"],
+            theme=ss_gallery_render["theme"], selected_index=_selected_idx,
+        )
+        ss_gallery_plot = mo.ui.plotly(_gallery_fig)
+
+        _visual_tab = mo.vstack([ss_gallery_render["status"], ss_gallery_plot])
         ss_gallery_ui = mo.vstack([
             mo.hstack([ss_similarity_toggle], justify="end"),
-            mo.ui.tabs({"Visuals": _visual_tab, "Data": _data_tab}),
+            mo.ui.tabs({"Visuals": _visual_tab, "Data": ss_gallery_render["data_tab"]}),
         ])
-    return ss_gallery_meta, ss_gallery_plot, ss_gallery_ui
+    return ss_gallery_plot, ss_gallery_ui
 
 
 @app.cell
@@ -1505,6 +1573,8 @@ def _(
     mo,
     src_img_tbl,
     ss_gallery_meta,
+    ss_patch_color,
+    ss_patch_thickness,
     ss_similarity_toggle,
 ):
     # Full-resolution view fetched lazily — only for the one thumbnail the
@@ -1512,6 +1582,10 @@ def _(
     # (placeholder when nothing valid is selected, e.g. before any click or
     # after a new search invalidates the old selection) instead of a
     # show/hide toggle, since that needs no dismiss control.
+    _box_color = (
+        ss_patch_color.value.get("color", "#000000")
+        if isinstance(ss_patch_color.value, dict) else "#000000"
+    )
     _sel_id = get_ss_selected_id()
     _valid = (
         _sel_id is not None
@@ -1555,6 +1629,7 @@ def _(
                 _blob, _patch_indices, _matched,
                 ss_gallery_meta["n_rows"], ss_gallery_meta["n_cols"],
                 ss_similarity_toggle.value,
+                box_color=_box_color, box_width=ss_patch_thickness.value,
             )
             _b64 = _base64_f.b64encode(_annotated).decode()
             _dt_label = ss_gallery_meta["dates"].get(_sel_id, "—")
@@ -1585,6 +1660,8 @@ def _(
     ss_metadata_filter,
     ss_n_similar_images,
     ss_n_similar_patches,
+    ss_patch_color,
+    ss_patch_thickness,
     ss_refine_factor,
     ss_search_mode,
     ss_similarity_toggle,
@@ -1609,7 +1686,7 @@ def _(
                 ss_spatial_filter_map,
             ]),
             "Data Filter": ss_metadata_filter,
-            "Settings": mo.vstack([ss_search_mode, ss_n_similar_images, ss_n_similar_patches, ss_max_gallery, ss_refine_factor, ss_similarity_toggle]),
+            "Settings": mo.vstack([ss_search_mode, ss_n_similar_images, ss_n_similar_patches, ss_max_gallery, ss_refine_factor, ss_similarity_toggle, ss_patch_color, ss_patch_thickness]),
         })
         _gallery = ss_gallery_ui if ss_gallery_ui is not None else mo.md("")
         # Composed with mo.hstack/mo.vstack (not raw-HTML .text splicing) to

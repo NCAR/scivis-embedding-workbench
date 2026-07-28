@@ -484,11 +484,14 @@ def apply_similarity_overlay(image_blob, matched_patch_distances, n_rows, n_cols
     return buf.getvalue()
 
 
-def annotate_patch_image(image_blob, patch_indices, matched_distances, n_rows, n_cols, use_similarity):
+def annotate_patch_image(image_blob, patch_indices, matched_distances, n_rows, n_cols, use_similarity, box_color="black", box_width=2):
     """Annotate an image with matched-patch highlighting: similarity fade or grid boxes.
 
     Shared by the Spatial Search gallery's small preview and its on-demand
-    full-resolution view, so both render identical annotations.
+    full-resolution view, so both render identical annotations. box_color
+    (any PIL-recognized color string, e.g. a "#RRGGBB" hex) and box_width
+    only apply to the grid-box mode — the similarity overlay has no
+    outline to style.
     """
     import io
     from PIL import Image, ImageDraw
@@ -504,13 +507,13 @@ def annotate_patch_image(image_blob, patch_indices, matched_distances, n_rows, n
     for p in map(int, patch_indices):
         pr, pc = p // n_cols, p % n_cols
         box = (pc * patch_w, pr * patch_h, (pc + 1) * patch_w, (pr + 1) * patch_h)
-        draw.rectangle(box, outline=(0, 0, 0), width=2)
+        draw.rectangle(box, outline=box_color, width=box_width)
     buf = io.BytesIO()
     im.save(buf, format="JPEG", quality=85)
     return buf.getvalue()
 
 
-def build_gallery_figure(thumb_arrays, captions, n_cols, thumb_w, thumb_h, theme="light", gap=6, caption_h=16):
+def build_gallery_figure(thumb_arrays, captions, n_cols, thumb_w, thumb_h, theme="light", gap=6, caption_h=16, selected_index=None):
     """Grid of thumbnail images (each with a visible caption below it) as one
     clickable Plotly figure.
 
@@ -563,7 +566,23 @@ def build_gallery_figure(thumb_arrays, captions, n_cols, thumb_w, thumb_h, theme
         hovertemplate="<extra></extra>",
     ))
 
+    _shapes = []
+    if selected_index is not None and 0 <= selected_index < n_items:
+        _row, _col = divmod(selected_index, n_cols)
+        _x0 = _col * cell_w
+        _y0 = -_row * cell_h
+        _pad = 3
+        _shapes.append(dict(
+            type="rect",
+            x0=_x0 - _pad, x1=_x0 + thumb_w + _pad,
+            y0=_y0 + _pad, y1=_y0 - thumb_h - _pad,
+            line=dict(color="red", width=3),
+            fillcolor="rgba(0,0,0,0)",
+            layer="above",
+        ))
+
     fig.update_layout(
+        shapes=_shapes,
         xaxis=dict(visible=False, range=[0, n_cols * cell_w], fixedrange=True),
         yaxis=dict(
             visible=False, range=[-n_rows * cell_h, 5],
