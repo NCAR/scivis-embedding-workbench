@@ -484,6 +484,102 @@ def apply_similarity_overlay(image_blob, matched_patch_distances, n_rows, n_cols
     return buf.getvalue()
 
 
+def annotate_patch_image(image_blob, patch_indices, matched_distances, n_rows, n_cols, use_similarity):
+    """Annotate an image with matched-patch highlighting: similarity fade or grid boxes.
+
+    Shared by the Spatial Search gallery's small preview and its on-demand
+    full-resolution view, so both render identical annotations.
+    """
+    import io
+    from PIL import Image, ImageDraw
+
+    if use_similarity:
+        return apply_similarity_overlay(image_blob, matched_distances, n_rows, n_cols)
+
+    im = Image.open(io.BytesIO(image_blob)).convert("RGB")
+    iw, ih = im.size
+    patch_w = iw // n_cols
+    patch_h = ih // n_rows
+    draw = ImageDraw.Draw(im)
+    for p in map(int, patch_indices):
+        pr, pc = p // n_cols, p % n_cols
+        box = (pc * patch_w, pr * patch_h, (pc + 1) * patch_w, (pr + 1) * patch_h)
+        draw.rectangle(box, outline=(0, 0, 0), width=2)
+    buf = io.BytesIO()
+    im.save(buf, format="JPEG", quality=85)
+    return buf.getvalue()
+
+
+def build_gallery_figure(thumb_arrays, captions, n_cols, thumb_w, thumb_h, theme="light", gap=6, caption_h=16):
+    """Grid of thumbnail images (each with a visible caption below it) as one
+    clickable Plotly figure.
+
+    Each thumbnail is a go.Image trace with a text annotation underneath;
+    a single invisible go.Heatmap trace layered on top encodes each cell's
+    flat index in `z`, giving a real click target read via
+    mo.ui.plotly(...).value — the same technique build_geo_patch_figure
+    uses for per-patch clicks, chosen because marimo's built-in button
+    renders inside a Shadow DOM that external CSS can't reach, so an
+    overlay-button click target can't be sized/hidden to match an
+    arbitrary thumbnail.
+    """
+    import numpy as np
+    import plotly.graph_objects as go
+
+    _is_dark = (theme == "dark")
+    _bg = "#1a1a1a" if _is_dark else "white"
+    _text = "#e0e0e0" if _is_dark else "#222222"
+
+    n_items = len(thumb_arrays)
+    n_cols = max(1, min(n_cols, n_items))
+    n_rows = -(-n_items // n_cols)  # ceil division
+
+    cell_w = thumb_w + gap
+    cell_h = thumb_h + caption_h + gap
+
+    fig = go.Figure()
+    for i, arr in enumerate(thumb_arrays):
+        row, col = divmod(i, n_cols)
+        x0 = col * cell_w
+        y0 = -row * cell_h
+        fig.add_trace(go.Image(z=arr, x0=x0, y0=y0, dx=1, dy=-1, hoverinfo="skip"))
+        fig.add_annotation(
+            x=x0 + thumb_w / 2, y=y0 - thumb_h - 2,
+            xanchor="center", yanchor="top", showarrow=False,
+            text=captions[i] if i < len(captions) else "",
+            font=dict(size=10, color=_text),
+        )
+
+    hm_x = [col * cell_w + thumb_w / 2 for col in range(n_cols)]
+    hm_y = [-row * cell_h - (thumb_h + caption_h) / 2 for row in range(n_rows)]
+    z = np.full((n_rows, n_cols), -1)
+    for i in range(n_items):
+        row, col = divmod(i, n_cols)
+        z[row, col] = i
+    fig.add_trace(go.Heatmap(
+        z=z, x=hm_x, y=hm_y,
+        opacity=0.01, showscale=False,
+        colorscale=[[0, "rgba(0,0,0,0)"], [1, "rgba(0,0,0,0)"]],
+        hovertemplate="<extra></extra>",
+    ))
+
+    fig.update_layout(
+        xaxis=dict(visible=False, range=[0, n_cols * cell_w], fixedrange=True),
+        yaxis=dict(
+            visible=False, range=[-n_rows * cell_h, 5],
+            scaleanchor="x", scaleratio=1, fixedrange=True,
+        ),
+        height=n_rows * cell_h + 20,
+        margin=dict(l=0, r=0, t=0, b=0),
+        clickmode="event+select",
+        dragmode="pan",
+        plot_bgcolor=_bg,
+        paper_bgcolor=_bg,
+        showlegend=False,
+    )
+    return fig
+
+
 def render_basemap(lat_min, lat_max, lon_min, lon_max, target_w=512, theme="light"):
     """Render a cartopy land/ocean map of the extent as a numpy RGB array."""
     import io

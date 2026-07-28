@@ -26,14 +26,15 @@ def _():
         composite_attention_overlay, render_thumbnail_gallery,
         build_coastline_traces, make_patch_heatmap, make_selection_shape,
         build_geo_patch_figure, apply_similarity_overlay, render_basemap,
-        build_spatial_filter_shapes,
+        build_spatial_filter_shapes, annotate_patch_image, build_gallery_figure,
     )
 
     return (
         ParallelCoordinates,
+        annotate_patch_image,
         apply_brush_filter,
-        apply_similarity_overlay,
         build_coastline_traces,
+        build_gallery_figure,
         build_geo_patch_figure,
         build_spatial_filter_shapes,
         composite_attention_overlay,
@@ -909,11 +910,14 @@ def _(mo):
     get_ss_init, set_ss_init = mo.state(None)
     get_ss_patch, set_ss_patch = mo.state(None)
     get_ss_spatial_filter, set_ss_spatial_filter = mo.state(None)
+    get_ss_selected_id, set_ss_selected_id = mo.state(None)
     return (
         get_ss_patch,
+        get_ss_selected_id,
         get_ss_spatial_filter,
         set_ss_init,
         set_ss_patch,
+        set_ss_selected_id,
         set_ss_spatial_filter,
     )
 
@@ -1296,12 +1300,13 @@ def _(
 
 @app.cell
 def _(
-    apply_similarity_overlay,
+    annotate_patch_image,
+    build_gallery_figure,
     compute_thumb_dimensions,
     get_ss_spatial_filter,
     map_theme,
     mo,
-    render_thumbnail_gallery,
+    np,
     src_img_tbl,
     ss_available_ids,
     ss_init,
@@ -1311,11 +1316,13 @@ def _(
     ss_top_df,
 ):
     import io as _io_g
-    from PIL import Image as _Image_g, ImageDraw as _ImageDraw_g
+    from PIL import Image as _Image_g
     import pandas as _pd_g
 
     if ss_top_df is None or ss_init is None:
         ss_gallery_ui = None
+        ss_gallery_meta = None
+        ss_gallery_plot = None
     else:
         _d = ss_init
         _MAX = int(ss_max_gallery.value)
@@ -1372,47 +1379,50 @@ def _(
             .set_index("id")
         )
 
-        _thumbs = []
-        _full_blobs = []
-        for _img_id, _data in _groups.iterrows():
+        _theme = "dark" if map_theme.value else "light"
+
+        # Only the small preview is built eagerly here. The full-resolution
+        # annotated image is fetched on demand (see the cell below) when a
+        # thumbnail is clicked — avoids embedding a full-res copy of every
+        # gallery-capped row up front. Click detection uses the same
+        # invisible-heatmap-over-images technique as build_geo_patch_figure
+        # (read via ss_gallery_plot.value in the next cell): mo.ui.button
+        # can't be used as an overlay click target because its internals
+        # render inside a Shadow DOM that external CSS can't reach/resize.
+        _gallery_ids = list(_groups.index)
+        _thumb_arrays = []
+        _captions = []
+        _dt_labels = {}
+        for _img_id in _gallery_ids:
+            _data = _groups.loc[_img_id]
             _r = _blob_batch.loc[_img_id]
 
-            if ss_similarity_toggle.value:
-                _matched = {
-                    int(p): _patch_dists[(_img_id, int(p))]
-                    for p in _data["patch_index"]
-                    if (_img_id, int(p)) in _patch_dists
-                }
-                _blob = apply_similarity_overlay(_r["image_blob"], _matched, _n_rows, _n_cols)
-            else:
-                _im = _Image_g.open(_io_g.BytesIO(_r["image_blob"])).convert("RGB")
-                _tw, _th = _im.size
-                _patch_w = _tw // _n_cols
-                _patch_h = _th // _n_rows
-                _draw = _ImageDraw_g.Draw(_im)
-                for _p in map(int, _data["patch_index"]):
-                    _pr, _pc = _p // _n_cols, _p % _n_cols
-                    _bx = (_pc * _patch_w, _pr * _patch_h, (_pc + 1) * _patch_w, (_pr + 1) * _patch_h)
-                    _draw.rectangle(_bx, outline=(0, 0, 0), width=2)
-                _buf = _io_g.BytesIO()
-                _im.save(_buf, format="JPEG", quality=85)
-                _blob = _buf.getvalue()
-
-            # Resize to display dimensions before base64-encoding to keep HTML output small
-            _im_t = _Image_g.open(_io_g.BytesIO(_blob)).resize((_thumb_w, _thumb_h), _Image_g.LANCZOS)
-            _buf_t = _io_g.BytesIO()
-            _im_t.save(_buf_t, format="JPEG", quality=82)
+            _matched = {
+                int(p): _patch_dists[(_img_id, int(p))]
+                for p in _data["patch_index"]
+                if (_img_id, int(p)) in _patch_dists
+            }
+            _blob = annotate_patch_image(
+                _r["image_blob"], _data["patch_index"], _matched,
+                _n_rows, _n_cols, ss_similarity_toggle.value,
+            )
+            _im_t = _Image_g.open(_io_g.BytesIO(_blob)).resize((_thumb_w, _thumb_h), _Image_g.LANCZOS).convert("RGB")
+            _thumb_arrays.append(np.array(_im_t))
             _dt = _date_map.get(_img_id)
             _dt_label = (
-                _dt.strftime("%Y-%m-%d")
+                _dt.strftime("%Y-%m-%d %H:%M")
                 if (_dt is not None and hasattr(_dt, "strftime") and _pd_g.notna(_dt))
                 else "—"
             )
-            _thumbs.append((f"{_dt_label}  ·  d={_data['_distance']:.2f}", _buf_t.getvalue(), _dt))
-            # Keep the pre-resize (annotated) blob for the click-to-zoom lightbox
-            _full_blobs.append(_blob)
+            _dt_labels[_img_id] = _dt_label
+            _captions.append(f"{_dt_label}  ·  d={_data['_distance']:.2f}")
 
-        _theme = "dark" if map_theme.value else "light"
+        _gallery_fig = build_gallery_figure(
+            _thumb_arrays, _captions, n_cols=5,
+            thumb_w=_thumb_w, thumb_h=_thumb_h, theme=_theme,
+        )
+        ss_gallery_plot = mo.ui.plotly(_gallery_fig)
+
         _n_patches = len(ss_top_df)
         _n_images = ss_top_df["image_id"].nunique()
         _n_shown = len(_groups)
@@ -1429,11 +1439,14 @@ def _(
 
         _status = mo.md(f"**{_n_patches} patches** across **{_n_images} images** — showing **{_n_shown}**{_cap}{_filter_note}")
 
-        _, _gallery_html = render_thumbnail_gallery(
-            _thumbs, _n_shown, _MAX, theme=_theme,
-            thumb_w=_thumb_w, thumb_h=_thumb_h,
-            full_blobs=_full_blobs,
-        )
+        ss_gallery_meta = {
+            "groups": _groups,
+            "patch_dists": _patch_dists,
+            "n_rows": _n_rows,
+            "n_cols": _n_cols,
+            "gallery_ids": _gallery_ids,
+            "dates": _dt_labels,
+        }
 
         _df_merged = (
             ss_top_df.groupby("image_id")
@@ -1455,13 +1468,27 @@ def _(
             .reset_index(drop=True)
         )
 
-        _visual_tab = mo.vstack([_status, mo.Html(_gallery_html)])
+        _visual_tab = mo.vstack([_status, ss_gallery_plot])
         _data_tab = mo.ui.table(_df_merged, selection=None)
         ss_gallery_ui = mo.vstack([
             mo.hstack([ss_similarity_toggle], justify="end"),
             mo.ui.tabs({"Visuals": _visual_tab, "Data": _data_tab}),
         ])
-    return (ss_gallery_ui,)
+    return ss_gallery_meta, ss_gallery_plot, ss_gallery_ui
+
+
+@app.cell
+def _(set_ss_selected_id, ss_gallery_meta, ss_gallery_plot):
+    # Translate a gallery thumbnail click into the selected image id — same
+    # click-via-invisible-heatmap technique as the patch-selection map above.
+    if ss_gallery_plot is not None and ss_gallery_meta is not None:
+        _click = ss_gallery_plot.value
+        if isinstance(_click, list) and _click and "z" in _click[0]:
+            _idx = int(_click[0]["z"])
+            _ids = ss_gallery_meta["gallery_ids"]
+            if 0 <= _idx < len(_ids):
+                set_ss_selected_id(_ids[_idx])
+    return
 
 
 @app.cell
@@ -1473,11 +1500,82 @@ def _():
 
 @app.cell
 def _(
+    annotate_patch_image,
+    get_ss_selected_id,
+    mo,
+    src_img_tbl,
+    ss_gallery_meta,
+    ss_similarity_toggle,
+):
+    # Full-resolution view fetched lazily — only for the one thumbnail the
+    # user clicked, not eagerly for the whole gallery cap. Always visible
+    # (placeholder when nothing valid is selected, e.g. before any click or
+    # after a new search invalidates the old selection) instead of a
+    # show/hide toggle, since that needs no dismiss control.
+    _sel_id = get_ss_selected_id()
+    _valid = (
+        _sel_id is not None
+        and ss_gallery_meta is not None
+        and src_img_tbl is not None
+        and _sel_id in ss_gallery_meta["groups"].index
+    )
+    if not _valid:
+        ss_fullres_ui = mo.callout(
+            mo.md("*Click a gallery thumbnail to preview it here in full resolution.*"),
+            kind="neutral",
+        )
+    else:
+        import base64 as _base64_f
+        import pyarrow.compute as _pc_f
+
+        _row = (
+            src_img_tbl.to_lance()
+            .scanner(
+                columns=["id", "image_blob"],
+                filter=_pc_f.field("id").isin([_sel_id]),
+            )
+            .to_table()
+            .to_pandas()
+        )
+        if len(_row) == 0:
+            ss_fullres_ui = mo.callout(
+                mo.md("*Click a gallery thumbnail to preview it here in full resolution.*"),
+                kind="neutral",
+            )
+        else:
+            _blob = _row.iloc[0]["image_blob"]
+            _patch_indices = ss_gallery_meta["groups"].loc[_sel_id, "patch_index"]
+            _patch_dists = ss_gallery_meta["patch_dists"]
+            _matched = {
+                int(p): _patch_dists[(_sel_id, int(p))]
+                for p in _patch_indices
+                if (_sel_id, int(p)) in _patch_dists
+            }
+            _annotated = annotate_patch_image(
+                _blob, _patch_indices, _matched,
+                ss_gallery_meta["n_rows"], ss_gallery_meta["n_cols"],
+                ss_similarity_toggle.value,
+            )
+            _b64 = _base64_f.b64encode(_annotated).decode()
+            _dt_label = ss_gallery_meta["dates"].get(_sel_id, "—")
+            ss_fullres_ui = mo.vstack([
+                mo.md(f"**{_dt_label}**"),
+                mo.Html(
+                    f'<img src="data:image/jpeg;base64,{_b64}" '
+                    f'style="max-width:100%;border-radius:4px;"/>'
+                ),
+            ])
+    return (ss_fullres_ui,)
+
+
+@app.cell
+def _(
     get_ss_patch,
     get_ss_spatial_filter,
     mo,
     set_ss_spatial_filter,
     ss_date_picker,
+    ss_fullres_ui,
     ss_gallery_ui,
     ss_geo_patch_map,
     ss_init,
@@ -1514,13 +1612,11 @@ def _(
             "Settings": mo.vstack([ss_search_mode, ss_n_similar_images, ss_n_similar_patches, ss_max_gallery, ss_refine_factor, ss_similarity_toggle]),
         })
         _gallery = ss_gallery_ui if ss_gallery_ui is not None else mo.md("")
-        _s = f'<div style="flex:1 1 0;min-width:0;overflow:auto;">{_search_panel.text}</div>'
-        _g = (
-            f'<div style="flex:1 1 0;min-width:0;">'
-            f'<div style="margin-top:8px;overflow:auto;">{_gallery.text}</div>'
-            f'</div>'
-        )
-        _items.append(mo.Html(f'<div style="display:flex;align-items:flex-start;gap:8px;">{_s}{_g}</div>'))
+        # Composed with mo.hstack/mo.vstack (not raw-HTML .text splicing) to
+        # keep nested UI elements reactive. ss_fullres_ui is always a valid
+        # element (placeholder or the preview), never None.
+        _gallery_col = mo.vstack([ss_fullres_ui, _gallery], gap=1)
+        _items.append(mo.hstack([_search_panel, _gallery_col], align="start", gap=1, widths="equal"))
     elif ss_gallery_ui is not None:
         _items.append(ss_gallery_ui)
     spatial_search_tab = mo.vstack(_items)
