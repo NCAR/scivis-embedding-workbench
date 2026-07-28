@@ -983,7 +983,12 @@ def _(ColorPicker, mo):
         start=1, stop=10, step=1, value=2,
         label="Matched patch box thickness", show_value=True,
     )
+    ss_gallery_cols = mo.ui.slider(
+        start=1, stop=8, step=1, value=3,
+        label="Gallery columns", show_value=True,
+    )
     return (
+        ss_gallery_cols,
         ss_max_gallery,
         ss_n_similar_images,
         ss_n_similar_patches,
@@ -1316,6 +1321,7 @@ def _(
     np,
     src_img_tbl,
     ss_available_ids,
+    ss_gallery_cols,
     ss_init,
     ss_max_gallery,
     ss_metadata_filter,
@@ -1362,7 +1368,15 @@ def _(
             "lat_min": _d["lat_min"], "lat_max": _d["lat_max"],
             "lon_min": _d["lon_min"], "lon_max": _d["lon_max"],
         }
-        _thumb_w, _thumb_h = compute_thumb_dimensions(_spatial_extent, base_size=192)
+        # base_size sized to fill an assumed ~1000px gallery column at the
+        # user-chosen column count (Settings → Gallery columns), rather than
+        # a fixed 192px that left blank space around a smaller-than-
+        # container grid. autosize + the panel's min-width:0 still shrink
+        # the whole grid uniformly if the actual column ends up narrower.
+        _gallery_n_cols = int(ss_gallery_cols.value)
+        _gallery_target_w = 1000
+        _thumb_base_size = int((_gallery_target_w - _gallery_n_cols * 6) / _gallery_n_cols)
+        _thumb_w, _thumb_h = compute_thumb_dimensions(_spatial_extent, base_size=_thumb_base_size)
 
         _patch_dists = {
             (row["image_id"], int(row["patch_index"])): row["_distance"]
@@ -1497,6 +1511,7 @@ def _(
             "theme": _theme,
             "thumb_w": _thumb_w,
             "thumb_h": _thumb_h,
+            "n_cols": _gallery_n_cols,
             "status": _status,
             "data_tab": _data_tab,
         }
@@ -1531,21 +1546,31 @@ def _(
         _selected_idx = _gallery_ids.index(_sel_id) if _sel_id in _gallery_ids else None
 
         _gallery_fig = build_gallery_figure(
-            ss_gallery_render["thumb_arrays"], ss_gallery_render["captions"], n_cols=5,
+            ss_gallery_render["thumb_arrays"], ss_gallery_render["captions"],
+            n_cols=ss_gallery_render["n_cols"],
             thumb_w=ss_gallery_render["thumb_w"], thumb_h=ss_gallery_render["thumb_h"],
             theme=ss_gallery_render["theme"], selected_index=_selected_idx,
         )
         ss_gallery_plot = mo.ui.plotly(_gallery_fig)
 
-        _visual_tab = mo.vstack([ss_gallery_render["status"], ss_gallery_plot])
-        # Fix the tab panel's height to the (taller) gallery figure so
-        # switching to the Data tab's (shorter) table doesn't visibly
-        # resize the panel — it just scrolls within a stable frame.
-        _panel_h = (_gallery_fig.layout.height or 400) + 60
-        _tabs = mo.ui.tabs({"Visuals": _visual_tab, "Data": ss_gallery_render["data_tab"]})
+        # Cap each panel's own content (not the whole tabs component) at a
+        # shared height with its own scrollbar, so the "Visuals | Data"
+        # switcher — kept as a plain, un-spliced mo.ui.tabs — stays fixed at
+        # the same level as the Similarity overlay toggle instead of
+        # scrolling away with the gallery content, and switching tabs
+        # doesn't resize the panel since both cap at the same height.
+        _panel_h = min((_gallery_fig.layout.height or 400) + 40, 650)
+        _visual_content = mo.Html(
+            f'<div style="max-height:{_panel_h}px;overflow-y:auto;">{ss_gallery_plot.text}</div>'
+        )
+        _data_content = mo.Html(
+            f'<div style="max-height:{_panel_h}px;overflow-y:auto;">{ss_gallery_render["data_tab"].text}</div>'
+        )
+        _visual_tab = mo.vstack([ss_gallery_render["status"], _visual_content])
+        _tabs = mo.ui.tabs({"Visuals": _visual_tab, "Data": _data_content})
         ss_gallery_ui = mo.vstack([
             mo.hstack([ss_similarity_toggle], justify="end"),
-            mo.Html(f'<div style="min-height:{_panel_h}px;max-height:{_panel_h}px;overflow-y:auto;">{_tabs.text}</div>'),
+            _tabs,
         ])
     return ss_gallery_plot, ss_gallery_ui
 
@@ -1656,6 +1681,7 @@ def _(
     set_ss_spatial_filter,
     ss_date_picker,
     ss_fullres_ui,
+    ss_gallery_cols,
     ss_gallery_ui,
     ss_geo_patch_map,
     ss_init,
@@ -1691,7 +1717,7 @@ def _(
                 ss_spatial_filter_map,
             ]),
             "Data Filter": ss_metadata_filter,
-            "Settings": mo.vstack([ss_search_mode, ss_n_similar_images, ss_n_similar_patches, ss_max_gallery, ss_refine_factor, ss_similarity_toggle, ss_patch_color, ss_patch_thickness]),
+            "Settings": mo.vstack([ss_search_mode, ss_n_similar_images, ss_n_similar_patches, ss_max_gallery, ss_refine_factor, ss_similarity_toggle, ss_patch_color, ss_patch_thickness, ss_gallery_cols]),
         })
         _gallery = ss_gallery_ui if ss_gallery_ui is not None else mo.md("")
         # ss_fullres_ui is always a valid element (placeholder or the

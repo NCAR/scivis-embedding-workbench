@@ -583,11 +583,16 @@ def build_gallery_figure(thumb_arrays, captions, n_cols, thumb_w, thumb_h, theme
 
     fig.update_layout(
         shapes=_shapes,
+        # No scaleanchor: the grid's height is fixed (below) so the Visuals/
+        # Data tabs don't resize on switch, but the actual rendered width is
+        # whatever the flex column autosizes to — locking x/y to a strict
+        # 1:1 pixel scale while height stays fixed fights that and pads the
+        # mismatch with blank space (horizontally if the column ends up
+        # wider than assumed, vertically if narrower). Letting width and
+        # height scale independently avoids that; any resulting stretch is
+        # minor and preferable to a visible gap or crop.
         xaxis=dict(visible=False, range=[0, n_cols * cell_w], fixedrange=True),
-        yaxis=dict(
-            visible=False, range=[-n_rows * cell_h, 5],
-            scaleanchor="x", scaleratio=1, fixedrange=True,
-        ),
+        yaxis=dict(visible=False, range=[-n_rows * cell_h, 5], fixedrange=True),
         autosize=True,
         height=n_rows * cell_h + 20,
         margin=dict(l=0, r=0, t=0, b=0),
