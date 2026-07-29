@@ -1,153 +1,17 @@
-"""Patch-crop helpers for the patch-embedding exploration notebook.
+"""Patch imaging for the patch-embedding exploration notebook.
 
 A ViT patch is `patch_size` pixels square in model space. When the stored image
 is close to the model input size, one patch is only a handful of pixels and is
 unreadable on its own, so everything here is built around cropping a patch
 *with surrounding context* and marking where the actual patch sits inside it.
 
-Geometry is never assumed: the patch grid comes from the experiment config via
-`patch_grid()`, and pixel dimensions are read off the decoded image itself.
+Geometry is never assumed: the patch grid is passed in (see `geometry.py`), and
+pixel dimensions are read off the decoded image itself.
 
-PIL in / PIL out -- no marimo or plotting imports.
+Bytes in / PIL out -- no marimo or plotting imports.
 """
 
-
-def patch_grid(config: dict):
-    """Return (spatial_h, spatial_w) -- the patch grid for this experiment.
-
-    Prefers the attention grid the embedding run recorded. Falls back to
-    deriving it from image dimensions and patch size for configs written before
-    those keys existed. The grid is not assumed square: ERA5 runs are
-    rectangular (e.g. 16x56).
-    """
-    def _as_int(key):
-        try:
-            return int(config.get(key))
-        except (TypeError, ValueError):
-            return None
-
-    h, w = _as_int("attention_spatial_h"), _as_int("attention_spatial_w")
-    if h and w:
-        return h, w
-
-    patch_size = _as_int("patch_size")
-    img_w, img_h = _as_int("image_w"), _as_int("image_h")
-    if patch_size and img_w and img_h:
-        return img_h // patch_size, img_w // patch_size
-
-    raise KeyError(
-        "config has neither attention_spatial_h/w nor image_w/image_h/patch_size; "
-        "cannot determine the patch grid"
-    )
-
-
-def resolve_source_path(experiments_db_path: str, source_path_from_config: str):
-    """Resolve the config's source_path to an absolute path, or None.
-
-    Walks up from the experiments DB until the relative source path resolves,
-    so the same config works from different mount points.
-    """
-    from pathlib import Path
-    p = Path(source_path_from_config)
-    if p.is_absolute():
-        return str(p) if p.exists() else None
-    candidate = Path(experiments_db_path)
-    for _ in range(10):
-        candidate = candidate.parent
-        resolved = candidate / source_path_from_config
-        if resolved.exists():
-            return str(resolved)
-    return None
-
-
-def open_source_table(experiments_db_path: str, config: dict):
-    """Open the raw image table this experiment was built from. None if absent."""
-    import lancedb
-    src_path = resolve_source_path(experiments_db_path, config.get("source_path", ""))
-    if src_path is None:
-        return None
-    db = lancedb.connect(src_path)
-    return db.open_table(config.get("raw_table", "images"))
-
-
-def fetch_image_blobs(src_img_tbl, image_ids, extra_cols=None):
-    """Batch-fetch {image_id: row_dict} for the given ids.
-
-    Uses the Lance scanner with a pyarrow isin filter rather than
-    .search().where(): .search() is the ANN vector API and can silently drop
-    rows. One scan serves every patch that shares a parent image.
-    """
-    import pyarrow.compute as pc
-
-    if src_img_tbl is None or not len(image_ids):
-        return {}
-    wanted = list(dict.fromkeys(image_ids))  # de-dupe, keep order
-    cols = ["id", "image_blob"] + list(extra_cols or [])
-    cols = [c for c in dict.fromkeys(cols) if c in src_img_tbl.schema.names]
-    table = (
-        src_img_tbl.to_lance()
-        .scanner(columns=cols, filter=pc.field("id").isin(wanted))
-        .to_table()
-        .to_pandas()
-    )
-    return {row["id"]: row for _, row in table.iterrows()}
-
-
-def get_spatial_extent(src_img_tbl):
-    """Read lat/lon bounds from the source table's schema metadata, or None.
-
-    The experiment config does not carry the extent -- only the raw image
-    table's `dataset_info` blob does. Returns None rather than guessing when
-    the metadata is absent, so callers can fall back to grid coordinates.
-    """
-    import json
-
-    if src_img_tbl is None:
-        return None
-    raw = (src_img_tbl.schema.metadata or {}).get(b"dataset_info")
-    if not raw:
-        return None
-    extent = (json.loads(raw) or {}).get("spatial_extent") or {}
-    needed = ("lat_min", "lat_max", "lon_min", "lon_max")
-    return extent if all(k in extent for k in needed) else None
-
-
-def patch_latlon(patch_index: int, spatial_h: int, spatial_w: int, extent: dict):
-    """Centre (lat, lon) of a patch, in the extent's own longitude convention.
-
-    Assumes row 0 is north and column 0 is west. That is not recorded anywhere
-    in the metadata, so it was checked against IBTrACS storm positions on this
-    dataset: Hurricane Irma (2017-09-06 06:00, 155 kts, 17.7N 61.9W) maps to
-    r13/c30, which lands on the vortex in the imagery.
-    """
-    row, col = divmod(int(patch_index), int(spatial_w))
-    lat_span = extent["lat_max"] - extent["lat_min"]
-    lon_span = extent["lon_max"] - extent["lon_min"]
-    lat = extent["lat_max"] - (row + 0.5) * lat_span / spatial_h
-    lon = extent["lon_min"] + (col + 0.5) * lon_span / spatial_w
-    return lat, lon
-
-
-def format_latlon(lat: float, lon: float) -> str:
-    """'23.1°N, 95.6°W'. Accepts longitude as 0-360 or -180..180."""
-    lon = ((lon + 180) % 360) - 180
-    return (
-        f"{abs(lat):.1f}°{'N' if lat >= 0 else 'S'}, "
-        f"{abs(lon):.1f}°{'E' if lon >= 0 else 'W'}"
-    )
-
-
-def patch_box(patch_index: int, spatial_h: int, spatial_w: int, img_w: int, img_h: int):
-    """Pixel box (left, top, right, bottom) of one patch in the stored image.
-
-    patch_index is row-major over a spatial_h x spatial_w grid -- note the grid
-    is rectangular here (16x56), so the divisor is spatial_w, not a square side.
-    """
-    row, col = divmod(int(patch_index), int(spatial_w))
-    pw = img_w / spatial_w
-    ph = img_h / spatial_h
-    return (round(col * pw), round(row * ph), round((col + 1) * pw), round((row + 1) * ph))
-
+from helpers.geometry import patch_box
 
 RESAMPLING = {
     "nearest": "NEAREST",
@@ -255,8 +119,14 @@ def frame_preview_uri(image_blob, quality: int = 75) -> str:
 
 
 def to_png_bytes(pil_image) -> bytes:
-    """Encode a PIL image as PNG bytes (what marimo's mo.image wants)."""
+    """Encode a PIL image as PNG bytes."""
     import io
     buf = io.BytesIO()
     pil_image.save(buf, format="PNG")
     return buf.getvalue()
+
+
+def to_png_uri(pil_image) -> str:
+    """Data URI of a PIL image as lossless PNG -- used for the patch crop."""
+    import base64
+    return "data:image/png;base64," + base64.b64encode(to_png_bytes(pil_image)).decode()

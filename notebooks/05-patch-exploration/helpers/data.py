@@ -1,4 +1,7 @@
-"""Minimal data helpers for the patch-embedding exploration notebook.
+"""Database access for the patch-embedding exploration notebook.
+
+Everything that talks to LanceDB lives here: experiments, the patch-embedding
+matrix, and the raw source images those patches were cut from.
 
 Pure data in / data out — no marimo, plotting, or UI imports.
 """
@@ -67,3 +70,74 @@ def load_patch_matrix(patch_emb_tbl, limit: int = None, random_sample: bool = Tr
         df = patch_emb_tbl.head(limit).to_pandas()
     X = np.asarray(df["embedding"].to_list(), dtype=np.float32)
     return X, df["image_id"].to_numpy(), df["patch_index"].to_numpy(dtype=np.int32)
+
+
+def resolve_source_path(experiments_db_path: str, source_path_from_config: str):
+    """Resolve the config's source_path to an absolute path, or None.
+
+    Walks up from the experiments DB until the relative source path resolves,
+    so the same config works from different mount points.
+    """
+    from pathlib import Path
+    p = Path(source_path_from_config)
+    if p.is_absolute():
+        return str(p) if p.exists() else None
+    candidate = Path(experiments_db_path)
+    for _ in range(10):
+        candidate = candidate.parent
+        resolved = candidate / source_path_from_config
+        if resolved.exists():
+            return str(resolved)
+    return None
+
+
+def open_source_table(experiments_db_path: str, config: dict):
+    """Open the raw image table this experiment was built from. None if absent."""
+    import lancedb
+    src_path = resolve_source_path(experiments_db_path, config.get("source_path", ""))
+    if src_path is None:
+        return None
+    db = lancedb.connect(src_path)
+    return db.open_table(config.get("raw_table", "images"))
+
+
+def fetch_image_blobs(src_img_tbl, image_ids, extra_cols=None):
+    """Batch-fetch {image_id: row_dict} for the given ids.
+
+    Uses the Lance scanner with a pyarrow isin filter rather than
+    .search().where(): .search() is the ANN vector API and can silently drop
+    rows. One scan serves every patch that shares a parent image.
+    """
+    import pyarrow.compute as pc
+
+    if src_img_tbl is None or not len(image_ids):
+        return {}
+    wanted = list(dict.fromkeys(image_ids))  # de-dupe, keep order
+    cols = ["id", "image_blob"] + list(extra_cols or [])
+    cols = [c for c in dict.fromkeys(cols) if c in src_img_tbl.schema.names]
+    table = (
+        src_img_tbl.to_lance()
+        .scanner(columns=cols, filter=pc.field("id").isin(wanted))
+        .to_table()
+        .to_pandas()
+    )
+    return {row["id"]: row for _, row in table.iterrows()}
+
+
+def get_spatial_extent(src_img_tbl):
+    """Read lat/lon bounds from the source table's schema metadata, or None.
+
+    The experiment config does not carry the extent -- only the raw image
+    table's `dataset_info` blob does. Returns None rather than guessing when
+    the metadata is absent, so callers can fall back to grid coordinates.
+    """
+    import json
+
+    if src_img_tbl is None:
+        return None
+    raw = (src_img_tbl.schema.metadata or {}).get(b"dataset_info")
+    if not raw:
+        return None
+    extent = (json.loads(raw) or {}).get("spatial_extent") or {}
+    needed = ("lat_min", "lat_max", "lon_min", "lon_max")
+    return extent if all(k in extent for k in needed) else None
