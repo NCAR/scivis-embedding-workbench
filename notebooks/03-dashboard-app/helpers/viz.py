@@ -399,9 +399,17 @@ def make_selection_shape(patch_idx, lat_min, lat_max, lon_min, lon_max, n_rows, 
 
 def build_geo_patch_figure(
     img_arr, lon_min, lon_max, lat_min, lat_max,
-    coast_traces, heatmap_trace, selection_shape, theme="light", target_w=600,
+    coast_traces, heatmap_trace, selection_shape, theme="light", target_w=1800,
 ):
-    """Assemble the three-layer geo patch figure from pre-built components."""
+    """Assemble the three-layer geo patch figure from pre-built components.
+
+    target_w is the figure's actual pixel width; the height follows from the
+    extent's aspect ratio. Both are set explicitly, because setting only the
+    height (as this did originally) lets plotly shrink the width to the panel
+    and `scaleanchor` then letterboxes the map back down to a ~166px strip.
+    Raising target_w makes the map bigger; the panel it sits in scrolls
+    horizontally when it no longer fits.
+    """
     import plotly.graph_objects as go
 
     _is_dark = (theme == "dark")
@@ -441,6 +449,8 @@ def build_geo_patch_figure(
         uirevision="geo_patch_map",
         clickmode="event+select",
         dragmode="pan",
+        autosize=False,
+        width=target_w,
         height=_fig_h,
         margin=dict(l=_l, r=_r, t=_t, b=_b),
         plot_bgcolor=_bg,

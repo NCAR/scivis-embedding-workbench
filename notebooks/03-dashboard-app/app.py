@@ -1710,13 +1710,27 @@ def _(
             if _active_sf else "*Click patches to restrict the search region*"
         )
         _clear_btn = mo.ui.button(label="✕ Clear", on_click=lambda _: set_ss_spatial_filter(None))
+
+        # The maps are wider than this column (see build_geo_patch_figure's
+        # target_w), so something has to scroll. Scroll the map *only* — wrapping
+        # the whole tabs component instead, as this used to, stretched it to the
+        # map's full width and dragged the tab headers, date picker and
+        # selected-patch label out of view along with it. Everything the user
+        # needs while panning therefore stays a direct vstack child, outside
+        # these containers. max-width:100% is what makes the div clip and show a
+        # scrollbar rather than simply expanding to the map's width.
+        _scroll = "overflow-x:auto;max-width:100%;"
+        _geo_q = mo.Html(f'<div style="{_scroll}">{ss_geo_patch_map.text}</div>')
+        _geo_s = mo.Html(f'<div style="{_scroll}">{ss_spatial_filter_map.text}</div>')
+        _data_filter = mo.Html(f'<div style="{_scroll}">{ss_metadata_filter.text}</div>')
+
         _search_panel = mo.ui.tabs({
-            "Patch Query": mo.vstack([ss_date_picker, mo.md(_label_q), ss_geo_patch_map]),
+            "Patch Query": mo.vstack([ss_date_picker, mo.md(_label_q), _geo_q]),
             "Search Region": mo.vstack([
                 mo.hstack([mo.md(_label_s), _clear_btn], align="center"),
-                ss_spatial_filter_map,
+                _geo_s,
             ]),
-            "Data Filter": ss_metadata_filter,
+            "Data Filter": _data_filter,
             "Settings": mo.vstack([ss_search_mode, ss_n_similar_images, ss_n_similar_patches, ss_max_gallery, ss_refine_factor, ss_similarity_toggle, ss_patch_color, ss_patch_thickness, ss_gallery_cols]),
         })
         _gallery = ss_gallery_ui if ss_gallery_ui is not None else mo.md("")
@@ -1725,13 +1739,14 @@ def _(
         # button was removed), so raw-HTML .text splicing is safe here.
         # mo.hstack's automatic min-width:0 fix only applies to children
         # that are themselves nested mo.hstack/mo.vstack results — it skips
-        # _search_panel (a mo.ui.tabs), so its fixed-width plots (~600px)
-        # were preventing that column from shrinking and pushing the
-        # gallery column off the right edge on narrower viewports. Explicit
-        # flex divs with min-width:0 (matching the Explore tab's pattern)
-        # let both columns actually shrink to fit.
+        # _search_panel (a mo.ui.tabs), so its wide plots were preventing that
+        # column from shrinking and pushing the gallery column off the right
+        # edge on narrower viewports. Explicit flex divs with min-width:0
+        # (matching the Explore tab's pattern) let both columns actually
+        # shrink to fit. overflow-x:hidden here because horizontal scrolling
+        # now belongs to the per-map containers above, not to this panel.
         _gallery_col = mo.vstack([ss_fullres_ui, _gallery], gap=1)
-        _s = f'<div style="flex:1 1 0;min-width:0;overflow:auto;">{_search_panel.text}</div>'
+        _s = f'<div style="flex:1 1 0;min-width:0;overflow-x:hidden;overflow-y:auto;">{_search_panel.text}</div>'
         _g = f'<div style="flex:1 1 0;min-width:0;overflow:auto;">{_gallery_col.text}</div>'
         _items.append(mo.Html(f'<div style="display:flex;align-items:flex-start;gap:8px;width:100%;">{_s}{_g}</div>'))
     elif ss_gallery_ui is not None:
