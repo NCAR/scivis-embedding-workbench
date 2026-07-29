@@ -504,11 +504,14 @@ def apply_similarity_overlay(image_blob, matched_patch_distances, n_rows, n_cols
             norm = (dist - d_min) / (d_max - d_min + 1e-8)
             alpha_grid[row, col] = 1.0 - norm * 0.5
 
-    ph, pw = ih // n_rows, iw // n_cols
-    alpha_up = np.repeat(np.repeat(alpha_grid, ph, axis=0), pw, axis=1)
-    pad_h, pad_w = ih - alpha_up.shape[0], iw - alpha_up.shape[1]
-    if pad_h > 0 or pad_w > 0:
-        alpha_up = np.pad(alpha_up, ((0, pad_h), (0, pad_w)), mode="edge")
+    # Map each pixel to its patch directly, rather than repeat-then-pad with an
+    # integer patch size. Repeating by ih//n_rows / iw//n_cols truncates and the
+    # edge padding smears the shortfall onto the last row/column, drifting by
+    # nearly a whole patch at thumbnail sizes (same defect as the box grid in
+    # annotate_patch_image). This is exact at any size.
+    row_of = (np.arange(ih) * n_rows // ih).clip(0, n_rows - 1)
+    col_of = (np.arange(iw) * n_cols // iw).clip(0, n_cols - 1)
+    alpha_up = alpha_grid[row_of[:, None], col_of[None, :]]
 
     img_arr = np.array(img)
     img_arr[..., 3] = (alpha_up * 255).astype(np.uint8)
@@ -545,13 +548,22 @@ def annotate_patch_image(image_blob, patch_indices, matched_distances, n_rows, n
 
     im, scale = _open_scaled(image_blob, target_size)
     iw, ih = im.size
-    patch_w = iw // n_cols
-    patch_h = ih // n_rows
+    # Fractional patch size, rounded per edge. Integer division here truncates
+    # (a 320px-wide thumbnail over 63 columns gives 5 instead of 5.079) and the
+    # error accumulates across the grid — nearly a full patch of drift by the
+    # right-hand edge, so boxes landed on the wrong patch. It happens to be
+    # exact at full resolution, where the image is a whole number of patches
+    # per side, which is why only the thumbnails were visibly wrong.
+    patch_w = iw / n_cols
+    patch_h = ih / n_rows
     box_width = max(1, round(box_width * scale))
     draw = ImageDraw.Draw(im)
     for p in map(int, patch_indices):
         pr, pc = p // n_cols, p % n_cols
-        box = (pc * patch_w, pr * patch_h, (pc + 1) * patch_w, (pr + 1) * patch_h)
+        box = (
+            round(pc * patch_w), round(pr * patch_h),
+            round((pc + 1) * patch_w), round((pr + 1) * patch_h),
+        )
         draw.rectangle(box, outline=box_color, width=box_width)
     buf = io.BytesIO()
     im.save(buf, format="JPEG", quality=85)
