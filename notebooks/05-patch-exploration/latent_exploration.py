@@ -18,7 +18,10 @@ def _():
         RESAMPLING,
         crop_patch_with_buffer,
         fetch_image_blobs,
+        format_latlon,
+        get_spatial_extent,
         open_source_table,
+        patch_latlon,
         patch_grid,
         to_png_bytes,
     )
@@ -28,6 +31,8 @@ def _():
         RESAMPLING,
         crop_patch_with_buffer,
         fetch_image_blobs,
+        format_latlon,
+        get_spatial_extent,
         list_experiments,
         load_patch_matrix,
         mo,
@@ -35,6 +40,7 @@ def _():
         open_experiment,
         open_source_table,
         patch_grid,
+        patch_latlon,
         to_png_bytes,
     )
 
@@ -156,13 +162,21 @@ def _(config, mo, patch_grid):
 
 
 @app.cell
-def _(config, embedding_db_path, open_source_table, patch_emb_tbl):
-    # The raw images live in a separate LanceDB; config records where.
+def _(
+    config,
+    embedding_db_path,
+    get_spatial_extent,
+    open_source_table,
+    patch_emb_tbl,
+):
+    # The raw images live in a separate LanceDB; config records where. The
+    # geographic extent is on that table's metadata, not in config.
     if patch_emb_tbl is None:
-        src_img_tbl = None
+        src_img_tbl, spatial_extent = None, None
     else:
         src_img_tbl = open_source_table(embedding_db_path.value, config)
-    return (src_img_tbl,)
+        spatial_extent = get_spatial_extent(src_img_tbl)
+    return spatial_extent, src_img_tbl
 
 
 @app.cell(hide_code=True)
@@ -221,6 +235,7 @@ def _(
     config,
     crop_patch_with_buffer,
     fetch_image_blobs,
+    format_latlon,
     image_ids,
     mo,
     n_columns,
@@ -228,7 +243,9 @@ def _(
     np,
     patch_grid,
     patch_indices,
+    patch_latlon,
     resample,
+    spatial_extent,
     src_img_tbl,
     to_png_bytes,
     zoom,
@@ -266,17 +283,33 @@ def _(
                 resample=resample.value,
             )
             _r, _c = divmod(int(patch_indices[_i]), _w)
+            # Falls back to grid coords when the source table has no extent.
+            _geo = (
+                format_latlon(*patch_latlon(patch_indices[_i], _h, _w, spatial_extent))
+                if spatial_extent
+                else None
+            )
             # Frames with no storm carry NaN, not None, so `is not None` alone
             # would print "nan kts" on every calm frame.
             _wind = _row.get("max_wind_kts")
             _has_wind = _wind is not None and np.isfinite(_wind)
+            # NaT, like NaN, compares unequal to itself.
+            _dt = _row.get("dt")
+            _stamp = (
+                _dt.strftime("%Y-%m-%d %H:%M")
+                if _dt is not None and _dt == _dt
+                else "no date"
+            )
             _tiles.append(
                 mo.vstack(
                     [
-                        mo.image(to_png_bytes(_crop)),
+                        # Explicit width pins display to the PNG's true size;
+                        # otherwise the flex row rescales tiles to fill it.
+                        mo.image(to_png_bytes(_crop), width=_crop.size[0]),
                         mo.md(
-                            f"`{image_ids[_i][:8]}` · patch {int(patch_indices[_i])} "
-                            f"(r{_r}, c{_c})"
+                            f"`{_stamp}`"
+                            + (f" · {_geo}" if _geo else "")
+                            + f"  \npatch {int(patch_indices[_i])} (r{_r}, c{_c})"
                             + (f" · {_wind:.0f} kts" if _has_wind else "")
                         ),
                     ],

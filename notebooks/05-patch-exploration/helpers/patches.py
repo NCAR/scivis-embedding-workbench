@@ -93,6 +93,50 @@ def fetch_image_blobs(src_img_tbl, image_ids, extra_cols=None):
     return {row["id"]: row for _, row in table.iterrows()}
 
 
+def get_spatial_extent(src_img_tbl):
+    """Read lat/lon bounds from the source table's schema metadata, or None.
+
+    The experiment config does not carry the extent -- only the raw image
+    table's `dataset_info` blob does. Returns None rather than guessing when
+    the metadata is absent, so callers can fall back to grid coordinates.
+    """
+    import json
+
+    if src_img_tbl is None:
+        return None
+    raw = (src_img_tbl.schema.metadata or {}).get(b"dataset_info")
+    if not raw:
+        return None
+    extent = (json.loads(raw) or {}).get("spatial_extent") or {}
+    needed = ("lat_min", "lat_max", "lon_min", "lon_max")
+    return extent if all(k in extent for k in needed) else None
+
+
+def patch_latlon(patch_index: int, spatial_h: int, spatial_w: int, extent: dict):
+    """Centre (lat, lon) of a patch, in the extent's own longitude convention.
+
+    Assumes row 0 is north and column 0 is west. That is not recorded anywhere
+    in the metadata, so it was checked against IBTrACS storm positions on this
+    dataset: Hurricane Irma (2017-09-06 06:00, 155 kts, 17.7N 61.9W) maps to
+    r13/c30, which lands on the vortex in the imagery.
+    """
+    row, col = divmod(int(patch_index), int(spatial_w))
+    lat_span = extent["lat_max"] - extent["lat_min"]
+    lon_span = extent["lon_max"] - extent["lon_min"]
+    lat = extent["lat_max"] - (row + 0.5) * lat_span / spatial_h
+    lon = extent["lon_min"] + (col + 0.5) * lon_span / spatial_w
+    return lat, lon
+
+
+def format_latlon(lat: float, lon: float) -> str:
+    """'23.1°N, 95.6°W'. Accepts longitude as 0-360 or -180..180."""
+    lon = ((lon + 180) % 360) - 180
+    return (
+        f"{abs(lat):.1f}°{'N' if lat >= 0 else 'S'}, "
+        f"{abs(lon):.1f}°{'E' if lon >= 0 else 'W'}"
+    )
+
+
 def patch_box(patch_index: int, spatial_h: int, spatial_w: int, img_w: int, img_h: int):
     """Pixel box (left, top, right, bottom) of one patch in the stored image.
 
@@ -123,12 +167,18 @@ def crop_patch_with_buffer(
     outline: str = "#00ff88",
     outline_width: int = 4,
     resample: str = "nearest",
+    pad_color: str = "#1b1b1b",
 ):
     """Crop a patch plus `buffer_patches` of context and outline the patch.
 
-    Returns a PIL RGB image upscaled by `scale`. The crop is clamped to the
-    image, so patches on an edge return a smaller context window rather than
-    being padded or shifted.
+    Every tile is exactly (2 * buffer_patches + 1) patches square, whatever the
+    patch's position. Where the context window runs past the image the tile is
+    padded with `pad_color` rather than being cropped short, so the patch stays
+    centred and every tile shares one scale. Clamping instead would return
+    smaller images for edge patches, which a flex layout then stretches back up
+    -- making edge patches look zoomed in relative to interior ones. On a
+    16x56 grid with buffer 2 that affects ~30% of patches, since the grid is
+    only 16 rows tall.
 
     outline_width : border thickness in *display* pixels (after upscaling), so
                     the border keeps a constant visual weight as zoom changes.
@@ -136,6 +186,7 @@ def crop_patch_with_buffer(
     resample      : key of RESAMPLING. "nearest" keeps the patch grid crisp;
                     the smooth filters look nicer but blur the patch edges you
                     are trying to judge.
+    pad_color     : fill for off-image area; marks where the image ends.
     """
     import io
     from PIL import Image, ImageDraw
@@ -147,25 +198,35 @@ def crop_patch_with_buffer(
         patch_index, spatial_h, spatial_w, img_w, img_h
     )
 
-    bw = buffer_patches * (img_w / spatial_w)
-    bh = buffer_patches * (img_h / spatial_h)
-    cl, ct = max(0, round(left - bw)), max(0, round(top - bh))
-    cr, cb = min(img_w, round(right + bw)), min(img_h, round(bottom + bh))
+    # Size the window from the nominal patch size rather than from this patch's
+    # rounded box: when img_w / spatial_w is not an integer the box can differ
+    # by a pixel between columns, which would make tiles differ in size.
+    patch_w, patch_h = round(img_w / spatial_w), round(img_h / spatial_h)
+    bw = round(buffer_patches * img_w / spatial_w)
+    bh = round(buffer_patches * img_h / spatial_h)
+    win_l, win_t = left - bw, top - bh
+    win_w, win_h = patch_w + 2 * bw, patch_h + 2 * bh
 
-    crop = img.crop((cl, ct, cr, cb))
-    crop = crop.resize(
-        (max(1, (cr - cl) * scale), max(1, (cb - ct) * scale)), filt
-    )
+    # Paste whatever part of the window actually exists onto a filled canvas.
+    canvas = Image.new("RGB", (win_w, win_h), pad_color)
+    src_l, src_t = max(0, win_l), max(0, win_t)
+    src_r, src_b = min(img_w, win_l + win_w), min(img_h, win_t + win_h)
+    if src_r > src_l and src_b > src_t:
+        canvas.paste(
+            img.crop((src_l, src_t, src_r, src_b)), (src_l - win_l, src_t - win_t)
+        )
+
+    crop = canvas.resize((max(1, win_w * scale), max(1, win_h * scale)), filt)
 
     # Outline the true patch within the upscaled context.
     if outline_width > 0:
         draw = ImageDraw.Draw(crop)
         draw.rectangle(
             [
-                (left - cl) * scale,
-                (top - ct) * scale,
-                (right - cl) * scale - 1,
-                (bottom - ct) * scale - 1,
+                (left - win_l) * scale,
+                (top - win_t) * scale,
+                (left - win_l + patch_w) * scale - 1,
+                (top - win_t + patch_h) * scale - 1,
             ],
             outline=outline,
             width=int(outline_width),
