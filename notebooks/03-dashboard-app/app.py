@@ -913,16 +913,56 @@ def _(mo):
 
 
 @app.cell
-def _(mo):
+def _():
+    # Map zoom bounds. The step is multiplicative so each press changes the map
+    # by the same proportion whether it's small or already very wide.
+    SS_MAP_W_DEFAULT = 1800
+    SS_MAP_W_MIN = 600
+    SS_MAP_W_MAX = 6000
+    SS_MAP_W_STEP = 1.25
+    return SS_MAP_W_DEFAULT, SS_MAP_W_MAX, SS_MAP_W_MIN, SS_MAP_W_STEP
+
+
+@app.cell
+def _(SS_MAP_W_MAX, SS_MAP_W_MIN, SS_MAP_W_STEP, mo, set_ss_map_w):
+    # Zoom the patch-selection map. The map keeps its geographic aspect ratio
+    # (scaleanchor), so setting the width sets the whole size; the panel scrolls
+    # horizontally once it no longer fits.
+    ss_map_zoom_out = mo.ui.button(
+        label="−", tooltip="Smaller map",
+        on_click=lambda _: set_ss_map_w(
+            lambda w: max(SS_MAP_W_MIN, round(w / SS_MAP_W_STEP))
+        ),
+    )
+    ss_map_zoom_in = mo.ui.button(
+        label="+", tooltip="Bigger map",
+        on_click=lambda _: set_ss_map_w(
+            lambda w: min(SS_MAP_W_MAX, round(w * SS_MAP_W_STEP))
+        ),
+    )
+    return ss_map_zoom_in, ss_map_zoom_out
+
+
+@app.cell
+def _(SS_MAP_W_DEFAULT, mo):
     get_ss_init, set_ss_init = mo.state(None)
     get_ss_patch, set_ss_patch = mo.state(None)
     get_ss_spatial_filter, set_ss_spatial_filter = mo.state(None)
     # No gallery-selection state: the gallery widget owns its own selection and
     # reports it directly, so nothing has to re-render the gallery on a click.
+    #
+    # Map width in px, driven by the −/+ zoom buttons next to the date picker.
+    # An explicit zoom rather than fitting the window: marimo renders plotly
+    # behind a chain of `display: contents` wrappers, so the plot div never
+    # inherits a container height and CSS can't size it from outside — and the
+    # one element that would need height:100% sits in a shadow root.
+    get_ss_map_w, set_ss_map_w = mo.state(SS_MAP_W_DEFAULT)
     return (
+        get_ss_map_w,
         get_ss_patch,
         get_ss_spatial_filter,
         set_ss_init,
+        set_ss_map_w,
         set_ss_patch,
         set_ss_spatial_filter,
     )
@@ -1080,6 +1120,7 @@ def _(ss_available_dates, ss_available_ids, ss_date_picker):
 def _(
     build_geo_patch_figure,
     build_spatial_filter_shapes,
+    get_ss_map_w,
     get_ss_spatial_filter,
     mo,
     ss_init,
@@ -1092,6 +1133,7 @@ def _(
         _fig_sf = build_geo_patch_figure(
             _d["basemap"], _d["lon_min"], _d["lon_max"], _d["lat_min"], _d["lat_max"],
             [], _d["heatmap_trace"], None, theme=_theme,
+            target_w=get_ss_map_w(),
         )
         _active = get_ss_spatial_filter() or []
         _fig_sf.update_layout(
@@ -1146,6 +1188,7 @@ def _(
 @app.cell
 def _(
     build_geo_patch_figure,
+    get_ss_map_w,
     get_ss_patch,
     make_selection_shape,
     mo,
@@ -1176,6 +1219,7 @@ def _(
         _fig = build_geo_patch_figure(
             _img_arr, _d["lon_min"], _d["lon_max"], _d["lat_min"], _d["lat_max"],
             _d["coast_traces"], _d["heatmap_trace"], _shape, theme=_theme,
+            target_w=get_ss_map_w(),
         )
         ss_geo_patch_map = mo.ui.plotly(_fig)
     return (ss_geo_patch_map,)
@@ -1675,6 +1719,7 @@ def _(
 
 @app.cell
 def _(
+    get_ss_map_w,
     get_ss_patch,
     get_ss_spatial_filter,
     mo,
@@ -1687,6 +1732,8 @@ def _(
     ss_init,
     ss_init_status,
     ss_load_button,
+    ss_map_zoom_in,
+    ss_map_zoom_out,
     ss_max_gallery,
     ss_metadata_filter,
     ss_n_similar_images,
@@ -1724,10 +1771,23 @@ def _(
         _geo_s = mo.Html(f'<div style="{_scroll}">{ss_spatial_filter_map.text}</div>')
         _data_filter = mo.Html(f'<div style="{_scroll}">{ss_metadata_filter.text}</div>')
 
+        # Zoom controls live alongside the date picker, outside the map's scroll
+        # container, so they stay reachable while the map is panned. Both tabs
+        # get them and both read the same width state, so the two maps stay the
+        # same size as each other.
+        _zoom = mo.hstack(
+            [ss_map_zoom_out, ss_map_zoom_in, mo.md(f"`{get_ss_map_w()}px`")],
+            gap=0.35, align="center", justify="start",
+        )
+
         _search_panel = mo.ui.tabs({
-            "Patch Query": mo.vstack([ss_date_picker, mo.md(_label_q), _geo_q]),
+            "Patch Query": mo.vstack([
+                mo.hstack([ss_date_picker, _zoom], align="center", justify="start"),
+                mo.md(_label_q),
+                _geo_q,
+            ]),
             "Search Region": mo.vstack([
-                mo.hstack([mo.md(_label_s), _clear_btn], align="center"),
+                mo.hstack([mo.md(_label_s), _clear_btn, _zoom], align="center"),
                 _geo_s,
             ]),
             "Data Filter": _data_filter,
