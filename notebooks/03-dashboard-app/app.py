@@ -957,14 +957,22 @@ def _(SS_MAP_W_DEFAULT, mo):
     # inherits a container height and CSS can't size it from outside — and the
     # one element that would need height:100% sits in a shadow root.
     get_ss_map_w, set_ss_map_w = mo.state(SS_MAP_W_DEFAULT)
+    # Index into ss_available_dts / ss_available_ids — the source of truth for
+    # which timestep is selected, so ◀/▶ can step one image at a time and every
+    # timestep is addressable. allow_self_loops stays at its default False:
+    # the date picker both reads this and writes it via on_change, and must not
+    # re-run itself on its own write.
+    get_ss_time_idx, set_ss_time_idx = mo.state(0)
     return (
         get_ss_map_w,
         get_ss_patch,
         get_ss_spatial_filter,
+        get_ss_time_idx,
         set_ss_init,
         set_ss_map_w,
         set_ss_patch,
         set_ss_spatial_filter,
+        set_ss_time_idx,
     )
 
 
@@ -1064,10 +1072,10 @@ def _(mo, src_img_tbl, ss_init):
 
 
 @app.cell
-def _(src_img_tbl, ss_init):
+def _(img_emb_tbl, src_img_tbl, ss_init):
     if ss_init is None:
         ss_available_ids = []
-        ss_available_dates = []
+        ss_available_dts = []
     else:
         _df = (
             src_img_tbl.search()
@@ -1076,9 +1084,34 @@ def _(src_img_tbl, ss_init):
             .sort_values("dt")
             .reset_index(drop=True)
         )
+        # Only images that actually have embeddings are selectable. The
+        # generator takes a --limit ("max images"), so an experiment routinely
+        # covers just a prefix of the source table — and querying an image with
+        # no embedding row returns nothing, which used to surface as an
+        # IndexError from the query-patch fetch. The old date-string lookup hid
+        # this by only ever resolving to the first image of each date; stepping
+        # through every timestep walks straight past the embedded prefix.
+        _embedded = set(
+            img_emb_tbl.to_lance()
+            .scanner(columns=["image_id"])
+            .to_table()
+            .to_pandas()["image_id"]
+        )
+        _df = _df[_df["id"].isin(_embedded)].reset_index(drop=True)
+
+        # Full timestamps, not str(d)[:10]. Truncating to the date meant that
+        # datasets with several timesteps per day (ERA5 is 12-hourly) collapsed
+        # to one entry per day, and looking an id up by date string always
+        # returned the first match — so every later timestep in a day was
+        # unreachable. Time selection is an index into this list now.
+        _dts = _df["dt"]
+        # tz-naive throughout: the picker hands back naive datetimes, and
+        # subtracting those from tz-aware timestamps (the snap below) raises.
+        if getattr(_dts.dtype, "tz", None) is not None:
+            _dts = _dts.dt.tz_localize(None)
         ss_available_ids = _df["id"].tolist()
-        ss_available_dates = [str(d)[:10] for d in _df["dt"].tolist()]
-    return ss_available_dates, ss_available_ids
+        ss_available_dts = _dts.tolist()
+    return ss_available_dts, ss_available_ids
 
 
 @app.cell
@@ -1095,25 +1128,56 @@ def _(mo, src_img_tbl, ss_init):
 
 
 @app.cell
-def _(mo, ss_available_dates):
-    _n = len(ss_available_dates)
+def _(mo, set_ss_time_idx, ss_available_ids):
+    # Deliberately a separate cell from the date picker below. mo.state defaults
+    # to allow_self_loops=False, meaning the cell that calls a setter does not
+    # re-run even if it reads the getter — so if these buttons lived in the
+    # picker's cell, stepping would move the index but leave the picker showing
+    # a stale date.
+    _last = len(ss_available_ids) - 1
+    ss_time_prev = mo.ui.button(
+        label="◀", tooltip="Previous timestep",
+        on_click=lambda _: set_ss_time_idx(lambda i: max(0, i - 1)),
+    )
+    ss_time_next = mo.ui.button(
+        label="▶", tooltip="Next timestep",
+        on_click=lambda _: set_ss_time_idx(lambda i: min(_last, i + 1)),
+    )
+    return ss_time_next, ss_time_prev
+
+
+@app.cell
+def _(get_ss_time_idx, mo, set_ss_time_idx, ss_available_dts):
+    _n = len(ss_available_dts)
+    _idx = min(max(get_ss_time_idx(), 0), _n - 1) if _n else 0
+
+    def _snap_to_timestep(v):
+        """Move to whichever available timestep is closest to a manual pick."""
+        if v is None or not _n:
+            return
+        set_ss_time_idx(min(range(_n), key=lambda i: abs(ss_available_dts[i] - v)))
+
+    # Reading get_ss_time_idx is what makes ◀/▶ re-render this picker; the
+    # on_change write doesn't re-run this cell, which is correct — the browser
+    # already shows whatever the user just picked.
     ss_date_picker = mo.ui.datetime(
-        value=ss_available_dates[0] if _n else None,
-        start=ss_available_dates[0] if _n else None,
-        stop=ss_available_dates[-1] if _n else None,
+        value=ss_available_dts[_idx] if _n else None,
+        start=ss_available_dts[0] if _n else None,
+        stop=ss_available_dts[-1] if _n else None,
+        on_change=_snap_to_timestep,
     )
     return (ss_date_picker,)
 
 
 @app.cell
-def _(ss_available_dates, ss_available_ids, ss_date_picker):
-    _s = str(ss_date_picker.value)[:10] if ss_date_picker.value else ""
-    ss_selected_img_id = (
-        ss_available_ids[ss_available_dates.index(_s)]
-        if _s in ss_available_dates
-        else (ss_available_ids[0] if ss_available_ids else "")
-    )
-    return (ss_selected_img_id,)
+def _(get_ss_time_idx, ss_available_ids):
+    # Clamp on read rather than trusting the stored index: loading a different
+    # experiment changes the list length and would otherwise leave it stale and
+    # out of range.
+    _n = len(ss_available_ids)
+    ss_time_idx = min(max(get_ss_time_idx(), 0), _n - 1) if _n else 0
+    ss_selected_img_id = ss_available_ids[ss_time_idx] if _n else ""
+    return ss_selected_img_id, ss_time_idx
 
 
 @app.cell
@@ -1255,15 +1319,20 @@ def _(
     else:
         _patch_idx = get_ss_patch() if get_ss_patch() is not None else 0
 
-        # Shared: fetch the query patch embedding
-        _p_q = (
+        # Shared: fetch the query patch embedding. Guarded rather than
+        # .iloc[0] straight off: if this image/patch has no stored embedding the
+        # result is empty, and indexing it raised an IndexError that surfaced as
+        # a traceback in the UI. Selectable images are restricted to embedded
+        # ones upstream, so this is a backstop for anything else missing (a
+        # patch_index absent from the table, a partially written experiment).
+        _q_df = (
             patch_emb_tbl.search()
             .where(f"image_id = '{ss_selected_img_id}' AND patch_index = {_patch_idx}")
             .select(["embedding"])
             .limit(1)
             .to_pandas()
-            .iloc[0]
         )
+        _p_q = _q_df.iloc[0] if len(_q_df) else None
 
         # Shared: metadata and spatial filter clauses
         _allowed_ids = ss_metadata_filter.value["id"].tolist() if ss_metadata_filter.value is not None and len(ss_metadata_filter.value) > 0 else None
@@ -1274,7 +1343,9 @@ def _(
             if _spatial else ""
         )
 
-        if ss_search_mode.value == "Patch first":
+        if _p_q is None:
+            ss_top_df = _pd_ss.DataFrame(columns=["image_id", "patch_index", "_distance"])
+        elif ss_search_mode.value == "Patch first":
             # Search patches directly — no image pre-filter
             _parts = []
             if _id_clause:
@@ -1724,6 +1795,7 @@ def _(
     get_ss_spatial_filter,
     mo,
     set_ss_spatial_filter,
+    ss_available_dts,
     ss_date_picker,
     ss_fullres_ui,
     ss_gallery_cols,
@@ -1744,6 +1816,9 @@ def _(
     ss_search_mode,
     ss_similarity_toggle,
     ss_spatial_filter_map,
+    ss_time_idx,
+    ss_time_next,
+    ss_time_prev,
 ):
     _items = [mo.hstack([ss_load_button], justify="start")]
     if ss_init_status is not None:
@@ -1771,23 +1846,52 @@ def _(
         _geo_s = mo.Html(f'<div style="{_scroll}">{ss_spatial_filter_map.text}</div>')
         _data_filter = mo.Html(f'<div style="{_scroll}">{ss_metadata_filter.text}</div>')
 
-        # Zoom controls live alongside the date picker, outside the map's scroll
-        # container, so they stay reachable while the map is panned. Both tabs
-        # get them and both read the same width state, so the two maps stay the
-        # same size as each other.
+        # Two distinct groups, pushed to opposite ends: time controls on the
+        # left, map controls on the right. Sitting immediately beside the date
+        # picker, the −/+ buttons read as if they stepped time.
+        # Both live outside the map's scroll container so they stay reachable
+        # while the map is panned, and both tabs share one width state so the
+        # two maps stay the same size as each other.
+        _ts = (
+            ss_available_dts[ss_time_idx].strftime("%Y-%m-%d %H:%M")
+            if ss_available_dts else "—"
+        )
+        #
+        # wrap=True throughout: this row's natural width (picker + arrows +
+        # timestamp + the whole map group) exceeds the search column, and flex
+        # children shrink before a row overflows — which squeezed the date input
+        # until it broke onto two clipped lines. Wrapping lets each group keep
+        # its natural size and drop to the next line instead.
+        # ◀ before the picker and ▶ after it, so each arrow sits on the side
+        # matching the direction it steps.
+        _time_grp = mo.hstack(
+            [
+                ss_time_prev, ss_date_picker, ss_time_next,
+                mo.md(f"`{_ts}`  ({ss_time_idx + 1} / {len(ss_available_dts)})"),
+            ],
+            gap=0.35, align="center", justify="start", wrap=True,
+        )
         _zoom = mo.hstack(
-            [ss_map_zoom_out, ss_map_zoom_in, mo.md(f"`{get_ss_map_w()}px`")],
-            gap=0.35, align="center", justify="start",
+            [
+                mo.md("Map size"), ss_map_zoom_out, ss_map_zoom_in,
+                mo.md(f"`{get_ss_map_w()}px`"),
+            ],
+            gap=0.35, align="center", justify="end", wrap=True,
         )
 
         _search_panel = mo.ui.tabs({
             "Patch Query": mo.vstack([
-                mo.hstack([ss_date_picker, _zoom], align="center", justify="start"),
+                mo.hstack([_time_grp, _zoom], align="center",
+                          justify="space-between", wrap=True),
                 mo.md(_label_q),
                 _geo_q,
             ]),
             "Search Region": mo.vstack([
-                mo.hstack([mo.md(_label_s), _clear_btn, _zoom], align="center"),
+                mo.hstack(
+                    [mo.hstack([mo.md(_label_s), _clear_btn], gap=0.35,
+                               align="center", justify="start", wrap=True), _zoom],
+                    align="center", justify="space-between", wrap=True,
+                ),
                 _geo_s,
             ]),
             "Data Filter": _data_filter,
