@@ -6,6 +6,8 @@ app = marimo.App()
 
 @app.cell
 def _():
+    import base64
+
     import marimo as mo
     import IPython  # must be imported before lancedb to avoid circular import via tqdm→ipywidgets
     import lancedb
@@ -29,6 +31,7 @@ def _():
     return (
         ColorPicker,
         RESAMPLING,
+        base64,
         crop_patch_with_buffer,
         fetch_image_blobs,
         format_latlon,
@@ -229,6 +232,7 @@ def _(ColorPicker, RESAMPLING, mo):
 
 @app.cell(hide_code=True)
 def _(
+    base64,
     border_color,
     border_width,
     buffer_patches,
@@ -300,31 +304,37 @@ def _(
                 if _dt is not None and _dt == _dt
                 else "no date"
             )
+            _uri = "data:image/png;base64," + base64.b64encode(
+                to_png_bytes(_crop)
+            ).decode()
+            _label = (
+                f"{_stamp}" + (f" · {_geo}" if _geo else "")
+                + f"<br>patch {int(patch_indices[_i])} (r{_r}, c{_c})"
+                + (f" · {_wind:.0f} kts" if _has_wind else "")
+            )
+            # max-width:none defeats the inherited img rule that would shrink
+            # tiles to fit their cell.
             _tiles.append(
-                mo.vstack(
-                    [
-                        # Explicit width pins display to the PNG's true size;
-                        # otherwise the flex row rescales tiles to fill it.
-                        mo.image(to_png_bytes(_crop), width=_crop.size[0]),
-                        mo.md(
-                            f"`{_stamp}`"
-                            + (f" · {_geo}" if _geo else "")
-                            + f"  \npatch {int(patch_indices[_i])} (r{_r}, c{_c})"
-                            + (f" · {_wind:.0f} kts" if _has_wind else "")
-                        ),
-                    ],
-                    align="center",
-                    gap=0.25,
-                )
+                f"<figure style='margin:0'>"
+                f"<img src='{_uri}' style='display:block;width:{_crop.size[0]}px;"
+                f"max-width:none' />"
+                f"<figcaption style='font-size:0.75em;opacity:0.8;"
+                f"text-align:center;margin-top:0.25rem'>{_label}</figcaption>"
+                f"</figure>"
             )
 
+        # A grid with fixed-width columns, not flex rows: a short final row
+        # leaves its cells empty instead of widening the remaining tiles.
+        # Columns are sized in px so tile size never depends on how many tiles
+        # share the row, or on how wide the notebook is.
         _per_row = int(n_columns.value)
-        gallery = mo.vstack(
-            [
-                mo.hstack(_tiles[_j : _j + _per_row], justify="start", gap=1)
-                for _j in range(0, len(_tiles), _per_row)
-            ],
-            gap=1,
+        _tile_w = _tiles and _crop.size[0] or 0
+        gallery = mo.Html(
+            f"<div style='display:grid;"
+            f"grid-template-columns:repeat({_per_row}, {_tile_w}px);"
+            f"gap:1rem;justify-content:start;overflow-x:auto'>"
+            + "".join(_tiles)
+            + "</div>"
         )
     gallery
     return
