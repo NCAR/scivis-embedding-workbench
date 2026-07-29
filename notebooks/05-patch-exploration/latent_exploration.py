@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.4"
+__generated_with = "0.23.13"
 app = marimo.App()
 
 
@@ -11,9 +11,32 @@ def _():
     import lancedb
     import numpy as np
 
-    from helpers.data import list_experiments, open_experiment
+    from helpers.data import list_experiments, load_patch_matrix, open_experiment
+    from wigglystuff import ColorPicker
 
-    return list_experiments, mo, open_experiment
+    from helpers.patches import (
+        RESAMPLING,
+        crop_patch_with_buffer,
+        fetch_image_blobs,
+        open_source_table,
+        patch_grid,
+        to_png_bytes,
+    )
+
+    return (
+        ColorPicker,
+        RESAMPLING,
+        crop_patch_with_buffer,
+        fetch_image_blobs,
+        list_experiments,
+        load_patch_matrix,
+        mo,
+        np,
+        open_experiment,
+        open_source_table,
+        patch_grid,
+        to_png_bytes,
+    )
 
 
 @app.cell
@@ -53,34 +76,224 @@ def _(embedding_db_path, experiment_selector, open_experiment):
 
 
 @app.cell
-def _(patch_emb_tbl):
-    # Cheap access check — no full materialization. Replace this cell with the
-    # real loader (e.g. cuML UMAP input) once access is confirmed.
-    if patch_emb_tbl is None:
-        n_patches, sample_row = None, None
-    else:
-        n_patches = patch_emb_tbl.count_rows()
-        sample_row = patch_emb_tbl.head(1).to_pylist()[0]
-    return n_patches, sample_row
+def _(mo):
+    sample_size = mo.ui.slider(
+        start=10_000,
+        stop=500_000,
+        step=10_000,
+        value=50_000,
+        label="Patches to load",
+        show_value=True,
+    )
+    sampling = mo.ui.dropdown(
+        options=["random", "head"],
+        value="random",
+        label="Sampling",
+    )
+    mo.hstack([sample_size, sampling], justify="start")
+    return sample_size, sampling
 
 
 @app.cell
-def _(config, mo, n_patches, sample_row):
+def _(load_patch_matrix, patch_emb_tbl, sample_size, sampling):
+    if patch_emb_tbl is None:
+        n_patches = None
+        X, image_ids, patch_indices = None, None, None
+    else:
+        n_patches = patch_emb_tbl.count_rows()
+        # "head" is the first N rows in ingest order, so it covers only the
+        # earliest images — useful for a quick look, misleading for structure.
+        X, image_ids, patch_indices = load_patch_matrix(
+            patch_emb_tbl,
+            limit=int(sample_size.value),
+            random_sample=sampling.value == "random",
+        )
+    return X, image_ids, n_patches, patch_indices
+
+
+@app.cell
+def _(X, config, image_ids, mo, n_patches, patch_grid, patch_indices):
     if n_patches is None:
         status = mo.callout(
             mo.md("Enter a DB path and pick an experiment to load patches."),
             kind="info",
         )
     else:
-        _dim = len(sample_row["embedding"])
+        _h, _w = patch_grid(config)
         status = mo.md(
             f"**Model:** `{config.get('model_name', '?')}`  ·  "
-            f"**Patches:** {n_patches:,}  ·  "
-            f"**Embedding dim:** {_dim}  ·  "
-            f"**Sample patch:** `image_id={sample_row['image_id']}`, "
-            f"`patch_index={sample_row['patch_index']}`"
+            f"**Patches in table:** {n_patches:,}  ·  "
+            f"**Loaded:** {X.shape[0]:,} × {X.shape[1]}  ·  "
+            f"**Source images covered:** {len(set(image_ids)):,}  ·  "
+            f"**Patch grid:** {_h}×{_w}  ·  "
+            f"**Max patch_index:** {int(patch_indices.max())}"
         )
     status
+    return
+
+
+@app.cell
+def _(config, mo, patch_grid):
+    if config is None:
+        _blurb = "Load an experiment to see patch geometry."
+    else:
+        _gh, _gw = patch_grid(config)
+        _iw, _ih = int(config["image_w"]), int(config["image_h"])
+        # Derived, not assumed: a different experiment or dataset changes every
+        # one of these numbers.
+        _pw, _ph = _iw / _gw, _ih / _gh
+        _blurb = (
+            f"Each patch is {_pw:g}×{_ph:g} px of a {_iw}×{_ih} image "
+            f"({_gh}×{_gw} grid) — too small to read alone, so each tile shows "
+            "the patch plus a ring of context, with the patch itself outlined."
+        )
+    mo.md(f"""
+    ## Patch crops
+
+    {_blurb}
+    """)
+    return
+
+
+@app.cell
+def _(config, embedding_db_path, open_source_table, patch_emb_tbl):
+    # The raw images live in a separate LanceDB; config records where.
+    if patch_emb_tbl is None:
+        src_img_tbl = None
+    else:
+        src_img_tbl = open_source_table(embedding_db_path.value, config)
+    return (src_img_tbl,)
+
+
+@app.cell(hide_code=True)
+def _(ColorPicker, RESAMPLING, mo):
+    n_examples = mo.ui.slider(
+        start=4, stop=24, step=4, value=12, label="Patches", show_value=True
+    )
+    n_columns = mo.ui.slider(
+        start=1, stop=8, step=1, value=4, label="Columns", show_value=True
+    )
+    buffer_patches = mo.ui.slider(
+        start=0, stop=6, step=1, value=2, label="Context (patches)", show_value=True
+    )
+    zoom = mo.ui.slider(start=1, stop=12, step=1, value=4, label="Zoom", show_value=True)
+    # marimo has no native color input; wigglystuff's ColorPicker is a real
+    # <input type="color"> and is already a project dependency.
+    border_color = mo.ui.anywidget(ColorPicker(color="#00ff88"))
+    border_width = mo.ui.slider(
+        start=0, stop=10, step=1, value=4, label="Border px (0 = off)", show_value=True
+    )
+    resample = mo.ui.dropdown(
+        options=list(RESAMPLING), value="nearest", label="Resampling"
+    )
+
+    mo.vstack(
+        [
+            mo.hstack([n_examples, n_columns, buffer_patches, zoom], justify="start"),
+            mo.hstack(
+                [
+                    mo.vstack([mo.md("**Border color**"), border_color], gap=0.2),
+                    border_width,
+                    resample,
+                ],
+                justify="start",
+                align="center",
+            ),
+        ],
+        gap=0.5,
+    )
+    return (
+        border_color,
+        border_width,
+        buffer_patches,
+        n_columns,
+        n_examples,
+        resample,
+        zoom,
+    )
+
+
+@app.cell(hide_code=True)
+def _(
+    border_color,
+    border_width,
+    buffer_patches,
+    config,
+    crop_patch_with_buffer,
+    fetch_image_blobs,
+    image_ids,
+    mo,
+    n_columns,
+    n_examples,
+    np,
+    patch_grid,
+    patch_indices,
+    resample,
+    src_img_tbl,
+    to_png_bytes,
+    zoom,
+):
+    if src_img_tbl is None or image_ids is None:
+        gallery = mo.callout(
+            mo.md("Load an experiment to see patch crops."), kind="info"
+        )
+    else:
+        _rng = np.random.default_rng(0)
+        _pick = _rng.choice(
+            len(image_ids), min(int(n_examples.value), len(image_ids)), replace=False
+        )
+        # One scan covers every picked patch; patches sharing a parent image
+        # cost nothing extra.
+        _rows = fetch_image_blobs(
+            src_img_tbl, [image_ids[i] for i in _pick], extra_cols=["dt", "max_wind_kts"]
+        )
+        _h, _w = patch_grid(config)
+
+        _tiles = []
+        for _i in _pick:
+            _row = _rows.get(image_ids[_i])
+            if _row is None:
+                continue
+            _crop = crop_patch_with_buffer(
+                _row["image_blob"],
+                patch_indices[_i],
+                _h,
+                _w,
+                buffer_patches=int(buffer_patches.value),
+                scale=int(zoom.value),
+                outline=border_color.color,
+                outline_width=int(border_width.value),
+                resample=resample.value,
+            )
+            _r, _c = divmod(int(patch_indices[_i]), _w)
+            # Frames with no storm carry NaN, not None, so `is not None` alone
+            # would print "nan kts" on every calm frame.
+            _wind = _row.get("max_wind_kts")
+            _has_wind = _wind is not None and np.isfinite(_wind)
+            _tiles.append(
+                mo.vstack(
+                    [
+                        mo.image(to_png_bytes(_crop)),
+                        mo.md(
+                            f"`{image_ids[_i][:8]}` · patch {int(patch_indices[_i])} "
+                            f"(r{_r}, c{_c})"
+                            + (f" · {_wind:.0f} kts" if _has_wind else "")
+                        ),
+                    ],
+                    align="center",
+                    gap=0.25,
+                )
+            )
+
+        _per_row = int(n_columns.value)
+        gallery = mo.vstack(
+            [
+                mo.hstack(_tiles[_j : _j + _per_row], justify="start", gap=1)
+                for _j in range(0, len(_tiles), _per_row)
+            ],
+            gap=1,
+        )
+    gallery
     return
 
 
