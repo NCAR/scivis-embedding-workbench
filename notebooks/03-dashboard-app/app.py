@@ -19,29 +19,33 @@ def _():
         list_experiments, load_config_dict, resolve_source_path, get_spatial_extent,
         load_embedding_matrix, fetch_metadata_for_ids, fetch_thumbnails_batch,
         fetch_attention_maps, get_thumb_dimensions, compute_thumb_dimensions,
-        run_pca_best, run_umap_best, apply_brush_filter,
+        run_pca_best, run_umap_best, apply_brush_filter, fetch_source_blob,
     )
     from helpers.viz import (
         get_theme_colors, make_extent_map, make_scree_plot,
         composite_attention_overlay, render_thumbnail_gallery,
         build_coastline_traces, make_patch_heatmap, make_selection_shape,
         build_geo_patch_figure, apply_similarity_overlay, render_basemap,
-        build_spatial_filter_shapes, annotate_patch_image, build_gallery_figure,
+        build_spatial_filter_shapes, annotate_patch_image,
+    )
+    from helpers.gallery_widget import (
+        PatchGallery, recall_selection, remember_selection,
     )
 
     return (
         ColorPicker,
         ParallelCoordinates,
+        PatchGallery,
         annotate_patch_image,
         apply_brush_filter,
         build_coastline_traces,
-        build_gallery_figure,
         build_geo_patch_figure,
         build_spatial_filter_shapes,
         composite_attention_overlay,
         compute_thumb_dimensions,
         fetch_attention_maps,
         fetch_metadata_for_ids,
+        fetch_source_blob,
         fetch_thumbnails_batch,
         get_spatial_extent,
         get_theme_colors,
@@ -59,6 +63,8 @@ def _():
         pd,
         pl,
         plt,
+        recall_selection,
+        remember_selection,
         render_basemap,
         render_thumbnail_gallery,
         resolve_source_path,
@@ -911,14 +917,13 @@ def _(mo):
     get_ss_init, set_ss_init = mo.state(None)
     get_ss_patch, set_ss_patch = mo.state(None)
     get_ss_spatial_filter, set_ss_spatial_filter = mo.state(None)
-    get_ss_selected_id, set_ss_selected_id = mo.state(None)
+    # No gallery-selection state: the gallery widget owns its own selection and
+    # reports it directly, so nothing has to re-render the gallery on a click.
     return (
         get_ss_patch,
-        get_ss_selected_id,
         get_ss_spatial_filter,
         set_ss_init,
         set_ss_patch,
-        set_ss_selected_id,
         set_ss_spatial_filter,
     )
 
@@ -979,12 +984,14 @@ def _(ColorPicker, mo):
         label="Search mode",
     )
     ss_patch_color = mo.ui.anywidget(ColorPicker(color="#000000"))
+    # debounce: both sliders re-render the gallery, so commit on release
+    # rather than on every intermediate value the drag passes through.
     ss_patch_thickness = mo.ui.slider(
-        start=1, stop=10, step=1, value=2,
+        start=1, stop=10, step=1, value=2, debounce=True,
         label="Matched patch box thickness", show_value=True,
     )
     ss_gallery_cols = mo.ui.slider(
-        start=1, stop=8, step=1, value=3,
+        start=1, stop=8, step=1, value=3, debounce=True,
         label="Gallery columns", show_value=True,
     )
     return (
@@ -1318,10 +1325,8 @@ def _(
     get_ss_spatial_filter,
     map_theme,
     mo,
-    np,
     src_img_tbl,
     ss_available_ids,
-    ss_gallery_cols,
     ss_init,
     ss_max_gallery,
     ss_metadata_filter,
@@ -1330,8 +1335,7 @@ def _(
     ss_similarity_toggle,
     ss_top_df,
 ):
-    import io as _io_g
-    from PIL import Image as _Image_g
+    import base64 as _b64_g
     import pandas as _pd_g
 
     _box_color = (
@@ -1368,20 +1372,21 @@ def _(
             "lat_min": _d["lat_min"], "lat_max": _d["lat_max"],
             "lon_min": _d["lon_min"], "lon_max": _d["lon_max"],
         }
-        # base_size sized to fill an assumed ~1000px gallery column at the
-        # user-chosen column count (Settings → Gallery columns), rather than
-        # a fixed 192px that left blank space around a smaller-than-
-        # container grid. autosize + the panel's min-width:0 still shrink
-        # the whole grid uniformly if the actual column ends up narrower.
-        _gallery_n_cols = int(ss_gallery_cols.value)
-        _gallery_target_w = 1000
-        _thumb_base_size = int((_gallery_target_w - _gallery_n_cols * 6) / _gallery_n_cols)
-        _thumb_w, _thumb_h = compute_thumb_dimensions(_spatial_extent, base_size=_thumb_base_size)
+        # CSS Grid sizes the columns, so the encode resolution no longer has to
+        # be derived from the column count (the old code guessed a ~1000px
+        # container width and divided). A fixed base keeps thumbnails crisp when
+        # the grid is wide and simply downscales in the browser when it's
+        # narrow — and, more importantly, means changing "Gallery columns" is a
+        # CSS reflow rather than a re-encode of every thumbnail.
+        _thumb_w, _thumb_h = compute_thumb_dimensions(_spatial_extent, base_size=320)
 
-        _patch_dists = {
-            (row["image_id"], int(row["patch_index"])): row["_distance"]
-            for _, row in ss_top_df.iterrows()
-        }
+        # dict(zip(...)) rather than iterrows(): this runs over every matched
+        # patch (up to ss_n_similar_patches, i.e. 10k), where iterrows costs
+        # ~17x more for an identical result.
+        _patch_dists = dict(zip(
+            zip(ss_top_df["image_id"], ss_top_df["patch_index"].astype(int)),
+            ss_top_df["_distance"],
+        ))
 
         import pyarrow.compute as _pc_g
 
@@ -1420,13 +1425,16 @@ def _(
         # Only the small preview is built eagerly here. The full-resolution
         # annotated image is fetched on demand (see the cell below) when a
         # thumbnail is clicked — avoids embedding a full-res copy of every
-        # gallery-capped row up front. Click detection uses the same
-        # invisible-heatmap-over-images technique as build_geo_patch_figure
-        # (read via ss_gallery_plot.value in the next cell): mo.ui.button
-        # can't be used as an overlay click target because its internals
-        # render inside a Shadow DOM that external CSS can't reach/resize.
+        # gallery-capped row up front.
+        #
+        # Thumbnails are annotated directly at thumbnail resolution
+        # (target_size) and kept as base64 JPEG data URIs. The previous
+        # renderer annotated at full resolution, re-encoded, decoded again just
+        # to resize, and then shipped the result to the browser as a raw
+        # uint8 pixel array inside a Plotly go.Image trace — ~4 MB of JSON for
+        # 25 thumbnails, re-sent in full on every click.
         _gallery_ids = list(_groups.index)
-        _thumb_arrays = []
+        _thumbs = []
         _captions = []
         _dt_labels = {}
         for _img_id in _gallery_ids:
@@ -1442,9 +1450,11 @@ def _(
                 _r["image_blob"], _data["patch_index"], _matched,
                 _n_rows, _n_cols, ss_similarity_toggle.value,
                 box_color=_box_color, box_width=ss_patch_thickness.value,
+                target_size=(_thumb_w, _thumb_h),
             )
-            _im_t = _Image_g.open(_io_g.BytesIO(_blob)).resize((_thumb_w, _thumb_h), _Image_g.LANCZOS).convert("RGB")
-            _thumb_arrays.append(np.array(_im_t))
+            _thumbs.append(
+                "data:image/jpeg;base64," + _b64_g.b64encode(_blob).decode()
+            )
             _dt = _date_map.get(_img_id)
             _dt_label = (
                 _dt.strftime("%Y-%m-%d %H:%M")
@@ -1501,17 +1511,17 @@ def _(
 
         _data_tab = mo.ui.table(_df_merged, selection=None)
 
-        # Bundled (rather than built here) so the cheap step of rebuilding
-        # the figure with a selection highlight — see the cell below —
-        # doesn't have to redo this cell's expensive per-thumbnail fetch/
-        # annotate/resize work on every click.
+        # Bundled (rather than rendered here) so that the cell below — which
+        # re-runs whenever the column count changes — reuses these already
+        # encoded thumbnails instead of redoing this cell's LanceDB fetch and
+        # per-image annotate/encode work.
         ss_gallery_render = {
-            "thumb_arrays": _thumb_arrays,
+            "thumbs": _thumbs,
             "captions": _captions,
             "theme": _theme,
             "thumb_w": _thumb_w,
             "thumb_h": _thumb_h,
-            "n_cols": _gallery_n_cols,
+            "gallery_ids": _gallery_ids,
             "status": _status,
             "data_tab": _data_tab,
         }
@@ -1520,73 +1530,58 @@ def _(
 
 @app.cell
 def _(
-    build_gallery_figure,
-    get_ss_selected_id,
+    PatchGallery,
     mo,
-    ss_gallery_meta,
+    recall_selection,
+    ss_gallery_cols,
     ss_gallery_render,
     ss_similarity_toggle,
 ):
-    # Split out from the cell above so that highlighting the selected
-    # thumbnail (which changes on every gallery click) only rebuilds the
-    # cheap Plotly figure from already-computed thumbnail arrays, instead
-    # of redoing that cell's LanceDB fetch + PIL annotate/resize per image.
+    # The gallery is plain HTML: an anywidget rendering <img> tags in a CSS
+    # Grid. It replaced a Plotly figure whose thumbnails were raw uint8 pixel
+    # arrays (~4 MB of JSON for 25 tiles, re-serialized on every click just to
+    # move the selection rectangle). Here a click paints the red border in the
+    # browser and syncs a single integer back, so nothing in this cell — and
+    # nothing in the expensive cell above — re-runs when the user selects a
+    # thumbnail. Only the full-resolution preview cell below does.
+    _PANEL_H = 650
     if ss_gallery_render is None:
-        ss_gallery_plot = None
+        ss_gallery_widget = None
         ss_gallery_ui = None
     elif ss_gallery_render.get("empty"):
-        ss_gallery_plot = None
+        ss_gallery_widget = None
         ss_gallery_ui = mo.callout(
             mo.md("*No results — no patches matched this query with the current filters/region.*"),
             kind="warn",
         )
     else:
-        _sel_id = get_ss_selected_id()
-        _gallery_ids = ss_gallery_meta["gallery_ids"]
-        _selected_idx = _gallery_ids.index(_sel_id) if _sel_id in _gallery_ids else None
+        _ids = ss_gallery_render["gallery_ids"]
+        ss_gallery_widget = mo.ui.anywidget(PatchGallery(
+            thumbs=ss_gallery_render["thumbs"],
+            captions=ss_gallery_render["captions"],
+            n_cols=int(ss_gallery_cols.value),
+            thumb_w=ss_gallery_render["thumb_w"],
+            thumb_h=ss_gallery_render["thumb_h"],
+            max_h=_PANEL_H,
+            theme=ss_gallery_render["theme"],
+            # A rebuild (new column count, restyled boxes) would otherwise drop
+            # the user's selection back to "nothing selected".
+            selected=recall_selection(_ids),
+        ))
 
-        _gallery_fig = build_gallery_figure(
-            ss_gallery_render["thumb_arrays"], ss_gallery_render["captions"],
-            n_cols=ss_gallery_render["n_cols"],
-            thumb_w=ss_gallery_render["thumb_w"], thumb_h=ss_gallery_render["thumb_h"],
-            theme=ss_gallery_render["theme"], selected_index=_selected_idx,
-        )
-        ss_gallery_plot = mo.ui.plotly(_gallery_fig)
-
-        # Cap each panel's own content (not the whole tabs component) at a
-        # shared height with its own scrollbar, so the "Visuals | Data"
-        # switcher — kept as a plain, un-spliced mo.ui.tabs — stays fixed at
-        # the same level as the Similarity overlay toggle instead of
-        # scrolling away with the gallery content, and switching tabs
-        # doesn't resize the panel since both cap at the same height.
-        _panel_h = min((_gallery_fig.layout.height or 400) + 40, 650)
-        _visual_content = mo.Html(
-            f'<div style="max-height:{_panel_h}px;overflow-y:auto;">{ss_gallery_plot.text}</div>'
-        )
+        # The widget scrolls itself at max_h, so only the Data panel needs an
+        # explicit cap — both at the same height keeps the "Visuals | Data"
+        # switcher from moving when the user switches tabs.
         _data_content = mo.Html(
-            f'<div style="max-height:{_panel_h}px;overflow-y:auto;">{ss_gallery_render["data_tab"].text}</div>'
+            f'<div style="max-height:{_PANEL_H}px;overflow-y:auto;">{ss_gallery_render["data_tab"].text}</div>'
         )
-        _visual_tab = mo.vstack([ss_gallery_render["status"], _visual_content])
+        _visual_tab = mo.vstack([ss_gallery_render["status"], ss_gallery_widget])
         _tabs = mo.ui.tabs({"Visuals": _visual_tab, "Data": _data_content})
         ss_gallery_ui = mo.vstack([
             mo.hstack([ss_similarity_toggle], justify="end"),
             _tabs,
         ])
-    return ss_gallery_plot, ss_gallery_ui
-
-
-@app.cell
-def _(set_ss_selected_id, ss_gallery_meta, ss_gallery_plot):
-    # Translate a gallery thumbnail click into the selected image id — same
-    # click-via-invisible-heatmap technique as the patch-selection map above.
-    if ss_gallery_plot is not None and ss_gallery_meta is not None:
-        _click = ss_gallery_plot.value
-        if isinstance(_click, list) and _click and "z" in _click[0]:
-            _idx = int(_click[0]["z"])
-            _ids = ss_gallery_meta["gallery_ids"]
-            if 0 <= _idx < len(_ids):
-                set_ss_selected_id(_ids[_idx])
-    return
+    return ss_gallery_ui, ss_gallery_widget
 
 
 @app.cell
@@ -1599,10 +1594,12 @@ def _():
 @app.cell
 def _(
     annotate_patch_image,
-    get_ss_selected_id,
+    fetch_source_blob,
     mo,
+    remember_selection,
     src_img_tbl,
     ss_gallery_meta,
+    ss_gallery_widget,
     ss_patch_color,
     ss_patch_thickness,
     ss_similarity_toggle,
@@ -1612,11 +1609,24 @@ def _(
     # (placeholder when nothing valid is selected, e.g. before any click or
     # after a new search invalidates the old selection) instead of a
     # show/hide toggle, since that needs no dismiss control.
+    #
+    # This is now the *only* cell a gallery click re-runs: the widget paints
+    # the red border itself, client-side, and reports the tile index here.
     _box_color = (
         ss_patch_color.value.get("color", "#000000")
         if isinstance(ss_patch_color.value, dict) else "#000000"
     )
-    _sel_id = get_ss_selected_id()
+    _sel_idx = (
+        int(ss_gallery_widget.value.get("selected", -1))
+        if ss_gallery_widget is not None else -1
+    )
+    _ids = ss_gallery_meta["gallery_ids"] if ss_gallery_meta is not None else []
+    _sel_id = _ids[_sel_idx] if 0 <= _sel_idx < len(_ids) else None
+    if _sel_id is not None:
+        # Lets a rebuilt gallery (restyled boxes, new column count) come back
+        # up with the same tile still selected.
+        remember_selection(_ids, _sel_idx)
+
     _valid = (
         _sel_id is not None
         and ss_gallery_meta is not None
@@ -1630,24 +1640,14 @@ def _(
         )
     else:
         import base64 as _base64_f
-        import pyarrow.compute as _pc_f
 
-        _row = (
-            src_img_tbl.to_lance()
-            .scanner(
-                columns=["id", "image_blob"],
-                filter=_pc_f.field("id").isin([_sel_id]),
-            )
-            .to_table()
-            .to_pandas()
-        )
-        if len(_row) == 0:
+        _blob = fetch_source_blob(src_img_tbl, _sel_id)
+        if _blob is None:
             ss_fullres_ui = mo.callout(
                 mo.md("*Click a gallery thumbnail to preview it here in full resolution.*"),
                 kind="neutral",
             )
         else:
-            _blob = _row.iloc[0]["image_blob"]
             _patch_indices = ss_gallery_meta["groups"].loc[_sel_id, "patch_index"]
             _patch_dists = ss_gallery_meta["patch_dists"]
             _matched = {

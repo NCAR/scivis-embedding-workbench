@@ -138,6 +138,43 @@ def fetch_attention_maps(img_emb_tbl, image_ids: list) -> dict:
     return dict(zip(df["image_id"], df["attention_map"]))
 
 
+_SOURCE_BLOB_CACHE = {}
+_SOURCE_BLOB_CACHE_MAX = 8
+
+
+def fetch_source_blob(src_img_tbl, image_id):
+    """Fetch one source image blob by id, memoized. Returns None if not found.
+
+    The Spatial Search full-resolution preview re-renders on every thumbnail
+    click *and* on every box-colour/thickness tweak, but the underlying blob
+    only depends on the id — without this, each of those repeated the same scan
+    for the same ~600 KB row. The query itself is unchanged; it just isn't
+    issued twice for the same image.
+    """
+    import pyarrow.compute as pc
+
+    if image_id in _SOURCE_BLOB_CACHE:
+        return _SOURCE_BLOB_CACHE[image_id]
+
+    df = (
+        src_img_tbl.to_lance()
+        .scanner(
+            columns=["id", "image_blob"],
+            filter=pc.field("id").isin([image_id]),
+        )
+        .to_table()
+        .to_pandas()
+    )
+    blob = df.iloc[0]["image_blob"] if len(df) else None
+
+    # Blobs are large, so keep only a short trail of recently viewed images
+    # (insertion-ordered dict → drop the oldest).
+    if len(_SOURCE_BLOB_CACHE) >= _SOURCE_BLOB_CACHE_MAX:
+        del _SOURCE_BLOB_CACHE[next(iter(_SOURCE_BLOB_CACHE))]
+    _SOURCE_BLOB_CACHE[image_id] = blob
+    return blob
+
+
 def get_thumb_dimensions(src_img_tbl, base_size=192):
     """Extract spatial extent from table metadata and compute thumb dimensions."""
     import json

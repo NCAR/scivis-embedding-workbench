@@ -160,15 +160,13 @@
         "position": null
       },
       {
-        "position": null
-      },
-      {
         "position": [
           0,
           0,
           24,
-          47
-        ]
+          57
+        ],
+        "scrollable": true
       },
       {
         "position": null

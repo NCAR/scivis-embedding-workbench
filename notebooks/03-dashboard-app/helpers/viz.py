@@ -449,13 +449,40 @@ def build_geo_patch_figure(
     return fig
 
 
-def apply_similarity_overlay(image_blob, matched_patch_distances, n_rows, n_cols, alpha_min=0.08, bg_color=(0, 0, 0)):
+def _open_scaled(image_blob, target_size=None, mode="RGB"):
+    """Open a JPEG blob, optionally downscaled to target_size.
+
+    Returns (image, scale) where scale is target_w / source_w (1.0 when no
+    resize happened) so callers can scale line widths to match.
+
+    Gallery thumbnails used to be annotated at full resolution, re-encoded to
+    JPEG, decoded again and only then resized. Downscaling up front avoids that
+    round-trip entirely, and `draft()` lets libjpeg do most of the reduction
+    during DCT decode rather than decoding every full-resolution pixel first.
+    """
+    import io
+    from PIL import Image
+
+    img = Image.open(io.BytesIO(image_blob))
+    if target_size is None:
+        return img.convert(mode), 1.0
+
+    tw, th = int(target_size[0]), int(target_size[1])
+    src_w = img.size[0]
+    # draft() only honours power-of-two reductions and only for JPEG; asking
+    # for 2x the target keeps enough detail for a good LANCZOS finish.
+    img.draft(mode if mode == "RGB" else "RGB", (tw * 2, th * 2))
+    img = img.convert(mode).resize((tw, th), Image.LANCZOS)
+    return img, (tw / src_w if src_w else 1.0)
+
+
+def apply_similarity_overlay(image_blob, matched_patch_distances, n_rows, n_cols, alpha_min=0.08, bg_color=(0, 0, 0), target_size=None):
     """Fade non-matched patches toward bg_color; matched patches stay opaque."""
     import io
     import numpy as np
     from PIL import Image
 
-    img = Image.open(io.BytesIO(image_blob)).convert("RGBA")
+    img, _ = _open_scaled(image_blob, target_size, mode="RGBA")
     iw, ih = img.size
 
     alpha_grid = np.full((n_rows, n_cols), alpha_min, dtype=np.float32)
@@ -484,7 +511,7 @@ def apply_similarity_overlay(image_blob, matched_patch_distances, n_rows, n_cols
     return buf.getvalue()
 
 
-def annotate_patch_image(image_blob, patch_indices, matched_distances, n_rows, n_cols, use_similarity, box_color="black", box_width=2):
+def annotate_patch_image(image_blob, patch_indices, matched_distances, n_rows, n_cols, use_similarity, box_color="black", box_width=2, target_size=None):
     """Annotate an image with matched-patch highlighting: similarity fade or grid boxes.
 
     Shared by the Spatial Search gallery's small preview and its on-demand
@@ -492,17 +519,25 @@ def annotate_patch_image(image_blob, patch_indices, matched_distances, n_rows, n
     (any PIL-recognized color string, e.g. a "#RRGGBB" hex) and box_width
     only apply to the grid-box mode — the similarity overlay has no
     outline to style.
+
+    Pass target_size=(w, h) to annotate at thumbnail resolution; box_width is
+    scaled by the same factor so a thumbnail looks like a shrunk copy of the
+    full-resolution view rather than a version with proportionally fatter
+    outlines. The full-resolution view omits target_size.
     """
     import io
     from PIL import Image, ImageDraw
 
     if use_similarity:
-        return apply_similarity_overlay(image_blob, matched_distances, n_rows, n_cols)
+        return apply_similarity_overlay(
+            image_blob, matched_distances, n_rows, n_cols, target_size=target_size
+        )
 
-    im = Image.open(io.BytesIO(image_blob)).convert("RGB")
+    im, scale = _open_scaled(image_blob, target_size)
     iw, ih = im.size
     patch_w = iw // n_cols
     patch_h = ih // n_rows
+    box_width = max(1, round(box_width * scale))
     draw = ImageDraw.Draw(im)
     for p in map(int, patch_indices):
         pr, pc = p // n_cols, p % n_cols
@@ -511,98 +546,6 @@ def annotate_patch_image(image_blob, patch_indices, matched_distances, n_rows, n
     buf = io.BytesIO()
     im.save(buf, format="JPEG", quality=85)
     return buf.getvalue()
-
-
-def build_gallery_figure(thumb_arrays, captions, n_cols, thumb_w, thumb_h, theme="light", gap=6, caption_h=16, selected_index=None):
-    """Grid of thumbnail images (each with a visible caption below it) as one
-    clickable Plotly figure.
-
-    Each thumbnail is a go.Image trace with a text annotation underneath;
-    a single invisible go.Heatmap trace layered on top encodes each cell's
-    flat index in `z`, giving a real click target read via
-    mo.ui.plotly(...).value — the same technique build_geo_patch_figure
-    uses for per-patch clicks, chosen because marimo's built-in button
-    renders inside a Shadow DOM that external CSS can't reach, so an
-    overlay-button click target can't be sized/hidden to match an
-    arbitrary thumbnail.
-    """
-    import numpy as np
-    import plotly.graph_objects as go
-
-    _is_dark = (theme == "dark")
-    _bg = "#1a1a1a" if _is_dark else "white"
-    _text = "#e0e0e0" if _is_dark else "#222222"
-
-    n_items = len(thumb_arrays)
-    n_cols = max(1, min(n_cols, n_items))
-    n_rows = -(-n_items // n_cols)  # ceil division
-
-    cell_w = thumb_w + gap
-    cell_h = thumb_h + caption_h + gap
-
-    fig = go.Figure()
-    for i, arr in enumerate(thumb_arrays):
-        row, col = divmod(i, n_cols)
-        x0 = col * cell_w
-        y0 = -row * cell_h
-        fig.add_trace(go.Image(z=arr, x0=x0, y0=y0, dx=1, dy=-1, hoverinfo="skip"))
-        fig.add_annotation(
-            x=x0 + thumb_w / 2, y=y0 - thumb_h - 2,
-            xanchor="center", yanchor="top", showarrow=False,
-            text=captions[i] if i < len(captions) else "",
-            font=dict(size=10, color=_text),
-        )
-
-    hm_x = [col * cell_w + thumb_w / 2 for col in range(n_cols)]
-    hm_y = [-row * cell_h - (thumb_h + caption_h) / 2 for row in range(n_rows)]
-    z = np.full((n_rows, n_cols), -1)
-    for i in range(n_items):
-        row, col = divmod(i, n_cols)
-        z[row, col] = i
-    fig.add_trace(go.Heatmap(
-        z=z, x=hm_x, y=hm_y,
-        opacity=0.01, showscale=False,
-        colorscale=[[0, "rgba(0,0,0,0)"], [1, "rgba(0,0,0,0)"]],
-        hovertemplate="<extra></extra>",
-    ))
-
-    _shapes = []
-    if selected_index is not None and 0 <= selected_index < n_items:
-        _row, _col = divmod(selected_index, n_cols)
-        _x0 = _col * cell_w
-        _y0 = -_row * cell_h
-        _pad = 3
-        _shapes.append(dict(
-            type="rect",
-            x0=_x0 - _pad, x1=_x0 + thumb_w + _pad,
-            y0=_y0 + _pad, y1=_y0 - thumb_h - _pad,
-            line=dict(color="red", width=3),
-            fillcolor="rgba(0,0,0,0)",
-            layer="above",
-        ))
-
-    fig.update_layout(
-        shapes=_shapes,
-        # No scaleanchor: the grid's height is fixed (below) so the Visuals/
-        # Data tabs don't resize on switch, but the actual rendered width is
-        # whatever the flex column autosizes to — locking x/y to a strict
-        # 1:1 pixel scale while height stays fixed fights that and pads the
-        # mismatch with blank space (horizontally if the column ends up
-        # wider than assumed, vertically if narrower). Letting width and
-        # height scale independently avoids that; any resulting stretch is
-        # minor and preferable to a visible gap or crop.
-        xaxis=dict(visible=False, range=[0, n_cols * cell_w], fixedrange=True),
-        yaxis=dict(visible=False, range=[-n_rows * cell_h, 5], fixedrange=True),
-        autosize=True,
-        height=n_rows * cell_h + 20,
-        margin=dict(l=0, r=0, t=0, b=0),
-        clickmode="event+select",
-        dragmode="pan",
-        plot_bgcolor=_bg,
-        paper_bgcolor=_bg,
-        showlegend=False,
-    )
-    return fig
 
 
 def render_basemap(lat_min, lat_max, lon_min, lon_max, target_w=512, theme="light"):
