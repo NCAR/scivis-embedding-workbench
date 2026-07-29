@@ -234,6 +234,26 @@ def crop_patch_with_buffer(
     return crop
 
 
+def frame_preview_uri(image_blob, quality: int = 75) -> str:
+    """Data URI of the whole frame as JPEG, for hover previews.
+
+    The stored PNG is ~178 KB; the same 896x256 pixels as JPEG q75 are ~12 KB,
+    because these fields are smooth. Lossy is fine for a context view -- the
+    patch crop itself stays lossless, since that is the one being inspected.
+    Cache the result per image_id: decoding the source PNG costs ~3 ms and is
+    the most expensive step in building a tile.
+    """
+    import base64
+    import io
+
+    from PIL import Image
+
+    img = Image.open(io.BytesIO(image_blob)).convert("RGB")
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=quality)
+    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
 def to_png_bytes(pil_image) -> bytes:
     """Encode a PIL image as PNG bytes (what marimo's mo.image wants)."""
     import io

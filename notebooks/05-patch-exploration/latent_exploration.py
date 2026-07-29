@@ -1,7 +1,7 @@
 import marimo
 
 __generated_with = "0.23.13"
-app = marimo.App()
+app = marimo.App(layout_file="layouts/latent_exploration.grid.json")
 
 
 @app.cell
@@ -21,6 +21,7 @@ def _():
         crop_patch_with_buffer,
         fetch_image_blobs,
         format_latlon,
+        frame_preview_uri,
         get_spatial_extent,
         open_source_table,
         patch_latlon,
@@ -35,6 +36,7 @@ def _():
         crop_patch_with_buffer,
         fetch_image_blobs,
         format_latlon,
+        frame_preview_uri,
         get_spatial_extent,
         list_experiments,
         load_patch_matrix,
@@ -185,10 +187,10 @@ def _(
 @app.cell(hide_code=True)
 def _(ColorPicker, RESAMPLING, mo):
     n_examples = mo.ui.slider(
-        start=4, stop=24, step=4, value=12, label="Patches", show_value=True
+        start=4, stop=200, step=4, value=12, label="Patches", show_value=True
     )
     n_columns = mo.ui.slider(
-        start=1, stop=8, step=1, value=4, label="Columns", show_value=True
+        start=1, stop=14, step=1, value=4, label="Columns", show_value=True
     )
     buffer_patches = mo.ui.slider(
         start=0, stop=6, step=1, value=2, label="Context (patches)", show_value=True
@@ -240,6 +242,7 @@ def _(
     crop_patch_with_buffer,
     fetch_image_blobs,
     format_latlon,
+    frame_preview_uri,
     image_ids,
     mo,
     n_columns,
@@ -270,11 +273,18 @@ def _(
         )
         _h, _w = patch_grid(config)
 
+        # Hover previews are keyed by image_id: decoding the source PNG is the
+        # most expensive step per tile, so tiles sharing a parent reuse it.
+        _previews = {}
+        # Preview width in px; the JPEG itself is full resolution.
+        _preview_w = 448
         _tiles = []
         for _i in _pick:
             _row = _rows.get(image_ids[_i])
             if _row is None:
                 continue
+            if image_ids[_i] not in _previews:
+                _previews[image_ids[_i]] = frame_preview_uri(_row["image_blob"])
             _crop = crop_patch_with_buffer(
                 _row["image_blob"],
                 patch_indices[_i],
@@ -312,14 +322,27 @@ def _(
                 + f"<br>patch {int(patch_indices[_i])} (r{_r}, c{_c})"
                 + (f" · {_wind:.0f} kts" if _has_wind else "")
             )
+            # The patch marker on the hover frame is a CSS box at percentage
+            # coordinates, not drawn into the pixels: it costs no image work and
+            # stays correct at any preview width.
+            _mark = (
+                f"left:{_c / _w * 100:.4f}%;top:{_r / _h * 100:.4f}%;"
+                f"width:{100 / _w:.4f}%;height:{100 / _h:.4f}%;"
+                f"border:2px solid {border_color.color}"
+            )
             # max-width:none defeats the inherited img rule that would shrink
             # tiles to fit their cell.
             _tiles.append(
-                f"<figure style='margin:0'>"
+                f"<figure class='pc-tile' style='margin:0'>"
                 f"<img src='{_uri}' style='display:block;width:{_crop.size[0]}px;"
                 f"max-width:none' />"
                 f"<figcaption style='font-size:0.75em;opacity:0.8;"
                 f"text-align:center;margin-top:0.25rem'>{_label}</figcaption>"
+                f"<span class='pc-full'>"
+                f"<img src='{_previews[image_ids[_i]]}' "
+                f"style='display:block;width:{_preview_w}px;max-width:none' />"
+                f"<span class='pc-mark' style='{_mark}'></span>"
+                f"</span>"
                 f"</figure>"
             )
 
@@ -329,8 +352,20 @@ def _(
         # share the row, or on how wide the notebook is.
         _per_row = int(n_columns.value)
         _tile_w = _tiles and _crop.size[0] or 0
+        # Hover is pure CSS -- no JS, no round trip to the kernel. The preview
+        # is positioned relative to the tile and lifted above its neighbours.
+        _css = (
+            "<style>"
+            ".pc-tile{position:relative}"
+            ".pc-full{display:none;position:absolute;left:0;top:0;z-index:30;"
+            "box-shadow:0 6px 24px rgba(0,0,0,.55)}"
+            ".pc-tile:hover .pc-full{display:block}"
+            ".pc-mark{position:absolute;box-sizing:border-box;pointer-events:none}"
+            "</style>"
+        )
         gallery = mo.Html(
-            f"<div style='display:grid;"
+            _css
+            + f"<div style='display:grid;"
             f"grid-template-columns:repeat({_per_row}, {_tile_w}px);"
             f"gap:1rem;justify-content:start;overflow-x:auto'>"
             + "".join(_tiles)
