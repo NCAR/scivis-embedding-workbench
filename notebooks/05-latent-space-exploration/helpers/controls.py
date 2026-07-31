@@ -1,4 +1,4 @@
-"""marimo widget factories for the patch-exploration notebook.
+"""marimo widget factories for the latent-space-exploration notebook.
 
 The only module here that imports marimo, so the notebook can stay a sequence
 of calls.

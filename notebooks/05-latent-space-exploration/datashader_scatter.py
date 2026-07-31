@@ -1,7 +1,7 @@
 import marimo
 
 __generated_with = "0.23.13"
-app = marimo.App()
+app = marimo.App(width="full")
 
 
 @app.cell
@@ -101,12 +101,6 @@ def _(mo):
         value="density",
         label="Color by",
     )
-    plot_width = mo.ui.slider(
-        start=400, stop=1600, step=50, value=900, label="Width", show_value=True
-    )
-    plot_height = mo.ui.slider(
-        start=300, stop=1000, step=50, value=600, label="Height", show_value=True
-    )
     sample_size = mo.ui.slider(
         start=0,
         stop=5000,
@@ -115,30 +109,32 @@ def _(mo):
         label="Hover sample",
         show_value=True,
     )
-    mo.vstack([color_by, plot_width, plot_height, sample_size])
-    return color_by, plot_height, plot_width, sample_size
+    # Dict options so the label is readable but `.value` is the literal color
+    # bokeh wants. Dark gray rather than black: the low end of the fire ramp is
+    # near-black, so pure black hides the sparse tail of every blob.
+    background = mo.ui.dropdown(
+        options={"Dark gray": "#2b2b2b", "White": "white"},
+        value="Dark gray",
+        label="Background",
+    )
+    mo.vstack([color_by, background, sample_size])
+    return background, color_by, sample_size
 
 
 @app.cell
-def _(
-    blob_colors,
-    cc,
-    color_by,
-    df,
-    ds,
-    hd,
-    hv,
-    itertools,
-    plot_height,
-    plot_width,
-):
+def _(background, blob_colors, cc, color_by, df, ds, hd, hv, itertools):
+    _light_bg = background.value == "white"
+
     # Each variable needs its own aggregator: counts for density, a per-category
     # count so overlapping blobs blend instead of overpainting, and a mean for
     # the continuous columns.
     _var = color_by.value
     if _var == "density":
+        # fire runs black -> white, so it only reads against a dark canvas. On
+        # white, flip it: dense stays dark, sparse fades into the background.
+        _cmap = list(reversed(cc.fire)) if _light_bg else cc.fire
         _aggregator = ds.count()
-        _shade_kwargs = dict(cmap=cc.fire, cnorm="log")
+        _shade_kwargs = dict(cmap=_cmap, cnorm="log")
     elif _var == "blob":
         _aggregator = ds.count_cat("blob")
         _shade_kwargs = dict(color_key=blob_colors, cnorm="log")
@@ -166,20 +162,17 @@ def _(
         return hd.shade(agg, **_shade_kwargs)
 
     # rasterize stays lazy: it re-runs with the current view limits on every
-    # zoom/pan. width/height pin the aggregation grid, so holoviews never has to
-    # ask the browser for the frame size.
+    # zoom/pan. No width/height, because the frame width is now the cell's width
+    # and is only known after the browser lays the page out — the grid comes from
+    # holoviews' PlotSize stream instead, which also means a re-aggregation on
+    # every window resize and on every press of the height buttons.
     points = hv.Points(df, ["x", "y"], vdims=["blob", "radius", "field"])
-    raster = hd.rasterize(
-        points,
-        aggregator=_aggregator,
-        width=int(plot_width.value),
-        height=int(plot_height.value),
-    ).apply(_shade)
+    raster = hd.rasterize(points, aggregator=_aggregator).apply(_shade)
     return (raster,)
 
 
 @app.cell
-def _(blob_colors, color_by, df, hv, sample_size):
+def _(background, blob_colors, color_by, df, hv, sample_size):
     # Cheap foreground: real glyphs for a random sample, purely so the plot has
     # something to hover. This layer is client-side, so it stays crisp on zoom.
     _cols = ["blob", "radius", "field"]
@@ -192,7 +185,10 @@ def _(blob_colors, color_by, df, hv, sample_size):
     _var = color_by.value
     _shared = dict(size=4, alpha=0.5, tools=["hover"])
     if _var == "density":
-        overlay = overlay.opts(color="white", **_shared)
+        # The density overlay has no data-driven color, so it only has to stay
+        # visible — invert it with the canvas.
+        _glyph = "black" if background.value == "white" else "white"
+        overlay = overlay.opts(color=_glyph, **_shared)
     elif _var == "blob":
         # Categorical color here gives the legend datashader's raster cannot.
         overlay = overlay.opts(
@@ -204,14 +200,35 @@ def _(blob_colors, color_by, df, hv, sample_size):
 
 
 @app.cell
-def _(mo, overlay, plot_height, plot_width, pn, raster):
-    # frame_width/frame_height size the inner plot area. Sizing the frame rather
-    # than the whole figure keeps the axes and colorbar from eating into the
-    # canvas, and keeps the aggregation grid matched to the pixels on screen.
+def _(background, mo, overlay, pn, raster):
+    # A faint grid, drawn at "overlay" level. The default is "underlay", which
+    # puts it beneath the datashaded image — and that image covers the whole
+    # frame, so an underlaid grid is invisible no matter its alpha.
+    _grid = {
+        "grid_line_color": "black" if background.value == "white" else "white",
+        "grid_line_alpha": 0.12,
+        "grid_level": "overlay",
+    }
+
+    # 1:1 data scale, applied straight to the bokeh figure. The holoviews option
+    # for it is data_aspect=1, and this is the same constraint — but routing it
+    # through .opts() sends it into holoviews' layout solver, which downgrades
+    # the plot to sizing_mode="fixed" and logs "responsive mode could not be
+    # enabled". The hook runs after holoviews has finished sizing, so bokeh gets
+    # match_aspect and the auto width survives.
+    def _equal_scales(plot, element):
+        plot.state.match_aspect = True
+
+    # responsive="width" + aspect=1 resolves to bokeh sizing_mode="scale_width"
+    # with aspect_ratio=1: the frame takes the full width of the cell and derives
+    # its height. Height is not pinned to anything here.
     combined = (raster * overlay).opts(
-        frame_width=int(plot_width.value),
-        frame_height=int(plot_height.value),
-        bgcolor="black",
+        responsive="width",
+        aspect=1,
+        hooks=[_equal_scales],
+        bgcolor=background.value,
+        show_grid=True,
+        gridstyle=_grid,
         # padding=0 is load-bearing: with the default padding, every new raster
         # extent gets padded again, which nudges the axis range, which fires the
         # range stream, which re-aggregates — a loop that never settles.
@@ -221,21 +238,25 @@ def _(mo, overlay, plot_height, plot_width, pn, raster):
         active_tools=["box_zoom"],
         tools=["box_zoom", "wheel_zoom", "pan", "reset"],
     )
-    plot = mo.ui.panel(pn.pane.HoloViews(combined, sizing_mode="fixed"))
+    # The pane has to stretch as well, or the figure has no width to fill.
+    plot = mo.ui.panel(pn.pane.HoloViews(combined, sizing_mode="stretch_width"))
     plot
     return
 
 
 @app.cell
-def _(color_by, df, mo, plot_height, plot_width, sample_size):
+def _(color_by, df, mo, sample_size):
     mo.md(f"""
     **Points:** {len(df):,}  ·  **Colored by:** {color_by.value}  ·
-    **Grid:** {plot_width.value}×{plot_height.value}  ·
     **Hover sample:** {sample_size.value:,}
 
-    Box-zoom into a dense region and the raster re-aggregates at that window —
-    the grid stays {plot_width.value}×{plot_height.value} pixels, so zooming in
-    buys real detail rather than magnified pixels. Reset returns to full extent.
+    The frame fills the cell width. The x and y axes share one scale, so shapes
+    are not skewed by the frame being wider than it is tall. See the
+    `[datashade]` lines in the terminal for the window of each re-aggregation.
+
+    Box-zoom into a dense region and the raster re-aggregates at that window, so
+    zooming in buys real detail rather than magnified pixels. Reset returns to
+    full extent.
     """)
     return
 
