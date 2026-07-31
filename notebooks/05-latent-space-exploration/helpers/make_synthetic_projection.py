@@ -13,8 +13,13 @@ rather than a uniform blob that hides bugs.
 
     uv run python notebooks/05-latent-space-exploration/helpers/make_synthetic_projection.py
 
-Writes to a `*_synthetic` sibling of the source experiment. Nothing is written to
-the real experiment directory.
+Writes a new table alongside `config`, `image_embeddings` and `patch_embeddings`
+in the experiment directory. Only that one table is created or replaced; the
+existing tables are opened read-only and never modified.
+
+The table name carries `synthetic` so it cannot be mistaken for real projection
+output sitting in the same directory, and the schema metadata says so too. When
+real UMAP output lands, write it as `umap_patch_001` next to this one.
 """
 
 from __future__ import annotations
@@ -36,9 +41,10 @@ SRC_IMAGES = Path(
     "/Users/ncheruku/Documents/Work/sample_data/data/lancedb/shared_source/"
     "era5_hrly_2016_2018_images"
 )
-OUT_EXPERIMENT = SRC_EXPERIMENT.with_name(SRC_EXPERIMENT.name + "_synthetic")
+# Same directory as the embeddings: the projection is part of the experiment.
+OUT_EXPERIMENT = SRC_EXPERIMENT
 
-RUN_ID = "001"
+RUN_ID = "synthetic"
 TABLE = f"umap_patch_{RUN_ID}"
 SEED = 42
 
@@ -223,7 +229,11 @@ def main() -> None:
 
     OUT_EXPERIMENT.mkdir(parents=True, exist_ok=True)
     out_db = lancedb.connect(OUT_EXPERIMENT)
-    # Rebuild from scratch each run: this is a build artifact, not a store.
+    # Rebuild from scratch each run: this is a build artifact, not a store. The
+    # guard matters because this now writes into the real experiment directory —
+    # a careless edit to TABLE would otherwise delete source data.
+    protected = {"config", "image_embeddings", "patch_embeddings"}
+    assert TABLE not in protected, f"refusing to overwrite source table {TABLE!r}"
     shutil.rmtree(OUT_EXPERIMENT / f"{TABLE}.lance", ignore_errors=True)
 
     # Column roles travel with the table so the viewer can build its colour-by

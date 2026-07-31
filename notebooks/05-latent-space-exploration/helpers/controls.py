@@ -124,6 +124,109 @@ def display_options(values, defaults=None):
     return DisplayOptions(**values)
 
 
+def projection_picker(tables, value=None):
+    """Dropdown of the projection tables found in the experiment."""
+    return mo.ui.dropdown(
+        options=list(tables),
+        value=value or (tables[0] if tables else None),
+        label="Projection",
+    )
+
+
+def color_by_dropdown(options, value: str = "density"):
+    """Dropdown of colour-by columns.
+
+    `density` is always present and always first: it needs nothing but x/y, so
+    it stays valid for a projection with no clusters or metadata at all.
+    """
+    options = list(options)
+    return mo.ui.dropdown(
+        options=options,
+        value=value if value in options else (options[0] if options else None),
+        label="Color by",
+    )
+
+
+def colormap_dropdown(kind: str, value=None):
+    """Palettes appropriate to the selected column's kind.
+
+    Built in its own cell rather than folded into a widget group, because the
+    *options* depend on another widget's value: a qualitative palette is
+    meaningless on a mean aggregation, and a sequential ramp is meaningless on a
+    per-category count. Switching kind therefore resets the choice, which is
+    intended -- the previous palette would not have applied.
+    """
+    from helpers import scatter as _scatter
+
+    options = _scatter.cmap_options(kind)
+    labels = {v: k for k, v in options.items()}
+    return mo.ui.dropdown(
+        options=options,
+        value=labels.get(value, next(iter(options))),
+        label="Colormap",
+    )
+
+
+def background_dropdown(value: str = "Dark gray"):
+    """Canvas colour.
+
+    Dict options so the label stays readable while `.value` is the literal
+    colour bokeh wants. Dark gray rather than black: the low end of most
+    sequential ramps is near-black, and pure black swallows the sparse tail.
+    """
+    return mo.ui.dropdown(
+        options={"Dark gray": "#2b2b2b", "White": "white"},
+        value=value,
+        label="Background",
+    )
+
+
+def hover_sample_slider(value: int = 2000):
+    """How many real glyphs to draw over the raster, for hover and the legend."""
+    return mo.ui.slider(
+        start=0, stop=10_000, step=500, value=value,
+        label="Hover sample", show_value=True,
+    )
+
+
+def width_buttons(get_width, set_width, step: int = 100,
+                  min_width: int = 300, max_width: int = 1600):
+    """−/+ buttons stepping the plot's on-screen width, as (narrower, wider).
+
+    Takes a `mo.state` getter/setter pair rather than owning the state, because
+    two buttons have to write to the same number and the cell that *reads* it
+    must be a different one -- marimo will not re-run the cell that owns a
+    state setter.
+
+    Two callbacks per button, and both are needed: `on_click` computes the
+    button's own next value, a click counter whose only job is to differ every
+    press, and `on_change` fires on that difference and moves the width. The
+    state update in `on_click` alone looks right and silently does nothing.
+    """
+    narrower = mo.ui.button(
+        label="−", tooltip="Narrower plot", value=0,
+        on_click=lambda clicks: clicks + 1,
+        on_change=lambda _: set_width(max(min_width, get_width() - step)),
+    )
+    wider = mo.ui.button(
+        label="+", tooltip="Wider plot", value=0,
+        on_click=lambda clicks: clicks + 1,
+        on_change=lambda _: set_width(min(max_width, get_width() + step)),
+    )
+    return narrower, wider
+
+
+def scatter_panel(*widgets):
+    """Lay the scatter controls out in one row, wrapping as needed."""
+    return mo.hstack(
+        [w for w in widgets if w is not None],
+        justify="start",
+        align="center",
+        gap=1,
+        wrap=True,
+    )
+
+
 def color_picker(value: str = "#00ff88"):
     """A real <input type="color">.
 

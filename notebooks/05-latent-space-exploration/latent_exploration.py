@@ -11,25 +11,45 @@ def _():
 
     from helpers import PatchExperiment
     from helpers.controls import (
+        background_dropdown,
+        color_by_dropdown,
         color_picker,
+        colormap_dropdown,
         display_options,
         display_panel,
         display_widgets,
+        hover_sample_slider,
         loader_controls,
+        projection_picker,
+        scatter_panel,
         widget_values,
+        width_buttons,
     )
     from helpers.data import list_experiments
 
+    # holoviews/panel/datashader stay inside helpers.scatter -- the notebook
+    # only ever handles the pane it returns.
+    from helpers.scatter import default_cmap, scatter_pane
+
     return (
         PatchExperiment,
+        background_dropdown,
+        color_by_dropdown,
         color_picker,
+        colormap_dropdown,
+        default_cmap,
         display_options,
         display_panel,
         display_widgets,
+        hover_sample_slider,
         list_experiments,
         loader_controls,
         mo,
+        projection_picker,
+        scatter_pane,
+        scatter_panel,
         widget_values,
+        width_buttons,
     )
 
 
@@ -117,6 +137,148 @@ def _(border_color, display, display_options, exp, mo, sample, widget_values):
         if sample is not None
         else "<em>Load an experiment to see patch crops.</em>"
     )
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md("""
+    ## Projection
+
+    The 2-D projection of these patches, datashaded. This reads the **whole**
+    projection table, independent of the sample size above — that slider limits
+    an expensive 768-dim embedding read, which does not apply to a table of
+    coordinates.
+
+    **Zoom re-aggregates.** Box-zoom or wheel-zoom sends the new view limits
+    back to Python and datashader rebuilds the raster for that window, so detail
+    keeps resolving as you go in rather than turning into big pixels.
+    """)
+    return
+
+
+@app.cell
+def _(exp, projection_picker):
+    _tables = exp.list_projections() if exp is not None else []
+    projection_selector = projection_picker(_tables)
+    projection_selector
+    return (projection_selector,)
+
+
+@app.cell
+def _(exp, projection_selector):
+    projection = (
+        None
+        if exp is None or projection_selector.value is None
+        else exp.load_projection(projection_selector.value)
+    )
+    return (projection,)
+
+
+@app.cell
+def _(mo, projection):
+    mo.md(
+        projection.summary()
+        if projection is not None
+        else "No projection table in this experiment — expected one named `umap_*` "
+        "beside the embedding tables."
+    )
+    return
+
+
+@app.cell
+def _(
+    background_dropdown,
+    color_by_dropdown,
+    hover_sample_slider,
+    mo,
+    projection,
+    scatter_panel,
+    width_buttons,
+):
+    scatter_color_by = color_by_dropdown(
+        projection.color_by_options() if projection is not None else ["density"]
+    )
+    scatter_background = background_dropdown()
+    scatter_hover = hover_sample_slider()
+
+    # The width lives in state because two buttons write to it. This cell must
+    # not *read* it -- marimo does not re-run the cell that owns a state setter,
+    # so the readout lives in the next cell instead.
+    get_plot_width, set_plot_width = mo.state(800)
+    narrower, wider = width_buttons(get_plot_width, set_plot_width)
+
+    scatter_panel(scatter_color_by, scatter_background, scatter_hover)
+    return (
+        get_plot_width,
+        narrower,
+        scatter_background,
+        scatter_color_by,
+        scatter_hover,
+        wider,
+    )
+
+
+@app.cell
+def _(
+    colormap_dropdown,
+    default_cmap,
+    get_plot_width,
+    mo,
+    narrower,
+    projection,
+    scatter_background,
+    scatter_color_by,
+    scatter_panel,
+    wider,
+):
+    # The colormap widget is rebuilt here rather than alongside the other
+    # controls because its *options* depend on the colour-by kind. The choice
+    # resets on a categorical <-> continuous switch, which is intended: the
+    # previous palette would not have applied to the new aggregation.
+    _kind = (
+        projection.kind(scatter_color_by.value) if projection is not None else "density"
+    )
+    _light = scatter_background.value == "white"
+    scatter_cmap = colormap_dropdown(_kind, value=default_cmap(_kind, _light))
+
+    # The width readout has to be read in a cell that does not own the setter,
+    # or it would never refresh.
+    scatter_panel(
+        scatter_cmap,
+        mo.md("**Width**"),
+        narrower,
+        wider,
+        mo.md(f"`{get_plot_width()} px`"),
+    )
+    return (scatter_cmap,)
+
+
+@app.cell
+def _(
+    get_plot_width,
+    mo,
+    projection,
+    scatter_background,
+    scatter_cmap,
+    scatter_color_by,
+    scatter_hover,
+    scatter_pane,
+):
+    if projection is None:
+        scatter = mo.md("*Load an experiment with a projection table to see the map.*")
+    else:
+        scatter = mo.ui.panel(
+            scatter_pane(
+                projection,
+                color_by=scatter_color_by.value,
+                cmap=scatter_cmap.value,
+                background=scatter_background.value,
+                hover_sample=int(scatter_hover.value),
+                max_width=int(get_plot_width()),
+            )
+        )
+    scatter
     return
 
 

@@ -39,6 +39,49 @@ class PatchSample:
 
 
 @dataclass
+class Projection:
+    """A 2-D projection table: coordinates plus whatever else was stored.
+
+    `x` and `y` are the entire contract. Everything else -- clusters, times,
+    geography, storm context -- is discovered, so a table holding only
+    coordinates is a normal case rather than a degraded one, and a projection
+    can be explored before it has ever been clustered.
+    """
+
+    name: str
+    df: Any
+    categorical: list = field(default_factory=list)
+    continuous: list = field(default_factory=list)
+    metadata: dict = field(default_factory=dict)
+
+    def __len__(self):
+        return len(self.df)
+
+    @property
+    def is_synthetic(self) -> bool:
+        return str(self.metadata.get("synthetic", "")).lower() == "true"
+
+    def kind(self, column: str) -> str:
+        """"density", "categorical" or "continuous" for a colour-by choice.
+
+        Unknown columns fall back to density, so a stale widget value cannot
+        raise -- it just draws the plot that always works.
+        """
+        if column in self.categorical:
+            return "categorical"
+        if column in self.continuous:
+            return "continuous"
+        return "density"
+
+    def color_by_options(self) -> list:
+        """Colour-by choices, density first because it needs only x/y."""
+        return ["density", *self.categorical, *self.continuous]
+
+    def summary(self) -> str:
+        return _viz.projection_summary(self)
+
+
+@dataclass
 class DisplayOptions:
     """Gallery appearance. Field names match the keys of `display_form()`."""
 
@@ -109,6 +152,30 @@ class PatchExperiment:
 
     def summary(self, sample: PatchSample) -> str:
         return _viz.experiment_summary(self.config, self.grid, self.n_patches, sample)
+
+    def list_projections(self, prefix: str = "umap_") -> list:
+        """Projection tables sitting alongside the embeddings in this experiment."""
+        return _data.list_projection_tables(self.db_path, self.name, prefix=prefix)
+
+    def load_projection(self, name: str) -> "Projection":
+        """Load a whole projection table and work out its colour-by columns.
+
+        Roles come from the table's own schema metadata when the writer recorded
+        them, and are inferred from dtypes otherwise. Either way they are pruned
+        against the loaded frame, so a column that is constant in *this*
+        experiment never reaches the dropdown.
+        """
+        tbl = _data.open_projection_table(self.db_path, self.name, name)
+        df = _data.load_projection_frame(tbl)
+        roles = _data.get_color_roles(tbl) or _data.infer_color_roles(df)
+        roles = _data.usable_color_columns(df, roles)
+        return Projection(
+            name=name,
+            df=df,
+            categorical=roles["categorical"],
+            continuous=roles["continuous"],
+            metadata=_data.get_table_metadata(tbl),
+        )
 
     def geometry_note(self) -> str:
         return _viz.geometry_note(self.config, self.grid)

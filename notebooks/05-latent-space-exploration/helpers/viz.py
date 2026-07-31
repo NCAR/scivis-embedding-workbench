@@ -33,6 +33,36 @@ def experiment_summary(config, grid, n_patches, sample) -> str:
     )
 
 
+def projection_summary(projection) -> str:
+    """Markdown summary of a loaded projection.
+
+    Cluster stats appear only when a `cluster` column exists -- a projection
+    that was never clustered should say nothing about clusters rather than
+    report zeros. A synthetic table announces itself loudly, so a made-up
+    scatter is never mistaken for real projection output.
+    """
+    df = projection.df
+    parts = [
+        f"**Table:** `{projection.name}`",
+        f"**Rows:** {len(projection):,}",
+    ]
+    if "cluster" in df.columns:
+        labels = df["cluster"]
+        n_clusters = int((labels[labels >= 0]).nunique())
+        noise = float((labels < 0).mean())
+        parts.append(f"**Clusters:** {n_clusters} (+{noise:.1%} noise)")
+    parts.append(
+        f"**Colour by:** {len(projection.categorical)} categorical, "
+        f"{len(projection.continuous)} continuous"
+    )
+    line = "  ·  ".join(parts)
+
+    if projection.is_synthetic:
+        note = projection.metadata.get("note", "This table is synthetic.")
+        line += f"\n\n> ⚠️ **Synthetic projection.** {note}"
+    return line
+
+
 def geometry_note(config, grid) -> str:
     """Sentence describing the patch geometry, derived from config.
 
