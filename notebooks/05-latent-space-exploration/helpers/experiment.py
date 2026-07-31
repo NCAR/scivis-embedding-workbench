@@ -53,6 +53,10 @@ class Projection:
     categorical: list = field(default_factory=list)
     continuous: list = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
+    # Kept so identity columns can be fetched for a handful of sampled rows.
+    # `image_id` is a large_string across ~1M rows and is deliberately left out
+    # of `df`; hover thumbnails need it for a few hundred of them.
+    table: Any = None
 
     def __len__(self):
         return len(self.df)
@@ -175,7 +179,79 @@ class PatchExperiment:
             categorical=roles["categorical"],
             continuous=roles["continuous"],
             metadata=_data.get_table_metadata(tbl),
+            table=tbl,
         )
+
+    def hover_frame(
+        self,
+        projection: "Projection",
+        n: int = 300,
+        seed: int = 0,
+        thumbnails: bool = False,
+        buffer_patches: int = 2,
+        scale: int = 2,
+        quality: int = 80,
+        max_thumbnails: int = 300,
+    ):
+        """The scatter's hover sample, optionally with a patch crop per point.
+
+        Returns a copy of `n` sampled rows of `projection.df`. With
+        `thumbnails=True` it also carries `image_id` and a `thumb` column of
+        JPEG data URIs -- the same crop-with-context the gallery renders.
+
+        Cost is linear and dominated by cropping: measured at roughly 3 ms and
+        3.7 KB per point, so 300 points is about 1 s and 1 MB while 2000 would
+        be 6 s and 7 MB embedded in the document. `max_thumbnails` truncates the
+        overlay -- not just the crops -- so every remaining glyph has an image
+        and there are no half-loaded tooltips. Build this in its own cell so
+        changing the colormap or the background does not pay the cost again.
+        """
+        df = projection.df
+        n = min(int(n), len(df))
+        if n <= 0:
+            return df.iloc[:0].copy()
+
+        sample = df.sample(n, random_state=seed)
+        if not thumbnails:
+            return sample
+
+        if self.src_img_tbl is None or projection.table is None:
+            return sample  # no source images: hover still works, without crops
+
+        if len(sample) > max_thumbnails:
+            sample = sample.iloc[:max_thumbnails]
+
+        # `df` was loaded whole and in table order, so a positional index is a
+        # row offset and `take` fetches exactly the identity columns needed.
+        offsets = sample.index.to_numpy()
+        ids = (
+            projection.table.to_lance()
+            .take(offsets, columns=["image_id", "patch_index"])
+            .to_pandas()
+        )
+        sample = sample.copy()
+        sample["image_id"] = ids["image_id"].to_numpy()
+
+        spatial_h, spatial_w = self.grid
+        blobs = _data.fetch_image_blobs(self.src_img_tbl, sample["image_id"].tolist())
+
+        thumbs = []
+        for image_id, patch_index in zip(sample["image_id"], sample["patch_index"]):
+            row = blobs.get(image_id)
+            if row is None:
+                thumbs.append("")
+                continue
+            crop = _patches.crop_patch_with_buffer(
+                row["image_blob"],
+                int(patch_index),
+                spatial_h,
+                spatial_w,
+                buffer_patches=buffer_patches,
+                scale=scale,
+            )
+            thumbs.append(_patches.to_jpeg_uri(crop, quality=quality))
+        sample["thumb"] = thumbs
+        return sample
 
     def geometry_note(self) -> str:
         return _viz.geometry_note(self.config, self.grid)

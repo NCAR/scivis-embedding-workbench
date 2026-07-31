@@ -189,6 +189,30 @@ def hover_sample_slider(value: int = 2000):
     )
 
 
+def thumbnail_checkbox(value: bool = False):
+    """Whether hover tooltips carry a patch crop.
+
+    Off by default because it is the one control here that costs real time:
+    each thumbnail is a JPEG crop built server-side and embedded in the
+    document, about 3 ms and 3.7 KB per point.
+    """
+    return mo.ui.checkbox(value=value, label="Patch thumbnails on hover")
+
+
+def thumbnail_limit_slider(value: int = 300):
+    """Cap on how many patch crops get built when thumbnails are on.
+
+    Separate from the hover sample because it bounds the *expensive* part.
+    When thumbnails are enabled the overlay is truncated to this many points,
+    so every glyph still has an image -- there are no half-loaded tooltips.
+    Roughly 3 ms and 3.7 KB per point, so 300 is about a second and 1 MB.
+    """
+    return mo.ui.slider(
+        start=50, stop=2000, step=50, value=value,
+        label="Max hover images", show_value=True,
+    )
+
+
 def width_buttons(get_width, set_width, step: int = 100,
                   min_width: int = 300, max_width: int = 1600):
     """−/+ buttons stepping the plot's on-screen width, as (narrower, wider).

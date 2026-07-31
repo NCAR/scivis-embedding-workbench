@@ -22,6 +22,8 @@ def _():
         loader_controls,
         projection_picker,
         scatter_panel,
+        thumbnail_checkbox,
+        thumbnail_limit_slider,
         widget_values,
         width_buttons,
     )
@@ -48,6 +50,8 @@ def _():
         projection_picker,
         scatter_pane,
         scatter_panel,
+        thumbnail_checkbox,
+        thumbnail_limit_slider,
         widget_values,
         width_buttons,
     )
@@ -194,6 +198,8 @@ def _(
     mo,
     projection,
     scatter_panel,
+    thumbnail_checkbox,
+    thumbnail_limit_slider,
     width_buttons,
 ):
     scatter_color_by = color_by_dropdown(
@@ -201,6 +207,8 @@ def _(
     )
     scatter_background = background_dropdown()
     scatter_hover = hover_sample_slider()
+    scatter_thumbs = thumbnail_checkbox()
+    scatter_thumb_limit = thumbnail_limit_slider()
 
     # The width lives in state because two buttons write to it. This cell must
     # not *read* it -- marimo does not re-run the cell that owns a state setter,
@@ -208,13 +216,18 @@ def _(
     get_plot_width, set_plot_width = mo.state(800)
     narrower, wider = width_buttons(get_plot_width, set_plot_width)
 
-    scatter_panel(scatter_color_by, scatter_background, scatter_hover)
+    scatter_panel(
+        scatter_color_by, scatter_background, scatter_hover,
+        scatter_thumbs, scatter_thumb_limit,
+    )
     return (
         get_plot_width,
         narrower,
         scatter_background,
         scatter_color_by,
         scatter_hover,
+        scatter_thumb_limit,
+        scatter_thumbs,
         wider,
     )
 
@@ -255,14 +268,33 @@ def _(
 
 
 @app.cell
+def _(exp, projection, scatter_hover, scatter_thumb_limit, scatter_thumbs):
+    # Its own cell so the crops survive a change of colour, colormap, background
+    # or width: marimo only re-runs this when the projection, the sample size or
+    # the thumbnail toggle actually changes. Building it inside the plot cell
+    # would rebuild every crop on every nudge of a control.
+    hover_frame = (
+        None
+        if projection is None
+        else exp.hover_frame(
+            projection,
+            n=int(scatter_hover.value),
+            thumbnails=bool(scatter_thumbs.value),
+            max_thumbnails=int(scatter_thumb_limit.value),
+        )
+    )
+    return (hover_frame,)
+
+
+@app.cell
 def _(
     get_plot_width,
+    hover_frame,
     mo,
     projection,
     scatter_background,
     scatter_cmap,
     scatter_color_by,
-    scatter_hover,
     scatter_pane,
 ):
     if projection is None:
@@ -274,7 +306,7 @@ def _(
                 color_by=scatter_color_by.value,
                 cmap=scatter_cmap.value,
                 background=scatter_background.value,
-                hover_sample=int(scatter_hover.value),
+                hover_frame=hover_frame,
                 max_width=int(get_plot_width()),
             )
         )

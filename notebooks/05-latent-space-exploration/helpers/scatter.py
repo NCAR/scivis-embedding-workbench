@@ -127,6 +127,7 @@ def scatter_pane(
     seed: int = 0,
     pixel_ratio: float = 2.0,
     max_width: int = 800,
+    hover_frame=None,
     verbose: bool = True,
 ):
     """Datashaded scatter of `projection`, coloured by one of its columns.
@@ -148,6 +149,11 @@ def scatter_pane(
     nothing whenever the page lays out with an unknown viewport height. Crispness
     is unaffected: shrinking the frame shrinks the aggregation grid with it, so
     the bins-per-screen-pixel ratio stays wherever `pixel_ratio` put it.
+
+    `hover_frame` supplies the overlay rows instead of sampling here. Pass one
+    from `PatchExperiment.hover_frame(thumbnails=True)` and its `thumb` column
+    becomes an image in the tooltip. Building it outside keeps it in its own
+    cell, so changing a colour or a size does not rebuild the crops.
     """
     import itertools
 
@@ -215,7 +221,7 @@ def scatter_pane(
     ).apply(_shade)
 
     overlay = _hover_overlay(
-        df, color_by, kind, cmap, color_key, hover_sample, seed, light_bg
+        df, color_by, kind, cmap, hover_sample, seed, light_bg, hover_frame
     )
     combined = _style(raster * overlay, background)
     return pn.pane.HoloViews(
@@ -223,46 +229,77 @@ def scatter_pane(
     )
 
 
-def _hover_overlay(df, color_by, kind, cmap, color_key, hover_sample, seed, light_bg):
+# Extra columns worth showing in the tooltip when the frame carries them.
+_TOOLTIP_EXTRAS = ("dt", "lat", "lon", "cluster", "patch_index", "image_id")
+
+
+def _hover_tool(sample, color_by):
+    """A HoverTool listing the columns present, with the crop image if there is one."""
+    from bokeh.models import HoverTool
+
+    cols = [c for c in (color_by, *_TOOLTIP_EXTRAS) if c in sample.columns]
+    cols = list(dict.fromkeys(cols))
+    rows = "".join(
+        f"<div><b>{c}</b>: @{{{c}}}</div>" for c in cols if c != "thumb"
+    )
+    img = ""
+    if "thumb" in sample.columns:
+        # Bokeh renders the tooltip as HTML, so a data URI in a column becomes
+        # an inline image. width is set on the element rather than left to the
+        # crop's own size, so a change of `scale` does not resize the tooltip.
+        img = (
+            '<div><img src="@thumb" width="132" '
+            'style="display:block;margin-bottom:4px;border-radius:2px"></div>'
+        )
+    return HoverTool(tooltips=f'<div style="font-size:11px">{img}{rows}</div>')
+
+
+def _hover_overlay(df, color_by, kind, cmap, hover_sample, seed, light_bg,
+                   hover_frame=None):
     """A small sample drawn as real glyphs, on top of the raster.
 
-    Two jobs: something to hover, and a legend or colorbar -- neither of which a
-    datashaded raster can provide, since it arrives at the browser as an image.
-    Client-side, so it stays crisp when you zoom.
+    Two jobs: something to hover, and a colorbar for continuous columns --
+    neither of which a datashaded raster can provide, since it arrives at the
+    browser as an image. Client-side, so it stays crisp when you zoom.
+
+    `hover_frame` lets the caller supply the rows, so an expensive frame (one
+    carrying patch crops) can be built once and reused across renders.
     """
     import holoviews as hv
 
-    vdims = [c for c in (color_by,) if c in df.columns]
-    n = min(int(hover_sample), len(df))
-    if n <= 0:
+    if hover_frame is not None:
+        sample = hover_frame
+    else:
+        n = min(int(hover_sample), len(df))
+        if n <= 0:
+            sample = df.iloc[:0]
+        else:
+            sample = df.sample(n, random_state=seed)
+
+    vdims = [
+        c
+        for c in dict.fromkeys((color_by, "thumb", *_TOOLTIP_EXTRAS))
+        if c in sample.columns
+    ]
+    if not len(sample):
         return hv.Points([], ["x", "y"], vdims=vdims)
 
-    sample = df.sample(n, random_state=seed)
-    shared = dict(size=4, alpha=0.5, tools=["hover"])
-
-    if kind == "density":
-        # No data-driven colour here, so it only has to stay visible against
-        # whichever canvas is in use.
-        pts = hv.Points(sample, ["x", "y"], vdims=vdims)
-        return pts.opts(color="black" if light_bg else "white", **shared)
-
-    if kind == "categorical":
-        # Neutral, not category-coloured, and that is deliberate. `hd.shade`
-        # builds its own hidden legend plot for the raster and then reaches into
-        # it for a colour mapper. Overlaying a second category-coloured layer
-        # gives holoviews two candidates: it picks the wrong one and dies with
-        # KeyError: 'color_color_mapper' -- intermittently, because it depends
-        # on which plot got built first. Colouring the raster and only the
-        # raster removes the ambiguity.
-        #
-        # Little is lost: the raster underneath already shows each point's
-        # category, and its legend covers all 982k points rather than this
-        # sample. These glyphs exist to be hovered.
-        pts = hv.Points(sample, ["x", "y"], vdims=vdims)
-        return pts.opts(color="black" if light_bg else "white", **shared)
-
+    shared = dict(size=4, alpha=0.5, tools=[_hover_tool(sample, color_by)])
     pts = hv.Points(sample, ["x", "y"], vdims=vdims)
-    return pts.opts(color=color_by, cmap=resolve_cmap(cmap), colorbar=True, **shared)
+
+    if kind == "continuous":
+        return pts.opts(
+            color=color_by, cmap=resolve_cmap(cmap), colorbar=True, **shared
+        )
+
+    # Neutral for density and categorical alike. For categorical that is
+    # deliberate: `hd.shade` builds its own hidden legend plot and reaches into
+    # it for a colour mapper, and a second category-coloured layer gives
+    # holoviews two candidates -- it picks the wrong one and dies with
+    # KeyError: 'color_color_mapper', intermittently, depending on which plot
+    # was built first. The raster underneath already shows each point's
+    # category, and its legend covers every row rather than this sample.
+    return pts.opts(color="black" if light_bg else "white", **shared)
 
 
 def _style(element, background: str):
