@@ -311,7 +311,7 @@ def scatter_pane(
         df, color_by, kind, cmap, hover_sample, seed, light_bg, hover_frame,
         glyph_size=hover_size, alpha=hover_alpha, hit_size=hover_reach,
     )
-    hooks = [_box_select_hook(light_bg)]
+    hooks = [_chrome_hook(light_bg, background), _box_select_hook(light_bg)]
     if tiles is not None and len(tiles) and "thumb" in tiles.columns:
         hooks.append(_tile_hook(tiles, tile_size, tile_alpha))
 
@@ -518,6 +518,36 @@ def _tile_hook(tiles, size_px: int, alpha: float):
             source=ColumnDataSource(_tile_data(tiles)),
         )
         plot.handles["patch_tiles"] = renderer
+
+    return hook
+
+
+def _chrome_hook(light_bg: bool, background: str):
+    """Theme the figure's margin and axes to match the canvas.
+
+    `background` only ever set the inner plot area; the margin around it is
+    `border_fill_color`, which defaults to white and so framed a dark canvas in
+    a bright band. Matching the two makes the figure one rectangle.
+
+    The axis text has to move with it. It is dark by default because bokeh
+    assumes that white margin -- left alone against a dark one it disappears,
+    which is why the border and the labels are one change rather than two.
+    """
+
+    def hook(plot, element):
+        fig = plot.state
+        text = "#1a1a1a" if light_bg else "#e8e8e8"
+        muted = "#9a9a9a" if light_bg else "#6f6f6f"
+
+        fig.border_fill_color = background
+        fig.outline_line_color = muted
+
+        for axis in (*fig.xaxis, *fig.yaxis):
+            axis.axis_label_text_color = text
+            axis.major_label_text_color = text
+            axis.axis_line_color = muted
+            axis.major_tick_line_color = muted
+            axis.minor_tick_line_color = muted
 
     return hook
 
