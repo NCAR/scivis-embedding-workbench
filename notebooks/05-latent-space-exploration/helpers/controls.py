@@ -189,6 +189,50 @@ def hover_sample_slider(value: int = 2000):
     )
 
 
+def resolution_slider(value: float = 1.0):
+    """Aggregation bins per screen pixel.
+
+    1.0 is one bin per CSS pixel. 2.0 matches the physical pixels of a Retina
+    display and looks crisp where the data is dense, but at a deep zoom there
+    are far fewer points than bins -- measured at 40k points against 2.6M bins
+    in one window -- so most bins are empty and the raster breaks into isolated
+    specks. Dropping below 1.0 makes the bins coarser and the picture smoother,
+    at the cost of blurring fine structure.
+
+    A judgement call that depends on the zoom and the data, so it is a control
+    rather than a constant.
+    """
+    return mo.ui.slider(
+        start=0.25, stop=3.0, step=0.25, value=value,
+        label="Raster detail", show_value=True,
+    )
+
+
+def hover_point_controls():
+    """How prominent the hoverable points are, and how close the cursor must get.
+
+    Two knobs rather than one because they trade off differently. `size` is what
+    covers the raster underneath, so it wants to stay small; `reach` is an
+    invisible hit target, so it can be generous at no visual cost. Bokeh
+    hit-tests glyph geometry rather than rendered pixels, which is what lets the
+    two differ.
+    """
+    return mo.md("{size} &nbsp; {opacity} &nbsp; {reach}").batch(
+        size=mo.ui.slider(
+            start=2, stop=16, step=1, value=7,
+            label="Point size", show_value=True,
+        ),
+        opacity=mo.ui.slider(
+            start=0.05, stop=1.0, step=0.05, value=0.75,
+            label="Point opacity", show_value=True,
+        ),
+        reach=mo.ui.slider(
+            start=4, stop=40, step=2, value=18,
+            label="Hover reach", show_value=True,
+        ),
+    )
+
+
 def thumbnail_checkbox(value: bool = False):
     """Whether hover tooltips carry a patch crop.
 
@@ -238,6 +282,36 @@ def width_buttons(get_width, set_width, step: int = 100,
         on_change=lambda _: set_width(min(max_width, get_width() + step)),
     )
     return narrower, wider
+
+
+def tile_controls():
+    """Widgets for the patch crops drawn on the plot: count, size, opacity.
+
+    One group, because they are only meaningful together and all three are
+    cheap to read. The count is what costs time -- each tile is a crop -- so it
+    is capped well below the hover limit; a few dozen is the point, since the
+    tiles are meant to be readable at a glance rather than exhaustive.
+
+    The count and size defaults are low because the selector concentrates tiles
+    on the populated area rather than spreading them over the full extent: a
+    dozen 48px tiles sit inside the cloud with the density map still visible
+    between them, where two dozen at 56px blanket it.
+    """
+    return mo.md(
+        "{show} &nbsp; {count} &nbsp; {size} &nbsp; {alpha}"
+    ).batch(
+        show=mo.ui.checkbox(value=False, label="Patch tiles on plot"),
+        count=mo.ui.slider(
+            start=4, stop=80, step=4, value=12, label="Tiles", show_value=True
+        ),
+        size=mo.ui.slider(
+            start=24, stop=140, step=4, value=48, label="Size px", show_value=True
+        ),
+        alpha=mo.ui.slider(
+            start=0.1, stop=1.0, step=0.05, value=0.9,
+            label="Opacity", show_value=True,
+        ),
+    )
 
 
 def scatter_panel(*widgets):

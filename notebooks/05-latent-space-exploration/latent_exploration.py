@@ -18,12 +18,15 @@ def _():
         display_options,
         display_panel,
         display_widgets,
+        hover_point_controls,
         hover_sample_slider,
         loader_controls,
         projection_picker,
+        resolution_slider,
         scatter_panel,
         thumbnail_checkbox,
         thumbnail_limit_slider,
+        tile_controls,
         widget_values,
         width_buttons,
     )
@@ -43,15 +46,18 @@ def _():
         display_options,
         display_panel,
         display_widgets,
+        hover_point_controls,
         hover_sample_slider,
         list_experiments,
         loader_controls,
         mo,
         projection_picker,
+        resolution_slider,
         scatter_pane,
         scatter_panel,
         thumbnail_checkbox,
         thumbnail_limit_slider,
+        tile_controls,
         widget_values,
         width_buttons,
     )
@@ -194,9 +200,11 @@ def _(mo, projection):
 def _(
     background_dropdown,
     color_by_dropdown,
+    hover_point_controls,
     hover_sample_slider,
     mo,
     projection,
+    resolution_slider,
     scatter_panel,
     thumbnail_checkbox,
     thumbnail_limit_slider,
@@ -209,6 +217,8 @@ def _(
     scatter_hover = hover_sample_slider()
     scatter_thumbs = thumbnail_checkbox()
     scatter_thumb_limit = thumbnail_limit_slider()
+    scatter_resolution = resolution_slider()
+    scatter_points = hover_point_controls()
 
     # The width lives in state because two buttons write to it. This cell must
     # not *read* it -- marimo does not re-run the cell that owns a state setter,
@@ -218,7 +228,8 @@ def _(
 
     scatter_panel(
         scatter_color_by, scatter_background, scatter_hover,
-        scatter_thumbs, scatter_thumb_limit,
+        scatter_thumbs, scatter_thumb_limit, scatter_resolution,
+        scatter_points,
     )
     return (
         get_plot_width,
@@ -226,6 +237,8 @@ def _(
         scatter_background,
         scatter_color_by,
         scatter_hover,
+        scatter_points,
+        scatter_resolution,
         scatter_thumb_limit,
         scatter_thumbs,
         wider,
@@ -268,6 +281,26 @@ def _(
 
 
 @app.cell
+def _(tile_controls):
+    scatter_tiles = tile_controls()
+    scatter_tiles
+    return (scatter_tiles,)
+
+
+@app.cell
+def _(exp, projection, scatter_tiles):
+    # Own cell, like the hover frame: the crops survive every change that is not
+    # the tile count itself. Picked once over the full extent -- zooming does not
+    # repick them.
+    tile_frame = (
+        None
+        if projection is None or not scatter_tiles.value["show"]
+        else exp.tile_frame(projection, n=int(scatter_tiles.value["count"]))
+    )
+    return (tile_frame,)
+
+
+@app.cell
 def _(exp, projection, scatter_hover, scatter_thumb_limit, scatter_thumbs):
     # Its own cell so the crops survive a change of colour, colormap, background
     # or width: marimo only re-runs this when the projection, the sample size or
@@ -296,6 +329,10 @@ def _(
     scatter_cmap,
     scatter_color_by,
     scatter_pane,
+    scatter_points,
+    scatter_resolution,
+    scatter_tiles,
+    tile_frame,
 ):
     if projection is None:
         scatter = mo.md("*Load an experiment with a projection table to see the map.*")
@@ -307,7 +344,17 @@ def _(
                 cmap=scatter_cmap.value,
                 background=scatter_background.value,
                 hover_frame=hover_frame,
+                tiles=tile_frame,
+                tile_size=int(scatter_tiles.value["size"]),
+                tile_alpha=float(scatter_tiles.value["alpha"]),
+                pixel_ratio=float(scatter_resolution.value),
+                hover_size=int(scatter_points.value["size"]),
+                hover_alpha=float(scatter_points.value["opacity"]),
+                hover_reach=int(scatter_points.value["reach"]),
                 max_width=int(get_plot_width()),
+                # Keeps the zoom across rebuilds; keyed on the table so
+                # switching projection starts at the full extent.
+                view_key=projection.name,
             )
         )
     scatter

@@ -203,6 +203,97 @@ def usable_color_columns(df, roles, max_categories: int = MAX_CATEGORIES) -> dic
     }
 
 
+def representative_offsets(df, n: int = 24, x: str = "x", y: str = "y",
+                           percentile: float = 1.0, min_fraction: float = 0.01):
+    """Row offsets of ~`n` points spread evenly across the populated area.
+
+    Bins the plane into a grid and takes, from each qualifying cell, the point
+    closest to that cell's centre. Coverage rather than density: a random sample
+    of the same size clumps wherever the data is dense and leaves the sparse
+    arms of a projection unrepresented.
+
+    Note the grid decides *which* points are picked, not where they are drawn --
+    each stays at its own coordinates, so the result is only as regular as the
+    data underneath it.
+
+    Three details, each fixing a way the layout otherwise comes out gappy:
+
+    `percentile` clips the grid to the p..100-p range instead of min..max. A
+    projection's outliers stretch its bounding box far past the bulk -- measured
+    at one point here, the middle 98% of the data covered 39% of the box width
+    and 30% of its height -- so a grid over the full extent spends most of its
+    cells on empty space and squeezes the interesting core into a handful.
+
+    `min_fraction` drops cells holding less than that fraction of the median
+    occupied cell's count. Without it a cell containing three stray noise points
+    is as eligible as one containing a hundred thousand, and tiles land out in
+    the void.
+
+    The surplus is then thinned *evenly* in raster order rather than at random.
+    The grid is deliberately finer than `n`, so there are usually more
+    qualifying cells than tiles wanted; dropping them at random punched holes
+    in otherwise-even coverage, which was the single biggest source of gaps.
+    """
+    import numpy as np
+
+    n = int(n)
+    if n <= 0 or len(df) == 0:
+        return np.empty(0, dtype=int)
+
+    xs_all = df[x].to_numpy(dtype="float64")
+    ys_all = df[y].to_numpy(dtype="float64")
+
+    if percentile and percentile > 0:
+        x0, x1 = np.nanpercentile(xs_all, [percentile, 100 - percentile])
+        y0, y1 = np.nanpercentile(ys_all, [percentile, 100 - percentile])
+    else:
+        x0, x1 = np.nanmin(xs_all), np.nanmax(xs_all)
+        y0, y1 = np.nanmin(ys_all), np.nanmax(ys_all)
+
+    inside = (xs_all >= x0) & (xs_all <= x1) & (ys_all >= y0) & (ys_all <= y1)
+    if not inside.any():
+        return np.empty(0, dtype=int)
+
+    # Offsets into the original frame, so callers can index straight into it.
+    where = np.flatnonzero(inside)
+    xs, ys = xs_all[where], ys_all[where]
+
+    g = max(1, int(np.ceil(np.sqrt(n * 2.0))))
+    xw = (x1 - x0) or 1.0
+    yw = (y1 - y0) or 1.0
+
+    col = np.clip(((xs - x0) / xw * g).astype(int), 0, g - 1)
+    row = np.clip(((ys - y0) / yw * g).astype(int), 0, g - 1)
+    cell = row * g + col
+
+    counts = np.bincount(cell, minlength=g * g)
+    occupied = counts[counts > 0]
+    floor = max(1.0, float(np.median(occupied)) * min_fraction)
+    qualifies = counts >= floor
+    keep = qualifies[cell]
+    if not keep.any():
+        keep = np.ones(len(cell), dtype=bool)
+
+    # Distance to the cell's centre, so the chosen point sits where the tile
+    # will be drawn rather than at the cell's edge.
+    cx = x0 + (col + 0.5) * xw / g
+    cy = y0 + (row + 0.5) * yw / g
+    d2 = np.where(keep, (xs - cx) ** 2 + (ys - cy) ** 2, np.inf)
+
+    order = np.lexsort((d2, cell))
+    ordered_cells = cell[order]
+    first = np.ones(len(order), dtype=bool)
+    first[1:] = ordered_cells[1:] != ordered_cells[:-1]
+    first &= np.isfinite(d2[order])
+    picked = order[first]
+
+    if len(picked) > n:
+        # Evenly spaced through the raster-ordered cells: keeps the survivors
+        # spread instead of leaving random holes.
+        picked = picked[np.linspace(0, len(picked) - 1, n).round().astype(int)]
+    return where[picked]
+
+
 def resolve_source_path(experiments_db_path: str, source_path_from_config: str):
     """Resolve the config's source_path to an absolute path, or None.
 

@@ -95,9 +95,9 @@ class DisplayOptions:
     # reproducible figure.
     columns: int = 0
     buffer_patches: int = 2
-    zoom: int = 4
+    zoom: int = 1
     border_color: str = "#00ff88"
-    border_width: int = 4
+    border_width: int = 1
     resample: str = "nearest"
     preview_width: int = 448
     show_preview: bool = True
@@ -220,9 +220,50 @@ class PatchExperiment:
 
         if len(sample) > max_thumbnails:
             sample = sample.iloc[:max_thumbnails]
+        return self._add_crops(
+            sample, projection, buffer_patches, scale, quality
+        )
 
-        # `df` was loaded whole and in table order, so a positional index is a
-        # row offset and `take` fetches exactly the identity columns needed.
+    def tile_frame(
+        self,
+        projection: "Projection",
+        n: int = 24,
+        seed: int = 0,
+        buffer_patches: int = 3,
+        scale: int = 3,
+        quality: int = 82,
+    ):
+        """Rows for a few patch crops drawn *on* the scatter, spread across it.
+
+        Selection is grid coverage rather than a random sample, so tiles reach
+        the sparse arms of a projection instead of piling up in the dense core.
+        See `data.representative_offsets`.
+
+        Picked once over the full extent; zooming in does not repick them, so a
+        tight zoom may hold few tiles or none.
+
+        A wider context ring than the hover crops: these are read at a glance
+        from across the plot rather than inspected up close, so more surrounding
+        weather makes them easier to tell apart.
+        """
+        df = projection.df
+        if projection.table is None or self.src_img_tbl is None or not len(df):
+            return df.iloc[:0].copy()
+
+        offsets = _data.representative_offsets(df, n=n)
+        if not len(offsets):
+            return df.iloc[:0].copy()
+        return self._add_crops(
+            df.iloc[offsets], projection, buffer_patches, scale, quality
+        )
+
+    def _add_crops(self, sample, projection, buffer_patches, scale, quality):
+        """Attach `image_id` and a `thumb` column of JPEG data URIs.
+
+        `projection.df` was loaded whole and in table order, so a positional
+        index is a row offset -- `take` then fetches the identity columns for
+        just these rows, which is why `image_id` can stay out of the frame.
+        """
         offsets = sample.index.to_numpy()
         ids = (
             projection.table.to_lance()
