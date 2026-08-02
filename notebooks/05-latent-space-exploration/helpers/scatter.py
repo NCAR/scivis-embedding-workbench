@@ -532,7 +532,12 @@ def _chrome_hook(light_bg: bool, background: str):
     The axis text has to move with it. It is dark by default because bokeh
     assumes that white margin -- left alone against a dark one it disappears,
     which is why the border and the labels are one change rather than two.
+
+    The colorbar and legend are separate models with their own white
+    backgrounds, so they need the same treatment or they sit on the themed
+    figure as bright panels.
     """
+    from bokeh.models import ColorBar, Legend
 
     def hook(plot, element):
         fig = plot.state
@@ -548,6 +553,26 @@ def _chrome_hook(light_bg: bool, background: str):
             axis.axis_line_color = muted
             axis.major_tick_line_color = muted
             axis.minor_tick_line_color = muted
+
+        # Panels can be attached on any side, so every side is swept rather
+        # than assuming the colorbar is on the right.
+        for side in (fig.right, fig.left, fig.above, fig.below, fig.center):
+            for model in side:
+                if isinstance(model, ColorBar):
+                    model.background_fill_color = background
+                    model.major_label_text_color = text
+                    model.title_text_color = text
+                    model.major_tick_line_color = muted
+                    model.minor_tick_line_color = muted
+                    # The ramp reads as its own block against the canvas; an
+                    # outline around it just adds a seam.
+                    model.bar_line_color = None
+                    model.border_line_color = None
+                elif isinstance(model, Legend):
+                    model.background_fill_color = background
+                    model.label_text_color = text
+                    model.title_text_color = text
+                    model.border_line_color = muted
 
     return hook
 
