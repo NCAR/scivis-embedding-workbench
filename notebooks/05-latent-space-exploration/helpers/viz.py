@@ -20,16 +20,19 @@ GALLERY_CSS = (
 )
 
 
-def experiment_summary(config, grid, n_patches, sample) -> str:
-    """One-line markdown summary of the experiment and what is loaded."""
+def experiment_summary(config, grid, n_patches) -> str:
+    """One-line markdown summary of the experiment.
+
+    Describes the table rather than a loaded slice of it: patches are now
+    reached by selecting a region of the projection, so nothing is read up front
+    and there is no sample to report.
+    """
     spatial_h, spatial_w = grid
     return (
         f"**Model:** `{config.get('model_name', '?')}`  ·  "
         f"**Patches in table:** {n_patches:,}  ·  "
-        f"**Loaded:** {sample.X.shape[0]:,} × {sample.X.shape[1]}  ·  "
-        f"**Source images covered:** {len(set(sample.image_ids)):,}  ·  "
         f"**Patch grid:** {spatial_h}×{spatial_w}  ·  "
-        f"**Max patch_index:** {int(sample.patch_indices.max())}"
+        f"**Embedding dim:** {config.get('embedding_dim', '?')}"
     )
 
 

@@ -311,7 +311,7 @@ def scatter_pane(
         df, color_by, kind, cmap, hover_sample, seed, light_bg, hover_frame,
         glyph_size=hover_size, alpha=hover_alpha, hit_size=hover_reach,
     )
-    hooks = []
+    hooks = [_box_select_hook(light_bg)]
     if tiles is not None and len(tiles) and "thumb" in tiles.columns:
         hooks.append(_tile_hook(tiles, tile_size, tile_alpha))
 
@@ -326,9 +326,23 @@ def scatter_pane(
     combined = _style(
         raster * overlay, background, extra_hooks=hooks, xlim=xlim, ylim=ylim
     )
-    return pn.pane.HoloViews(
+
+    # The bounds stream hangs off `raster`, not off the composed object. A
+    # stream is only honoured when its source is an element holoviews builds a
+    # subplot for: pointed at the outer overlay it registers fine and then
+    # silently never fires, because the top-level plot gets no callbacks at all
+    # (the RGBPlot subplot is where RangeXY and PlotSize end up). Carried on the
+    # pane so `region.explorer` can subscribe to it.
+    bounds = hv.streams.BoundsXY(source=raster)
+    if verbose:
+        bounds.add_subscriber(
+            lambda bounds: print(f"[bounds] {bounds}", flush=True)
+        )
+    pane = pn.pane.HoloViews(
         combined, sizing_mode="stretch_width", max_width=max_width
     )
+    pane.bounds_stream = bounds
+    return pane
 
 
 # Extra columns worth showing in the tooltip when the frame carries them.
@@ -415,10 +429,15 @@ def _hover_overlay(df, color_by, kind, cmap, hover_sample, seed, light_bg,
     # transparent disc is a hit target -- which decouples how big these points
     # *look* from how close the cursor has to get. Without it the only way to
     # make hovering easier is to draw fatter dots over the data.
+    # box_select is declared here, on an element, because holoviews drops
+    # selection tools declared on an Overlay -- they never reach the figure.
+    # Attaching it to a glyph does *not* tie the selection to that glyph: the
+    # BoundsXY stream reads the plot's selectiongeometry event, which carries
+    # the rectangle itself, so the region query still runs over the whole table.
     halo = hv.Points(sample, ["x", "y"], vdims=vdims).opts(
         size=hit_size,
         alpha=0.0,
-        tools=[_hover_tool(sample, color_by)],
+        tools=[_hover_tool(sample, color_by), "box_select"],
         show_legend=False,
     )
 
@@ -501,6 +520,36 @@ def _tile_hook(tiles, size_px: int, alpha: float):
     return hook
 
 
+def _box_select_hook(light_bg: bool):
+    """Keep the selection rectangle on screen, and make it read as an annotation.
+
+    `persistent` defaults to False, which discards the box on mouse-up -- leaving
+    you reading a gallery of a region you can no longer see. The overlay's own
+    default is a light-grey 50% fill that washes out the raster underneath, so it
+    becomes a dashed outline with barely any fill.
+
+    The overlay is editable, so its edges can be dragged afterwards to refine the
+    region; each edit re-fires the bounds.
+    """
+    from bokeh.models import BoxSelectTool
+
+    edge = "#111" if light_bg else "#fff"
+
+    def hook(plot, element):
+        for tool in plot.state.toolbar.tools:
+            if isinstance(tool, BoxSelectTool):
+                tool.persistent = True
+                overlay = tool.overlay
+                overlay.fill_color = edge
+                overlay.fill_alpha = 0.06
+                overlay.line_color = edge
+                overlay.line_alpha = 0.9
+                overlay.line_width = 1
+                overlay.line_dash = [6, 4]
+
+    return hook
+
+
 def _style(element, background: str, extra_hooks=(), xlim=None, ylim=None):
     """Frame styling shared by every scatter: grid, sizing, 1:1 data scales."""
     # Drawn at "overlay" level. The default is "underlay", which puts the grid
@@ -537,8 +586,11 @@ def _style(element, background: str, extra_hooks=(), xlim=None, ylim=None):
         padding=0,
         xlabel="UMAP 1",
         ylabel="UMAP 2",
-        active_tools=["box_zoom"],
-        tools=["box_zoom", "wheel_zoom", "pan", "reset"],
+        # box_select is the active drag, not box_zoom: they are the same gesture
+        # and only one can own it. Zooming moves to the wheel, and box_zoom stays
+        # in the toolbar for anyone who wants to switch back.
+        active_tools=["box_select", "wheel_zoom"],
+        tools=["wheel_zoom", "pan", "box_zoom", "reset"],
         # None leaves the axes at the data's own extent; a remembered view puts
         # the replacement figure back where the last one was looking.
         **({"xlim": xlim} if xlim else {}),

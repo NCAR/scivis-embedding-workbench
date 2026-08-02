@@ -20,7 +20,6 @@ def _():
         display_widgets,
         hover_point_controls,
         hover_sample_slider,
-        loader_controls,
         projection_picker,
         resolution_slider,
         scatter_panel,
@@ -34,6 +33,7 @@ def _():
 
     # holoviews/panel/datashader stay inside helpers.scatter -- the notebook
     # only ever handles the pane it returns.
+    from helpers.region import explorer
     from helpers.scatter import default_cmap, scatter_pane
 
     return (
@@ -46,10 +46,10 @@ def _():
         display_options,
         display_panel,
         display_widgets,
+        explorer,
         hover_point_controls,
         hover_sample_slider,
         list_experiments,
-        loader_controls,
         mo,
         projection_picker,
         resolution_slider,
@@ -97,43 +97,22 @@ def _(PatchExperiment, embedding_db_path, experiment_selector):
 
 
 @app.cell
-def _(loader_controls):
-    # Applied immediately: these drive a multi-second read of the patch table,
-    # so they are kept out of the display form below.
-    loader = loader_controls()
-    loader
-    return (loader,)
-
-
-@app.cell
-def _(exp, loader):
-    sample = (
-        None
-        if exp is None
-        else exp.load_patches(
-            limit=int(loader.value["sample_size"]),
-            random_sample=loader.value["random_sample"],
-        )
-    )
-    return (sample,)
-
-
-@app.cell
-def _(exp, mo, sample):
+def _(exp, mo):
     mo.md(
-        exp.summary(sample)
-        if sample is not None
-        else "Enter a DB path and pick an experiment to load patches."
+        exp.summary()
+        if exp is not None
+        else "Enter a DB path and pick an experiment."
     )
     return
 
 
 @app.cell
 def _(color_picker, display_panel, display_widgets):
-    # Both must be cell-level names: marimo syncs widget values back to the
-    # instances it can see in a cell, and only a UIElement group (not a plain
-    # dict) makes dependent cells re-run. The picker is separate because
-    # anywidgets cannot live inside mo.ui.dictionary.
+    # Tile appearance for the region gallery below the projection. Both must be
+    # cell-level names: marimo syncs widget values back to the instances it can
+    # see in a cell, and only a UIElement group (not a plain dict) makes
+    # dependent cells re-run. The picker is separate because anywidgets cannot
+    # live inside mo.ui.dictionary.
     display = display_widgets()
     border_color = color_picker()
     display_panel(display, border_color)
@@ -141,28 +120,19 @@ def _(color_picker, display_panel, display_widgets):
 
 
 @app.cell
-def _(border_color, display, display_options, exp, mo, sample, widget_values):
-    mo.Html(
-        exp.gallery(sample, display_options(widget_values(display, border_color)))
-        if sample is not None
-        else "<em>Load an experiment to see patch crops.</em>"
-    )
-    return
-
-
-@app.cell
 def _(mo):
     mo.md("""
     ## Projection
 
-    The 2-D projection of these patches, datashaded. This reads the **whole**
-    projection table, independent of the sample size above — that slider limits
-    an expensive 768-dim embedding read, which does not apply to a table of
-    coordinates.
+    The 2-D projection of every patch in the table, datashaded.
 
-    **Zoom re-aggregates.** Box-zoom or wheel-zoom sends the new view limits
-    back to Python and datashader rebuilds the raster for that window, so detail
-    keeps resolving as you go in rather than turning into big pixels.
+    **Drag a box** to pull the patches from that region into the gallery below.
+    The box queries the whole table, not the points drawn for hover, so a
+    selection can hold hundreds of thousands of patches — page through them.
+
+    **Zoom re-aggregates.** Wheel-zoom sends the new view limits back to Python
+    and datashader rebuilds the raster for that window, so detail keeps
+    resolving as you go in rather than turning into big pixels.
     """)
     return
 
@@ -323,7 +293,6 @@ def _(exp, projection, scatter_hover, scatter_thumb_limit, scatter_thumbs):
 def _(
     get_plot_width,
     hover_frame,
-    mo,
     projection,
     scatter_background,
     scatter_cmap,
@@ -334,29 +303,64 @@ def _(
     scatter_tiles,
     tile_frame,
 ):
-    if projection is None:
-        scatter = mo.md("*Load an experiment with a projection table to see the map.*")
-    else:
-        scatter = mo.ui.panel(
-            scatter_pane(
-                projection,
-                color_by=scatter_color_by.value,
-                cmap=scatter_cmap.value,
-                background=scatter_background.value,
-                hover_frame=hover_frame,
-                tiles=tile_frame,
-                tile_size=int(scatter_tiles.value["size"]),
-                tile_alpha=float(scatter_tiles.value["alpha"]),
-                pixel_ratio=float(scatter_resolution.value),
-                hover_size=int(scatter_points.value["size"]),
-                hover_alpha=float(scatter_points.value["opacity"]),
-                hover_reach=int(scatter_points.value["reach"]),
-                max_width=int(get_plot_width()),
-                # Keeps the zoom across rebuilds; keyed on the table so
-                # switching projection starts at the full extent.
-                view_key=projection.name,
-            )
+    # The plot is composed with the region gallery below rather than rendered on
+    # its own: the bounds stream fires in Python without re-running any marimo
+    # cell, so the gallery has to live in the same panel Column and update
+    # through panel. See helpers/region.py.
+    plot_pane = (
+        None
+        if projection is None
+        else scatter_pane(
+            projection,
+            color_by=scatter_color_by.value,
+            cmap=scatter_cmap.value,
+            background=scatter_background.value,
+            hover_frame=hover_frame,
+            tiles=tile_frame,
+            tile_size=int(scatter_tiles.value["size"]),
+            tile_alpha=float(scatter_tiles.value["alpha"]),
+            pixel_ratio=float(scatter_resolution.value),
+            hover_size=int(scatter_points.value["size"]),
+            hover_alpha=float(scatter_points.value["opacity"]),
+            hover_reach=int(scatter_points.value["reach"]),
+            max_width=int(get_plot_width()),
+            # Keeps the zoom across rebuilds; keyed on the table so
+            # switching projection starts at the full extent.
+            view_key=projection.name,
         )
+    )
+    return (plot_pane,)
+
+
+@app.cell
+def _(
+    border_color,
+    display,
+    display_options,
+    exp,
+    explorer,
+    mo,
+    plot_pane,
+    projection,
+    widget_values,
+):
+    def _render_region(bounds, page, per_page):
+        """One page of the selected region, as gallery HTML plus the total."""
+        offsets = exp.region_offsets(projection, bounds)
+        total = len(offsets)
+        start = page * per_page
+        sample = exp.patch_sample(projection, offsets[start : start + per_page])
+        opts = display_options(widget_values(display, border_color))
+        # n_examples caps the gallery, and the page is already the right size --
+        # pin it so the gallery does not sub-sample the page.
+        opts.n_examples = per_page
+        return exp.gallery(sample, opts), total
+
+    scatter = (
+        mo.md("*Load an experiment with a projection table to see the map.*")
+        if plot_pane is None
+        else mo.ui.panel(explorer(plot_pane, _render_region))
+    )
     scatter
     return
 

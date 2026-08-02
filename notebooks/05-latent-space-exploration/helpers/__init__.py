@@ -7,6 +7,7 @@ Layered so each module has one job:
     patches.py    PIL: crop with context, frame previews, encoding
     viz.py        HTML: tiles, captions, gallery layout
     scatter.py    holoviews/datashader: the projection scatter
+    region.py     panel: box-select a region, page through its patches
     controls.py   marimo widgets (the only module importing marimo)
     experiment.py PatchExperiment / PatchSample / Projection / DisplayOptions
 
