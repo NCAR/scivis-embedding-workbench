@@ -13,6 +13,17 @@ experiments, crops or LanceDB: it owns the interaction, not the data.
 
 PER_PAGE_OPTIONS = [12, 24, 48]
 
+# Panel's styling assumes a light theme, so text that inherits its colour comes
+# out near-black and vanishes on a dark canvas. Every string this module renders
+# carries its own colour, switched by prefers-color-scheme so it stays right in
+# both without pinning a theme.
+_TEXT_CSS = (
+    "<style>"
+    ".pc-region{color:#1a1a1a;font-size:12px}"
+    "@media (prefers-color-scheme: dark){.pc-region{color:#e8e8e8}}"
+    "</style>"
+)
+
 
 def explorer(
     plot_pane,
@@ -36,10 +47,7 @@ def explorer(
     state = {"bounds": None, "page": 0, "total": 0}
 
     header = pn.pane.HTML(_header_html(None, 0, 0, per_page), sizing_mode="stretch_width")
-    gallery = pn.pane.HTML(
-        f"<em style='opacity:0.7'>{empty_message}</em>",
-        sizing_mode="stretch_width",
-    )
+    gallery = pn.pane.HTML(_muted(empty_message), sizing_mode="stretch_width")
     # The gallery scrolls inside its own box; without a height cap a page of 48
     # pushes the plot off the top of the screen.
     scroller = pn.Column(
@@ -48,8 +56,13 @@ def explorer(
 
     prev_btn = pn.widgets.Button(name="◀ Prev", width=90, disabled=True)
     next_btn = pn.widgets.Button(name="Next ▶", width=90, disabled=True)
+    # No `name=`: the widget's own label is Panel-themed and unreadable on a
+    # dark canvas. The label is rendered alongside it instead, with our CSS.
     per_page_sel = pn.widgets.Select(
-        options=PER_PAGE_OPTIONS, value=per_page, width=80, name="Per page"
+        options=PER_PAGE_OPTIONS, value=per_page, width=80
+    )
+    per_page_label = pn.pane.HTML(
+        f"{_TEXT_CSS}<div class='pc-region'>Per page</div>", width=60
     )
 
     def _n_pages():
@@ -59,14 +72,14 @@ def explorer(
     def _refresh():
         size = int(per_page_sel.value)
         if state["bounds"] is None:
-            gallery.object = f"<em style='opacity:0.7'>{empty_message}</em>"
+            gallery.object = _muted(empty_message)
             header.object = _header_html(None, 0, 0, size)
             prev_btn.disabled = next_btn.disabled = True
             return
 
         html, total = render(state["bounds"], state["page"], size)
         state["total"] = total
-        gallery.object = html or "<em style='opacity:0.7'>No patches in this region.</em>"
+        gallery.object = html or _muted("No patches in this region.")
         header.object = _header_html(
             state["bounds"], state["page"], total, size
         )
@@ -103,7 +116,11 @@ def explorer(
     stream.add_subscriber(_on_bounds)
 
     controls = pn.Row(
-        prev_btn, next_btn, per_page_sel, sizing_mode="stretch_width"
+        prev_btn,
+        next_btn,
+        per_page_label,
+        per_page_sel,
+        sizing_mode="stretch_width",
     )
     column = pn.Column(
         plot_pane, header, controls, scroller, sizing_mode="stretch_width"
@@ -114,19 +131,20 @@ def explorer(
     return column
 
 
+def _muted(text: str) -> str:
+    """A dim note that stays legible on either theme."""
+    return f"{_TEXT_CSS}<div class='pc-region' style='opacity:0.7'><em>{text}</em></div>"
+
+
 def _header_html(bounds, page, total, per_page) -> str:
     """One line describing the current selection and position within it."""
     if bounds is None:
-        return (
-            "<div style='font-size:12px;opacity:0.75'>"
-            "No region selected — the box-select tool is active on the plot."
-            "</div>"
-        )
+        return _muted("No region selected — the box-select tool is active on the plot.")
     x0, y0, x1, y1 = bounds
     n_pages = max(1, -(-total // per_page)) if total else 0
     where = f"page {page + 1} / {n_pages}" if total else "no patches"
     return (
-        "<div style='font-size:12px'>"
+        f"{_TEXT_CSS}<div class='pc-region'>"
         f"<b>Region</b> x {min(x0, x1):.2f}…{max(x0, x1):.2f} &nbsp; "
         f"y {min(y0, y1):.2f}…{max(y0, y1):.2f}"
         f" &nbsp;·&nbsp; <b>{total:,}</b> patches"

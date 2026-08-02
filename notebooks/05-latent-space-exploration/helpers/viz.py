@@ -11,6 +11,12 @@ from helpers.geometry import format_latlon, patch_latlon, patch_rowcol
 # positioned relative to the tile and lifted above its neighbours.
 GALLERY_CSS = (
     "<style>"
+    # Captions carry an explicit colour rather than inheriting. The gallery is
+    # rendered inside a Panel pane, whose styling assumes a light theme, so an
+    # inherited colour comes out near-black and disappears on a dark canvas.
+    # prefers-color-scheme keeps it automatic instead of pinning one theme.
+    ".pc-tile figcaption{color:#1a1a1a}"
+    "@media (prefers-color-scheme: dark){.pc-tile figcaption{color:#e8e8e8}}"
     ".pc-tile{position:relative}"
     ".pc-full{display:none;position:absolute;left:0;top:0;z-index:30;"
     "box-shadow:0 6px 24px rgba(0,0,0,.55)}"
@@ -157,7 +163,7 @@ def tile_html(
         f"<figure class='pc-tile' style='margin:0'>"
         f"<img src='{crop_uri}' "
         f"style='display:block;width:{crop_width}px;max-width:none' />"
-        f"<figcaption style='font-size:0.75em;opacity:0.8;text-align:center;"
+        f"<figcaption style='font-size:0.75em;opacity:0.85;text-align:center;"
         f"margin-top:0.25rem'>{caption}</figcaption>"
         f"{hover}"
         f"</figure>"
