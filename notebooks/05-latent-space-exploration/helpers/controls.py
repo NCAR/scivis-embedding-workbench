@@ -216,8 +216,14 @@ def hover_point_controls():
     invisible hit target, so it can be generous at no visual cost. Bokeh
     hit-tests glyph geometry rather than rendered pixels, which is what lets the
     two differ.
+
+    `show` hides the dots without giving up hovering. The hit target is a
+    separate, already-invisible layer, so the visible glyphs can go to zero
+    opacity and tooltips still work -- useful once the points start competing
+    with the raster for attention.
     """
-    return mo.md("{size} &nbsp; {opacity} &nbsp; {reach}").batch(
+    return mo.md("{show} &nbsp; {size} &nbsp; {opacity} &nbsp; {reach}").batch(
+        show=mo.ui.checkbox(value=True, label="Show points"),
         size=mo.ui.slider(
             start=2, stop=16, step=1, value=7,
             label="Point size", show_value=True,

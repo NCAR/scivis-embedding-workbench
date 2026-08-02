@@ -321,7 +321,14 @@ def _(
             tile_alpha=float(scatter_tiles.value["alpha"]),
             pixel_ratio=float(scatter_resolution.value),
             hover_size=int(scatter_points.value["size"]),
-            hover_alpha=float(scatter_points.value["opacity"]),
+            # Zero opacity rather than dropping the layer: the colorbar for a
+            # continuous colour-by hangs off these glyphs, and hovering still
+            # works because the hit target is its own, already-invisible layer.
+            hover_alpha=(
+                float(scatter_points.value["opacity"])
+                if scatter_points.value["show"]
+                else 0.0
+            ),
             hover_reach=int(scatter_points.value["reach"]),
             max_width=int(get_plot_width()),
             # Keeps the zoom across rebuilds; keyed on the table so

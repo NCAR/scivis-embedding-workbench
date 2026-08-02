@@ -450,7 +450,9 @@ def _hover_overlay(df, color_by, kind, cmap, hover_sample, seed, light_bg,
         alpha=alpha,
         line_color=edge,
         line_width=1,
-        line_alpha=min(1.0, alpha + 0.2),
+        # The outline normally sits slightly above the fill, but at alpha 0 the
+        # points are meant to be gone -- an outline at 0.2 would still show.
+        line_alpha=min(1.0, alpha + 0.2) if alpha > 0 else 0.0,
     )
     pts = hv.Points(sample, ["x", "y"], vdims=vdims)
 
