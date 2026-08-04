@@ -160,6 +160,52 @@ def _categories(series):
     return sorted(series.dropna().unique().tolist())
 
 
+# Clip the colour range to the middle of the distribution rather than its
+# extremes. Physical columns here are skewed -- max_wind_kts is mostly low
+# values with a thin tail to 155 -- so a min/max span spends the ramp on
+# outliers and renders the bulk flat. `representative_offsets` in data.py clips
+# for the same reason.
+SPAN_PERCENTILES = (2.0, 98.0)
+
+
+def _column_span(series, percentiles=SPAN_PERCENTILES):
+    """(low, high) for a continuous column, or None when there is none to take.
+
+    Continuous colour needs one range that everything shares, because two
+    separate things otherwise pick their own and neither picks the column's:
+
+      * `shade` normalises to the aggregate it is handed, and that aggregate is
+        rebuilt for the current window on every zoom -- so the same value draws
+        a different colour at each zoom level and the picture recolours as you
+        pan.
+      * the colorbar is drawn from the hover overlay, so it describes a few
+        hundred sampled points. Measured on max_wind_kts: the column runs
+        20..155, the hover sample ran 25..145, the bar claimed 25..145, and the
+        raster was normalised to neither of them.
+
+    Taking one span from the full column holds the colours still under zoom and
+    makes the bar describe what is actually drawn. Values outside the span
+    clamp to the ends, which is the usual trade for a readable ramp.
+    """
+    import numpy as np
+
+    try:
+        values = series.to_numpy(dtype="float64", copy=False)
+    except (TypeError, ValueError):
+        return None
+    if not values.size or np.all(np.isnan(values)):
+        return None
+
+    low, high = (float(v) for v in np.nanpercentile(values, percentiles))
+    # A column flat across the middle 96% -- but not flat overall -- still needs
+    # a usable range, so fall back to the extremes before giving up.
+    if high <= low:
+        low, high = float(np.nanmin(values)), float(np.nanmax(values))
+    if not (np.isfinite(low) and np.isfinite(high)) or high <= low:
+        return None
+    return low, high
+
+
 def scatter_pane(
     projection,
     color_by: str = "density",
@@ -233,6 +279,7 @@ def scatter_pane(
 
     vdims = [c for c in (color_by,) if c in df.columns]
     color_key = None
+    span = None
 
     # Each kind needs its own aggregator: counts for density, a per-category
     # count so overlapping groups blend instead of overpainting, and a mean for
@@ -254,8 +301,13 @@ def scatter_pane(
         aggregator = ds.count_cat(color_by)
         shade_kwargs = dict(color_key=color_key, cnorm="log")
     else:
+        # One span for the raster and the colorbar both. See `_column_span`:
+        # left to themselves they normalise to the current zoom window and to
+        # the hover sample respectively, so neither describes the column and
+        # the two never agree.
+        span = _column_span(df[color_by])
         aggregator = ds.mean(color_by)
-        shade_kwargs = dict(cmap=resolve_cmap(cmap), cnorm="linear")
+        shade_kwargs = dict(cmap=resolve_cmap(cmap), cnorm="linear", span=span)
 
     n_aggregations = itertools.count(1)
 
@@ -310,6 +362,7 @@ def scatter_pane(
     overlay = _hover_overlay(
         df, color_by, kind, cmap, hover_sample, seed, light_bg, hover_frame,
         glyph_size=hover_size, alpha=hover_alpha, hit_size=hover_reach,
+        span=span,
     )
     hooks = [_chrome_hook(light_bg, background), _box_select_hook(light_bg)]
     if color_key:
@@ -392,7 +445,7 @@ def _hover_tool(sample, color_by):
 
 def _hover_overlay(df, color_by, kind, cmap, hover_sample, seed, light_bg,
                    hover_frame=None, glyph_size: int = 7, alpha: float = 0.75,
-                   hit_size: int = 18):
+                   hit_size: int = 18, span=None):
     """A small sample drawn as real glyphs, on top of the raster.
 
     Two jobs: something to hover, and a colorbar for continuous columns --
@@ -459,8 +512,12 @@ def _hover_overlay(df, color_by, kind, cmap, hover_sample, seed, light_bg,
     pts = hv.Points(sample, ["x", "y"], vdims=vdims)
 
     if kind == "continuous":
+        # `clim` is the raster's span. Without it bokeh scales the mapper to
+        # these few hundred sampled points, so the bar describes the sample
+        # rather than the image beneath it.
         return halo * pts.opts(
-            color=color_by, cmap=resolve_cmap(cmap), colorbar=True, **shared
+            color=color_by, cmap=resolve_cmap(cmap), colorbar=True,
+            **({"clim": span} if span else {}), **shared
         )
 
     # Neutral for density and categorical alike. For categorical that is
