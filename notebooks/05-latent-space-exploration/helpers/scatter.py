@@ -312,6 +312,8 @@ def scatter_pane(
         glyph_size=hover_size, alpha=hover_alpha, hit_size=hover_reach,
     )
     hooks = [_chrome_hook(light_bg, background), _box_select_hook(light_bg)]
+    if color_key:
+        hooks.append(_legend_color_hook(color_key))
     if tiles is not None and len(tiles) and "thumb" in tiles.columns:
         hooks.append(_tile_hook(tiles, tile_size, tile_alpha))
 
@@ -603,6 +605,38 @@ def _box_select_hook(light_bg: bool):
                 overlay.line_alpha = 0.9
                 overlay.line_width = 1
                 overlay.line_dash = [6, 4]
+
+    return hook
+
+
+def _legend_color_hook(color_key: dict):
+    """Repaint the categorical legend to match the raster.
+
+    `hd.shade` builds the legend's CategoricalColorMapper from holoviews' own
+    default palette (ColorBrewer Set1) and ignores the `color_key` it was given,
+    so the swatches describe colours that appear nowhere in the image. Measured
+    on a boolean column: the raster drew False #d60000 / True #018700 while the
+    legend claimed #e41a1c / #377eb8 -- red and *blue* for a plot containing red
+    and green. Both firsts being red is what makes it easy to miss.
+
+    The mapper's factors are strings whatever the column's dtype, so the lookup
+    is by str(). Factors we have no colour for are left alone rather than
+    guessed at.
+    """
+    lookup = {str(k): v for k, v in (color_key or {}).items()}
+
+    def hook(plot, element):
+        from bokeh.models import CategoricalColorMapper
+
+        if not lookup:
+            return
+        for mapper in plot.state.select({"type": CategoricalColorMapper}):
+            palette = [
+                lookup.get(str(f), current)
+                for f, current in zip(mapper.factors, mapper.palette)
+            ]
+            if len(palette) == len(mapper.factors):
+                mapper.palette = palette
 
     return hook
 
