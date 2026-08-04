@@ -307,7 +307,13 @@ def scatter_pane(
         # the two never agree.
         span = _column_span(df[color_by])
         aggregator = ds.mean(color_by)
-        shade_kwargs = dict(cmap=resolve_cmap(cmap), cnorm="linear", span=span)
+        # `clims`, not `span`. datashader's own tf.shade calls this `span`, and
+        # hd.shade is a param-based operation that accepts unknown keywords
+        # without complaint -- so `span=` looks right, raises nothing, and does
+        # nothing. The raster kept re-normalising to each zoom window while the
+        # colorbar sat still, which is worse than the original bug because it
+        # looks fixed. Verified by shading the same value against two ranges.
+        shade_kwargs = dict(cmap=resolve_cmap(cmap), cnorm="linear", clims=span)
 
     n_aggregations = itertools.count(1)
 

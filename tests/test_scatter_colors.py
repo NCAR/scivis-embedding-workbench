@@ -163,41 +163,59 @@ def test_span_falls_back_to_extremes_when_the_middle_is_flat():
     assert span is not None and span[0] < span[1]
 
 
-def test_same_value_keeps_its_colour_when_the_window_changes():
-    """The reported bug: colours shifted as you zoomed.
+def _shade_middle(values, **shade_kwargs):
+    """Colour that hd.shade gives the middle cell of a one-row image.
 
-    `shade` normalises to the aggregate it is given, and that aggregate is
-    rebuilt for the visible window on every zoom. The value 1.5 sits in both a
-    full view (0..10) and a zoomed one (0..2); unpinned it drew dark purple in
-    one and teal in the other.
+    Goes through `hd.shade` rather than datashader's `tf.shade` on purpose. The
+    two spell this option differently -- tf.shade takes `span`, hd.shade takes
+    `clims` -- and hd.shade is a param operation that swallows unknown keywords
+    silently. A test against tf.shade would pass while the app stayed broken,
+    which is exactly how the first attempt at this fix shipped as a no-op.
     """
-    import xarray as xr
-    from datashader import transfer_functions as tf
+    import holoviews as hv
+    import holoviews.operation.datashader as hd
 
-    cmap = ["#440154", "#21918c", "#fde725"]
-
-    def colour_of_middle(values, span):
-        agg = xr.DataArray(
-            np.array([values], dtype="float64"),
-            dims=["y", "x"],
-            coords={"y": [0], "x": list(range(len(values)))},
-        )
-        return int(np.asarray(tf.shade(agg, cmap=cmap, how="linear", span=span).data)[0][1])
-
-    full, zoomed = [0.0, 1.5, 10.0], [0.0, 1.5, 2.0]
-
-    # Unpinned, the same value renders differently -- this is the bug, asserted
-    # so the test cannot quietly stop exercising anything.
-    assert colour_of_middle(full, None) != colour_of_middle(zoomed, None)
-
-    span = (0.0, 10.0)
-    assert colour_of_middle(full, span) == colour_of_middle(zoomed, span)
+    hv.extension("bokeh")
+    # Two identical rows: a single-row Image gives degenerate bounds.
+    arr = np.array([values, values], dtype="float64")
+    img = hv.Image((np.arange(len(values), dtype=float), [0.0, 1.0], arr))
+    rgb = hd.shade(img, cmap=["#440154", "#21918c", "#fde725"],
+                   cnorm="linear", **shade_kwargs)
+    return int(np.asarray(rgb.dimension_values(2, flat=False))[0, 1])
 
 
-def test_span_is_wired_into_both_the_raster_and_the_bar():
-    """Pinning only one of them leaves the bar describing a different scale."""
+# The value 1.5 as seen in a full view and in a zoomed-in one.
+_FULL_VIEW = [0.0, 1.5, 10.0]
+_ZOOMED_VIEW = [0.0, 1.5, 2.0]
+
+
+def test_unpinned_shading_recolours_with_the_window():
+    """The bug itself, asserted so this file cannot stop testing anything.
+
+    If a future datashader stops auto-ranging, this fails loudly rather than the
+    pinning test passing for the wrong reason.
+    """
+    assert _shade_middle(_FULL_VIEW) != _shade_middle(_ZOOMED_VIEW)
+
+
+def test_clims_holds_a_value_at_one_colour_across_windows():
+    pinned = dict(clims=(0.0, 10.0))
+    assert _shade_middle(_FULL_VIEW, **pinned) == _shade_middle(_ZOOMED_VIEW, **pinned)
+
+
+def test_span_keyword_is_silently_ignored_by_hd_shade():
+    """Why the option is `clims` and must stay `clims`.
+
+    hd.shade takes `span` without error and ignores it, so the obvious spelling
+    -- the one datashader's own tf.shade uses -- reads as correct, raises
+    nothing, and leaves the raster re-normalising on every zoom.
+    """
+    ignored = dict(span=(0.0, 10.0))
+    assert _shade_middle(_FULL_VIEW, **ignored) != _shade_middle(_ZOOMED_VIEW, **ignored)
+
+
+def test_scatter_passes_clims_to_the_raster_and_the_bar():
+    """Both must be pinned; pinning one leaves them describing different scales."""
     source = SCATTER.read_text()
-    assert "span=_column_span" in source or "span = _column_span" in source, \
-        "the continuous branch never computes a span"
-    assert "span=span" in source, "shade is not given the span"
+    assert "clims=span" in source, "the raster is not given the column span"
     assert '"clim": span' in source, "the colorbar is not given the same span"
