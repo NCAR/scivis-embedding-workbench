@@ -17,10 +17,13 @@
 #   qsub -A <YOUR_PROJECT_CODE> \
 #        -v PROJECT_DIR=/glade/work/$USER/scivis-embedding-workbench,\
 # GLADE_EXPERIMENTS=/glade/work/$USER/research/sample_data/data/lancedb/experiments/era5,\
-# EXPERIMENT_NAME=dinov3_24h \
+# EXPERIMENT_NAME=dinov3_24h,\
+# PROJECTION_PY=/glade/work/$USER/.venvs/rapids/bin/python \
 #        notebooks/05-latent-space-exploration/helpers/run_projection.pbs
 #
-# Or export those four and use the defaults below.
+# Or export those four and use the defaults below. See "RAPIDS" further down
+# for how to build the PROJECTION_PY environment -- it cannot be the project's
+# own venv.
 #
 # ── Choosing a node ──────────────────────────────────────────────────────────
 #
@@ -68,11 +71,27 @@
 #
 # ── RAPIDS ───────────────────────────────────────────────────────────────────
 #
-# cuML is NOT in pyproject.toml and cannot be: it is CUDA-only, and the project
-# has to resolve on macOS for local development. Load it separately below via
-# CUML_ENV. Stage 1 falls back to a CPU backend if cuML will not import, but
-# refuses to actually run without --allow-cpu, so a broken RAPIDS environment
-# fails fast and loudly rather than quietly taking six hours.
+# cuML needs its own environment, and not only because it is CUDA-only: cuDF,
+# which cuML imports on load, requires pandas < 3 while this project requires
+# pandas >= 3.0.1. That is a real incompatibility, so cuML cannot live in the
+# project venv however it is installed.
+#
+# Build the environment once (see docs/pipeline/projection.md):
+#
+#   uv venv /glade/work/$USER/.venvs/rapids --python 3.13
+#   uv pip install --python /glade/work/$USER/.venvs/rapids/bin/python \
+#       cuml-cu12 lancedb pylance numpy pandas
+#
+# then point PROJECTION_PY at its interpreter. Both stages run there -- stage 2
+# uses only long-stable pandas APIs.
+#
+# Note `uv run` is deliberately not used anywhere below: it re-syncs the
+# environment from uv.lock on every invocation, which silently reinstates
+# pandas 3 and breaks cuDF.
+#
+# Stage 1 falls back to a CPU backend if cuML will not import, but refuses to
+# actually run without --allow-cpu, so a broken environment fails fast and
+# loudly rather than quietly taking hours.
 # ─────────────────────────────────────────────────────────────────────────────
 
 #PBS -N umap_projection
@@ -93,9 +112,11 @@ EMBED_TABLE="${EMBED_TABLE:-patch_embeddings}"
 # Extra flags for stage 1, e.g. PROJECTION_ARGS="--n-components-cluster 20"
 PROJECTION_ARGS="${PROJECTION_ARGS:-}"
 
-# Optional: a command that puts cuML on the path. For example
-#   CUML_ENV="module load conda && conda activate rapids"
-CUML_ENV="${CUML_ENV:-}"
+# Interpreter that has cuML *and* lancedb. An explicit path rather than
+# activation: bare `python` on Casper is the NCAR base install (3.9), which
+# fails on `from datetime import UTC`. A conda RAPIDS env works too -- point
+# this at its bin/python.
+PROJECTION_PY="${PROJECTION_PY:?set PROJECTION_PY to the interpreter holding cuML and lancedb}"
 
 HELPERS="$PROJECT_DIR/notebooks/05-latent-space-exploration/helpers"
 SRC="$GLADE_EXPERIMENTS/$EXPERIMENT_NAME"
@@ -111,13 +132,12 @@ mkdir -p "$SCRATCH"
 cd "$PROJECT_DIR"
 
 # ── Stage 1: GPU ────────────────────────────────────────────────────────────
-if [ -n "$CUML_ENV" ]; then
-    echo "[INFO] loading RAPIDS: $CUML_ENV"
-    eval "$CUML_ENV"
-fi
+echo "[INFO] interpreter: $PROJECTION_PY"
+"$PROJECTION_PY" -c "import cuml, lancedb; print('[INFO] cuml', cuml.__version__, '+ lancedb OK')" \
+    || echo "[WARN] cuML or lancedb missing -- stage 1 will refuse without --allow-cpu"
 
 echo "[INFO] stage 1: make_projection.py"
-PYTHONUNBUFFERED=1 python "$HELPERS/make_projection.py" \
+PYTHONUNBUFFERED=1 "$PROJECTION_PY" "$HELPERS/make_projection.py" \
     --experiment "$SRC" \
     --table "$EMBED_TABLE" \
     --out "$SCRATCH/out" \
@@ -130,7 +150,7 @@ grep -E '"backend"|"shared_knn_graph"' "$SCRATCH/out/projection_meta.json"
 
 # ── Stage 2: CPU, writes back to GLADE ──────────────────────────────────────
 echo "[INFO] stage 2: write_projection_table.py"
-PYTHONUNBUFFERED=1 python "$HELPERS/write_projection_table.py" \
+PYTHONUNBUFFERED=1 "$PROJECTION_PY" "$HELPERS/write_projection_table.py" \
     --experiment "$SRC" \
     --npz "$SCRATCH/out/projection.npz" \
     --table-name "$TABLE_NAME"

@@ -18,9 +18,9 @@ means re-running the metadata join, or re-clustering with a different
 ```
 patch_embeddings.lance
         │
-        │  stage 1  (GPU, ~10–25 min at 1M rows)
+        │  stage 1  (GPU, 4.5 min at 982k rows)
         ▼
-projection.npz + projection_meta.json      ← ~55 MB, portable
+projection.npz + projection_meta.json      ← 57 MB, portable
         │
         │  stage 2  (CPU, seconds)
         ▼
@@ -29,6 +29,36 @@ umap_patch_001.lance                       ← opens in latent_exploration.py
 
 The `.npz` is small enough to `scp` off Casper, so stage 2 and the notebook can
 run on a laptop against a copy of the source DBs.
+
+### Where the time goes
+
+Measured on `dinov3_24h`, 982,016 × 768, one A100-80GB, cuML 26.06:
+
+| Stage | Time | Share |
+|---|---|---|
+| read + reshape | 3.9s | 1% |
+| **kNN graph** | **190.3s** | **71%** |
+| UMAP → 2-D | 5.2s | 2% |
+| UMAP → 10-D | 9.0s | 3% |
+| HDBSCAN | 49.0s | 18% |
+| k-means | 0.1s | — |
+
+Two things worth reading off it. The neighbour search dominates — clustering is
+under a fifth of the run, which is the opposite of what most people expect. And
+the 10-D UMAP costs a fraction of the 2-D one despite more output dimensions,
+because it reuses the shared graph and pays only for optimisation. That is the
+clearest evidence the sharing is working.
+
+**The kNN search is exact brute force, so it scales quadratically:**
+
+| Experiment | Patches | kNN |
+|---|---|---|
+| `dinov3_24h` | 982k | 190s (measured) |
+| `dinov3_12h` | 2.0M | ~13 min (projected) |
+| `dinov3_1h` | 23.6M | **~30 hours** (projected) |
+
+The first two are comfortable; the third is not reachable this way and would
+need an approximate neighbour search.
 
 ---
 
@@ -110,9 +140,25 @@ one cluster holds more than 90% of the points**, naming `leaf` as the fix. The
 warning and the observed dominance are both recorded in
 `projection_meta.json`.
 
-Note these numbers come from a 50k subsample. Density structure can look
-different at the full million, where the estimates are better resolved — so
-re-check rather than assuming the subsample's answer carries over.
+**At full scale it behaves differently.** The rows above are a 50k CPU
+subsample. On the full 982k with the same *proportional* parameters
+(`min_cluster_size` 1402 ≈ 0.14% of N in both cases) plus a ceiling:
+
+| Run | Clusters | Noise | Largest |
+|---|---|---|---|
+| 50k, `eom`, no ceiling | 2 | 1.6% | 97.7% |
+| 982k, `eom`, `--max-cluster-size 98000` | **235** | 33.7% | — |
+
+The GPU run reproduced the 50k collapse almost exactly before the ceiling was
+applied (2 clusters, 97.0% dominance) — a different backend and a different UMAP
+implementation reaching the same answer, which is good evidence the collapse is
+a property of the data rather than of either library.
+
+Whether the 235 clusters come from the ceiling or from density resolving better
+at 20× the points has not been separated. A control run without the ceiling
+would settle it, and matters if you need to describe the method: if the ceiling
+is load-bearing, the cluster count is partly an imposed constraint rather than a
+discovered structure.
 
 ### `--max-cluster-size`
 
@@ -225,6 +271,43 @@ its own colour" is a different statement from "belongs to no cluster".
 This keeps a usable categorical colour-by whatever `min_cluster_size` produces,
 without distorting the clustering to satisfy a rendering limit.
 
+**On the real run it is lossy, not cosmetic.** `cluster_top` was designed
+assuming a few large clusters plus a tail of dust, where folding costs almost
+nothing. The 982k run does not look like that:
+
+| | Points | Share |
+|---|---|---|
+| noise (`-1`) | ~330,900 | 33.7% |
+| `OTHER` (`-2`) | 353,267 | 36.0% |
+| the 62 named clusters | ~297,800 | 30.3% |
+
+Roughly 70% of the map renders as two flat colours. The size distribution is
+*flat* rather than long-tailed — the 173 folded clusters average ~2,040 points
+against ~4,800 for the kept 62 — so the 64-category cap cuts an arbitrary line
+through 235 comparably-sized groups.
+
+Three ways to live with it:
+
+- **Colour by `kmeans` instead.** Already in the table, no noise class and no
+  folding, so every point gets one of k distinguishable colours. Usually the
+  more legible categorical for a first look at a million points.
+- **Raise `--min-cluster-size`** until the run lands near 60 clusters, making
+  `cluster_top` lossless. Roughly 4× the current value; one 5-minute run.
+- **Accept it** as "the 62 largest modes, everything else greyed", stated
+  explicitly.
+
+Worth being clear that no colour encoding shows 235 categories. People
+distinguish perhaps 8–12 colours reliably in a scatter, and the best categorical
+palettes stretch to 20–30. If you need to inspect individual clusters at that
+count, highlighting one at a time is the interaction that works, not a bigger
+palette.
+
+`cluster` itself remains available as a *continuous* colour-by, since 235 values
+exceed the categorical cap. Two caveats when reading it: the ramp implies an
+order that HDBSCAN's labels do not have, and `ds.mean` averages the ids — with
+33.7% noise sitting at `-1`, a pixel holding ten points from cluster 200 and
+five noise points renders as 133.
+
 ### Integrity
 
 Stage 1 leaves `image_id` out of the `.npz` — a million strings would dominate
@@ -288,17 +371,47 @@ Staging would only pay off if one job read the table repeatedly — a parameter
 sweep. A `--recluster-from` flag reusing the saved 10-D embedding is the cheaper
 answer there, since re-clustering needs no second UMAP run.
 
-### RAPIDS
+### RAPIDS — cuML needs its own environment
 
-cuML is **not** in `pyproject.toml` and cannot be: it is CUDA-only, and the
-project has to resolve on macOS for local development. Load it separately:
+cuML cannot go in `pyproject.toml`, and not only because it is CUDA-only. cuDF,
+which cuML imports at package load, **requires pandas < 3**; this project
+requires `pandas>=3.0.1`. That is a real incompatibility, not a packaging
+inconvenience, and no install method resolves it — a conda RAPIDS environment
+simply *is* an environment where pandas is already 2.x.
+
+So give cuML a separate venv. This is the recipe that works on Casper:
 
 ```bash
-CUML_ENV="module load conda && conda activate rapids"
+uv venv /glade/work/$USER/.venvs/rapids --python 3.13
+
+RAPIDS_PY=/glade/work/$USER/.venvs/rapids/bin/python
+uv pip install --python "$RAPIDS_PY" cuml-cu12 lancedb pylance numpy pandas
+
+"$RAPIDS_PY" -c "import cuml, lancedb; print('cuml', cuml.__version__)"
 ```
 
+Then run **both** stages with that interpreter. Stage 2 only needs long-stable
+pandas APIs, so one environment covers the whole pipeline:
+
+```bash
+"$RAPIDS_PY" notebooks/05-latent-space-exploration/helpers/make_projection.py ...
+"$RAPIDS_PY" notebooks/05-latent-space-exploration/helpers/write_projection_table.py ...
+```
+
+Three traps, all of which have bitten:
+
+- **`uv run` re-syncs the environment from `uv.lock` on every invocation**, which
+  silently undoes any `uv pip install`. Installing cuML and then running with
+  `uv run` restores pandas 3 and cuDF fails on `pandas.api.types.is_interval`.
+  Use the interpreter path directly.
+- **`uv pip install` targets the project's `.venv`** when you are inside the
+  project directory, even with another venv activated. Pass
+  `--python "$RAPIDS_PY"` so there is no ambiguity.
+- **Bare `python` on Casper is the NCAR base install (3.9)**, which fails on
+  `from datetime import UTC`. Always the explicit path.
+
 If cuML will not import, stage 1 refuses to run without `--allow-cpu` — a broken
-RAPIDS environment fails fast instead of quietly taking six hours.
+RAPIDS environment fails fast instead of quietly taking hours.
 
 ### First thing to check in the log
 
@@ -312,6 +425,37 @@ cuML build did not accept the `knn_graph=` keyword (it has moved between
 releases) and the two embeddings were fitted independently — in which case
 clusters may not line up with the map, and that is the cause rather than
 anything wrong with the clustering.
+
+Confirmed working on cuML 26.06.00 / A100-80GB: `knn_graph=` is accepted, and
+the cuML debug log says `Calling UMAP::fit() with precomputed KNN`.
+
+### Did it work? — the correspondence check
+
+The one check worth running after a full run. Clusters are found in the 10-D
+embedding but drawn on the 2-D map; if the two disagree, clusters come out
+smeared across the map and the whole thing is untrustworthy.
+
+```bash
+"$RAPIDS_PY" -c "
+import sys; sys.path.insert(0,'notebooks/05-latent-space-exploration')
+import numpy as np
+from helpers import PatchExperiment
+exp = PatchExperiment.open('<experiments>', 'dinov3_24h')
+p = exp.load_projection('umap_patch_001'); df = p.df
+overall = np.hypot(df.x.std(), df.y.std())
+s = np.array([np.hypot(g.x.std(), g.y.std())/overall
+              for _, g in df[df.cluster>=0].groupby('cluster') if len(g)>50])
+print(f'{len(s)} clusters, median spread {np.median(s):.2f}x overall, '
+      f'{(s<0.5).mean():.0%} tighter than half')
+"
+```
+
+Measured on the 982k run: **235 clusters, median spread 0.11× overall, 96%
+tighter than half.** Spreads near 1.0× would mean the embeddings diverged.
+
+Worth noting the exact and approximate neighbour searches agree here: the CPU
+path uses pynndescent (approximate) and the CUDA path exact brute force, and
+both produced compact clusters — 0.15× at 50k, 0.11× at 982k.
 
 ---
 
