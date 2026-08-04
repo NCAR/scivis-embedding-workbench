@@ -1,0 +1,143 @@
+#!/bin/bash
+# ─────────────────────────────────────────────────────────────────────────────
+# run_projection.pbs — UMAP + HDBSCAN on a Casper GPU node.
+#
+# Runs stage 1 (make_projection.py) on the GPU, then stage 2
+# (write_projection_table.py) on the CPU, producing a projection table the
+# explorer notebook can open.
+#
+# It reads the embeddings straight from GLADE. There is deliberately no staging
+# to node-local NVMe -- see "Why no NVMe staging" below.
+#
+# Nothing personal is baked in. Every path and account code comes from the
+# environment, so this file is safe to commit and to share.
+#
+# ── Submitting ───────────────────────────────────────────────────────────────
+#
+#   qsub -A <YOUR_PROJECT_CODE> \
+#        -v PROJECT_DIR=/glade/work/$USER/scivis-embedding-workbench,\
+# GLADE_EXPERIMENTS=/glade/work/$USER/research/sample_data/data/lancedb/experiments/era5,\
+# EXPERIMENT_NAME=dinov3_24h \
+#        notebooks/05-latent-space-exploration/helpers/run_projection.pbs
+#
+# Or export those four and use the defaults below.
+#
+# ── Choosing a node ──────────────────────────────────────────────────────────
+#
+# The `select` line below asks for one A100. The `gpu_type=a100` is deliberate
+# and worth keeping:
+#
+#   * Casper has both V100s and A100s, and the queue will hand you a V100 if you
+#     do not say otherwise. (scripts/casper/casper-marimo.env defaults to v100
+#     for the interactive notebook launcher, where it is the right call.)
+#   * A V100 has 16 or 32 GB of device memory against the A100's 40/80, and
+#     materially lower fp32 throughput. A 1M x 768 run fits on a V100 but takes
+#     noticeably longer; a 2M x 768 run is tight on a 16 GB card.
+#
+# Sizing the rest:
+#
+#   ncpus     8 is plenty. Stage 1 is GPU-bound; the CPUs only read Lance and
+#             write the npz. Stage 2 is single-threaded pandas.
+#
+# ── Why no NVMe staging ──────────────────────────────────────────────────────
+#
+# notebooks/04-benchmarking/run_benchmark.pbs copies its tables to
+# /local_scratch first. That is right for *that* job -- an ANN latency benchmark
+# doing thousands of random-access index lookups with the page cache purged
+# between runs, where storage latency is the thing being measured.
+#
+# This job has the opposite profile: it reads the embedding column **once**,
+# sequentially, and then works entirely in GPU memory. Staging would mean
+# reading the whole table off GLADE, writing it to NVMe, and reading it back --
+# strictly more I/O than just reading it once, for no benefit.
+#
+# It also does not scale. patch_embeddings is ~3 GB for dinov3_24h and ~6 GB for
+# dinov3_12h, but ~72 GB for dinov3_1h, which may simply not fit in
+# /local_scratch.
+#
+# Staging would start to pay off only if a single job read the table several
+# times -- a parameter sweep, say. If you find yourself wanting that, a
+# --recluster-from flag on stage 1 (reusing the saved 10-d embedding) is the
+# cheaper answer, since re-clustering needs no second UMAP run at all.
+#   mem       Must comfortably exceed the host-side embedding matrix:
+#             N x D x 4 bytes, so ~3 GB at 1M x 768 and ~6 GB at 2M x 768,
+#             plus a copy (see make_projection.to_matrix) and Arrow overhead.
+#             64 GB is generous and costs nothing extra in the queue.
+#   walltime  ~1 h covers 1M rows end to end with plenty of headroom; the GPU
+#             work itself should be 10-25 min. Raise it for 2M+.
+#
+# ── RAPIDS ───────────────────────────────────────────────────────────────────
+#
+# cuML is NOT in pyproject.toml and cannot be: it is CUDA-only, and the project
+# has to resolve on macOS for local development. Load it separately below via
+# CUML_ENV. Stage 1 falls back to a CPU backend if cuML will not import, but
+# refuses to actually run without --allow-cpu, so a broken RAPIDS environment
+# fails fast and loudly rather than quietly taking six hours.
+# ─────────────────────────────────────────────────────────────────────────────
+
+#PBS -N umap_projection
+#PBS -l select=1:ncpus=8:mem=64GB:ngpus=1:gpu_type=a100
+#PBS -l walltime=01:00:00
+#PBS -q casper
+#PBS -j oe
+
+set -euo pipefail
+
+# ── Configuration, all overridable via `qsub -v` or the environment ──────────
+PROJECT_DIR="${PROJECT_DIR:?set PROJECT_DIR to your checkout of this repo on Casper}"
+GLADE_EXPERIMENTS="${GLADE_EXPERIMENTS:?set GLADE_EXPERIMENTS to the experiments dir on GLADE}"
+EXPERIMENT_NAME="${EXPERIMENT_NAME:?set EXPERIMENT_NAME, e.g. dinov3_24h}"
+TABLE_NAME="${TABLE_NAME:-umap_patch_001}"
+EMBED_TABLE="${EMBED_TABLE:-patch_embeddings}"
+
+# Extra flags for stage 1, e.g. PROJECTION_ARGS="--n-components-cluster 20"
+PROJECTION_ARGS="${PROJECTION_ARGS:-}"
+
+# Optional: a command that puts cuML on the path. For example
+#   CUML_ENV="module load conda && conda activate rapids"
+CUML_ENV="${CUML_ENV:-}"
+
+HELPERS="$PROJECT_DIR/notebooks/05-latent-space-exploration/helpers"
+SRC="$GLADE_EXPERIMENTS/$EXPERIMENT_NAME"
+# Only the npz goes to scratch -- it is tens of MB and is copied back at the end.
+SCRATCH="${TMPDIR:-/tmp}/projection.$$"
+
+echo "=== UMAP projection: $EXPERIMENT_NAME ==="
+date
+nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || echo "[WARN] no nvidia-smi"
+du -sh "$SRC/$EMBED_TABLE.lance" || true
+
+mkdir -p "$SCRATCH"
+cd "$PROJECT_DIR"
+
+# ── Stage 1: GPU ────────────────────────────────────────────────────────────
+if [ -n "$CUML_ENV" ]; then
+    echo "[INFO] loading RAPIDS: $CUML_ENV"
+    eval "$CUML_ENV"
+fi
+
+echo "[INFO] stage 1: make_projection.py"
+PYTHONUNBUFFERED=1 python "$HELPERS/make_projection.py" \
+    --experiment "$SRC" \
+    --table "$EMBED_TABLE" \
+    --out "$SCRATCH/out" \
+    $PROJECTION_ARGS
+
+# The log line to check first: it reports the backend and whether the shared
+# kNN graph was used. A CPU backend or a fallback warning here explains any
+# surprise in the timings or in how well the clusters line up with the map.
+grep -E '"backend"|"shared_knn_graph"' "$SCRATCH/out/projection_meta.json"
+
+# ── Stage 2: CPU, writes back to GLADE ──────────────────────────────────────
+echo "[INFO] stage 2: write_projection_table.py"
+PYTHONUNBUFFERED=1 python "$HELPERS/write_projection_table.py" \
+    --experiment "$SRC" \
+    --npz "$SCRATCH/out/projection.npz" \
+    --table-name "$TABLE_NAME"
+
+# Keep the npz: re-clustering from it costs seconds and needs no GPU.
+cp "$SCRATCH/out/projection.npz" "$SCRATCH/out/projection_meta.json" "$SRC/" || \
+    echo "[WARN] could not copy the npz back to GLADE"
+
+echo "=== Done: $SRC/$TABLE_NAME.lance ==="
+date

@@ -51,5 +51,6 @@ nav:
     - ERA5 Batch Processing: pipeline/data-processing.md
     - Image Database: pipeline/prepare-data.md
     - Embeddings: pipeline/embeddings.md
+    - Projection: pipeline/projection.md
     - Dashboard: pipeline/dashboard.md
   - Examples: examples.md
