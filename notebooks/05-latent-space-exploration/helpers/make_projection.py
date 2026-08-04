@@ -235,14 +235,46 @@ def fingerprint(ids: pa.Array) -> str:
 
 # ── backends ─────────────────────────────────────────────────────────────────
 
-def cuda_available() -> bool:
-    """True when cuML imports and reports a device. Never raises."""
+def detect_cuda() -> tuple[bool, str]:
+    """(usable, reason). Never raises.
+
+    Returns the *reason* as well as the verdict, because "cuML/CUDA not
+    available" on its own is close to useless on a cluster: a missing package, a
+    login node with no GPU, and a driver mismatch all look identical, and the
+    fixes are completely different.
+
+    Deliberately probes only what this script actually uses. An earlier version
+    imported `cuml.common.device_selection`, which is far more specific than
+    needed -- a working cuML that had merely moved that submodule would have
+    been reported as no CUDA at all.
+    """
     try:
-        import cuml  # noqa: F401
-        from cuml.common.device_selection import get_global_device_type  # noqa: F401
-        return True
+        import cuml
+    except Exception as exc:
+        return False, f"cuML did not import -- {type(exc).__name__}: {exc}"
+
+    version = getattr(cuml, "__version__", "?")
+    try:
+        import cupy
+
+        count = cupy.cuda.runtime.getDeviceCount()
+    except Exception as exc:
+        return False, (
+            f"cuML {version} imported but no usable CUDA device "
+            f"-- {type(exc).__name__}: {exc}"
+        )
+
+    if count == 0:
+        return False, (
+            f"cuML {version} imported but 0 CUDA devices are visible. "
+            "On a cluster this usually means a login node -- request a GPU node."
+        )
+
+    try:
+        name = cupy.cuda.runtime.getDeviceProperties(0)["name"].decode()
     except Exception:
-        return False
+        name = "unknown device"
+    return True, f"cuML {version}, {count} device(s), {name}"
 
 
 class CpuBackend:
@@ -518,13 +550,24 @@ def main(argv=None) -> int:
     min_samples = args.min_samples or default_min_samples(min_cluster_size)
     kmeans_k = default_kmeans_k(n_rows) if args.kmeans_k is None else args.kmeans_k
 
-    use_cuda = cuda_available()
+    use_cuda, cuda_reason = detect_cuda()
     if not use_cuda and not args.allow_cpu:
+        # The gate exists to stop a multi-hour CPU run starting by accident, so
+        # the cost it quotes has to match the actual row count -- warning about
+        # "hours" for a 3k smoke test would just train the reader to ignore it.
+        if n_rows > 200_000:
+            cost = f"A CPU run over {n_rows:,} rows takes hours."
+        elif n_rows > 50_000:
+            cost = f"A CPU run over {n_rows:,} rows takes many minutes."
+        else:
+            cost = f"{n_rows:,} rows is small enough to run on CPU."
         print(
-            "error: cuML/CUDA not available.\n"
-            f"       A CPU run over {n_rows:,} rows takes hours. Re-run with "
-            "--allow-cpu to accept that,\n"
-            "       or with --limit to work on a subsample.",
+            f"error: no CUDA backend.\n"
+            f"       {cuda_reason}\n"
+            f"       {cost} Re-run with --allow-cpu to accept that"
+            f"{',' if n_rows > 50_000 else '.'}\n"
+            + ("       or with --limit to work on a subsample.\n"
+               if n_rows > 50_000 else ""),
             file=sys.stderr,
         )
         return 1
@@ -536,7 +579,7 @@ def main(argv=None) -> int:
     log(f"experiment      {experiment}")
     log(f"table           {args.table}  (id={args.id_column}, vec={args.vector_column})")
     log(f"rows x dim      {n_rows:,} x {dim}")
-    log(f"backend         {backend.name.upper()}")
+    log(f"backend         {backend.name.upper()}  ({cuda_reason})")
     if not use_cuda:
         log("                CPU backend: expect hours at full scale.")
         if sys.platform == "darwin":
