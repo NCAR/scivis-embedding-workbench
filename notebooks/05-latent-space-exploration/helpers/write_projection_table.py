@@ -42,6 +42,15 @@ Usage
         --experiment /path/to/experiments/era5/dinov3_24h \
         --npz /path/to/experiments/era5/dinov3_24h/_projection/projection.npz \
         --table-name umap_patch_001
+
+    On a cluster, run this with the same interpreter as stage 1 rather than via
+    `uv run` -- see the Environment section of make_projection.py. This script
+    needs no GPU and only long-stable pandas APIs, so the cuML environment
+    (which pins pandas < 3) runs it fine, and one environment covers both
+    stages.
+
+    The table name must start with `umap_` to appear in the notebook's
+    projection dropdown.
 """
 
 from __future__ import annotations

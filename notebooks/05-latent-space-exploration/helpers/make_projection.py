@@ -32,22 +32,53 @@ Outputs
 
 Usage
 -----
-    # Local iteration on a subsample, no GPU:
+    # Local iteration on a subsample, no GPU. `uv run` is right here:
     uv run python notebooks/05-latent-space-exploration/helpers/make_projection.py \
         --experiment /path/to/lancedb/experiments/era5/dinov3_24h \
         --limit 50000 --allow-cpu
 
-    # Full run on a CUDA node:
-    python make_projection.py --experiment "$NVME_DB_DIR/dinov3_24h"
+    # Full run on a CUDA node. NOT `uv run`, and NOT bare `python` -- see below:
+    /path/to/rapids-venv/bin/python make_projection.py \
+        --experiment /path/to/experiments/era5/dinov3_24h \
+        --out /path/to/experiments/era5/dinov3_24h/_projection
 
 Backends
 --------
     CUDA  — cuML (RAPIDS). The only supported way to run this at full scale.
+            Measured at 982k x 768 on an A100-80GB: 4.5 min end to end, of
+            which the exact kNN search is 71% and HDBSCAN 18%.
     CPU   — umap-learn + scikit-learn. Correct but slow; hours at ~1M rows,
             so it is gated behind --allow-cpu.
 
     There is no MPS path: RAPIDS is CUDA-only and Numba has no Metal target.
     On Apple Silicon, use --limit to iterate on a subsample.
+
+    Note the two backends do not search alike: umap-learn uses pynndescent,
+    which is approximate, while the cuML path is exact brute force. They agreed
+    on this data, but they are not the same computation.
+
+Environment on a cluster
+------------------------
+    cuML needs its own interpreter, and not only because it is CUDA-only: cuDF,
+    which cuML imports on load, requires pandas < 3 while this project requires
+    pandas >= 3.0.1. No install method puts them in one environment.
+
+        uv venv ~/.venvs/rapids --python 3.13
+        uv pip install --python ~/.venvs/rapids/bin/python \
+            cuml-cu12 lancedb pylance numpy pandas
+
+    Then run *both* stages with ~/.venvs/rapids/bin/python. Three traps, all of
+    which have bitten:
+
+      * `uv run` re-syncs from uv.lock on every call, silently undoing any
+        `uv pip install` -- it will put pandas 3 back and cuDF will fail on
+        `pandas.api.types.is_interval`.
+      * `uv pip install` targets the *project's* .venv when run from inside the
+        project directory, even with another venv active. Pass --python.
+      * bare `python` on Casper is the NCAR base install (3.9), which cannot
+        `from datetime import UTC`.
+
+    See docs/pipeline/projection.md for the full walkthrough.
 """
 
 from __future__ import annotations
