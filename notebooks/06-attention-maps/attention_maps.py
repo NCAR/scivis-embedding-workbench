@@ -648,29 +648,42 @@ def _(alt, grid_cols, grid_rows, img_disp, mo, np, pd):
     )
 
     _w = 980
+    _h = max(60, int(_w * grid_rows / grid_cols))
 
-    # marimo's point selection dims every unselected mark, which makes the frame
-    # unreadable and the next patch hard to aim at. Pinning opacity cancels that.
+    # marimo dims unselected marks by rewriting the opacity channel on the
+    # frontend: encoding.opacity becomes {condition: selected -> o, value: o/5}.
+    # The channel is hardcoded, and the rewrite spreads over whatever we set, so
+    # an `opacity` in this encoding cannot survive it.
     #
-    # The highlight is drawn on the locator above rather than on this chart: an
-    # in-chart outline needs a selection param of our own, and adding one
-    # alongside marimo's chart_selection stops selection registering at all.
-    # Deriving the outline from patch_chart.value instead would be a cycle
-    # (chart -> value -> chart), which marimo rejects.
-    patch_chart = mo.ui.altair_chart(
+    # Layered specs are exempt — marimo's walker returns layer charts untouched.
+    # So the colours live in a base layer that is never rewritten, and a second,
+    # invisible layer carries the selection and draws the red outline. The param
+    # is named `select_point`, the name marimo reads its value from.
+    _picked = alt.selection_point(
+        fields=["row", "col"], empty=False, name="select_point"
+    )
+    _xy = {"x": alt.X("col:O", axis=None), "y": alt.Y("row:O", axis=None)}
+
+    _colours = (
         alt.Chart(_grid)
         .mark_rect()
+        .encode(**_xy, fill=alt.Fill("hex:N", scale=None, legend=None))
+    )
+    _hit = (
+        alt.Chart(_grid)
+        .mark_rect(fillOpacity=0)
         .encode(
-            x=alt.X("col:O", axis=None),
-            y=alt.Y("row:O", axis=None),
-            fill=alt.Fill("hex:N", scale=None, legend=None),
-            opacity=alt.value(1.0),
+            **_xy,
+            stroke=alt.condition(_picked, alt.value("#ff2d55"), alt.value(None)),
+            strokeWidth=alt.condition(_picked, alt.value(3), alt.value(0)),
             tooltip=["row:O", "col:O"],
         )
-        .properties(
-            width=_w,
-            height=max(60, int(_w * grid_rows / grid_cols)),
-            title="Click a patch",
+        .add_params(_picked)
+    )
+
+    patch_chart = mo.ui.altair_chart(
+        alt.layer(_colours, _hit).properties(
+            width=_w, height=_h, title="Click a patch"
         ),
         chart_selection="point",
     )
