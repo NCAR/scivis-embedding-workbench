@@ -27,6 +27,7 @@ def _(mo):
 
 @app.cell
 def _():
+    import bisect
     import io
     import math
     import os
@@ -60,6 +61,7 @@ def _():
         Image,
         Path,
         alt,
+        bisect,
         build_model,
         build_rect_transform,
         io,
@@ -191,10 +193,76 @@ def _(source_db, table_ui):
 
 @app.cell
 def _(index, mo):
-    _dates = sorted(index["_date"].unique()) if index is not None else []
-    if _dates:
+    # One ordered list of timesteps drives both fields. Stepping is by dt, not by
+    # calendar day, so the arrows roll across midnight and never land on a
+    # timestamp the table does not have.
+    if index is not None:
+        stamps = sorted(
+            index[["_date", "_time"]].drop_duplicates().itertuples(index=False, name=None)
+        )
+    else:
+        stamps = []
+    get_ts_i, set_ts_i = mo.state(0)
+    return get_ts_i, set_ts_i, stamps
+
+
+@app.cell
+def _(mo, set_ts_i, stamps):
+    # Deliberately does NOT read get_ts_i. marimo will not re-run the cell that
+    # defines the element whose callback set the state, so anything computed
+    # from the getter here would go stale — that is what left the ← button
+    # permanently disabled. A functional updater removes the need to read it,
+    # so this cell has no dependency on the state and the buttons stay valid.
+    _n = len(stamps)
+
+    def _step(delta):
+        # on_change, not on_click: on_click computes the button's own value.
+        # Pairing it with an incrementing value guarantees a change each click,
+        # which is what makes on_change fire.
+        def _fn(_v):
+            set_ts_i(lambda i: max(0, min(i + delta, _n - 1)))
+
+        return _fn
+
+    prev_step = mo.ui.button(
+        label="←",
+        value=0,
+        on_click=lambda _c: _c + 1,
+        on_change=_step(-1),
+        tooltip="Previous timestep",
+    )
+    next_step = mo.ui.button(
+        label="→",
+        value=0,
+        on_click=lambda _c: _c + 1,
+        on_change=_step(+1),
+        tooltip="Next timestep",
+    )
+    return next_step, prev_step
+
+
+@app.cell
+def _(bisect, get_ts_i, mo, set_ts_i, stamps):
+    # Its own cell so it re-runs on every state change, including steps that
+    # roll past midnight into the next day.
+    _i = max(0, min(get_ts_i(), len(stamps) - 1)) if stamps else 0
+
+    def _on_date(d):
+        # Jump to the first timestep on the chosen day. (d,) sorts before any
+        # (d, time), so bisect_left lands on that day's first entry.
+        if d is None or not stamps:
+            return
+        _j = max(0, min(bisect.bisect_left(stamps, (d,)), len(stamps) - 1))
+        if _j != get_ts_i():
+            set_ts_i(_j)
+
+    if stamps:
         date_ui = mo.ui.date(
-            start=_dates[0], stop=_dates[-1], value=_dates[0], label="Date"
+            start=stamps[0][0],
+            stop=stamps[-1][0],
+            value=stamps[_i][0],
+            label="Date",
+            on_change=_on_date,
         )
     else:
         date_ui = mo.ui.date(label="Date")
@@ -202,13 +270,34 @@ def _(index, mo):
 
 
 @app.cell
-def _(date_ui, index, mo):
-    if index is not None:
-        _times = sorted(index[index["_date"] == date_ui.value]["_time"].unique())
-    else:
-        _times = []
+def _(get_ts_i, mo, stamps):
+    # Position readout, in a state-reading cell so it stays current. Replaces
+    # disabling the arrows at the ends, which cannot be done reliably from the
+    # cell that defines them.
+    _i = max(0, min(get_ts_i(), len(stamps) - 1)) if stamps else 0
+    step_pos = mo.md(f"*{_i + 1:,} / {len(stamps):,}*" if stamps else "")
+    return (step_pos,)
+
+
+@app.cell
+def _(bisect, get_ts_i, mo, set_ts_i, stamps):
+    _i = max(0, min(get_ts_i(), len(stamps) - 1)) if stamps else 0
+    _cur_date, _cur_time = stamps[_i] if stamps else (None, None)
+    _times = [t for d, t in stamps if d == _cur_date]
+
+    def _on_time(t):
+        if t is None or not stamps:
+            return
+        _j = bisect.bisect_left(stamps, (_cur_date, t))
+        _j = max(0, min(_j, len(stamps) - 1))
+        if _j != get_ts_i():
+            set_ts_i(_j)
+
     time_ui = mo.ui.dropdown(
-        options=_times, value=_times[0] if _times else None, label="Time (UTC)"
+        options=_times,
+        value=_cur_time,
+        label="Time (UTC)",
+        on_change=_on_time,
     )
     return (time_ui,)
 
@@ -249,7 +338,10 @@ def _(
     index_note,
     member_ui,
     mo,
+    next_step,
+    prev_step,
     source_uri,
+    step_pos,
     table_ui,
     time_ui,
 ):
@@ -263,7 +355,11 @@ def _(
             [
                 db_dir_ui,
                 _resolved,
-                mo.hstack([table_ui, date_ui, time_ui], justify="start", gap=1),
+                mo.hstack(
+                    [table_ui, prev_step, date_ui, time_ui, next_step, step_pos],
+                    justify="start",
+                    gap=1,
+                ),
                 member_ui,
                 mo.md(f"*{len(index):,} frames in table*"),
             ]
