@@ -839,7 +839,6 @@ def _(
     PATCH_CHART_W,
     grid_cols,
     grid_rows,
-    image_label,
     img_disp,
     io,
     mo,
@@ -858,16 +857,18 @@ def _(
     # figure comes back as an <img> that stretches to the container instead. So
     # build the PNG at the chart's *rendered* size and pin it with mo.image,
     # rather than letting the two find different widths.
+    # No title inside the figure: matplotlib would draw it in DejaVu Sans while
+    # the chart's title comes from Vega in the browser font. Both captions are
+    # rendered as markdown above the panels instead, so the fonts match and each
+    # panel is pure content of identical height.
     _render_w = PATCH_CHART_W + 10
-    _plot_h = max(60, int(PATCH_CHART_W * grid_rows / grid_cols))
-    _title_h = 27
-    _total_h = _plot_h + _title_h
+    _total_h = max(60, int(PATCH_CHART_W * grid_rows / grid_cols))
 
     _fig = plt.figure(figsize=(_render_w / 100, _total_h / 100), dpi=100)
     _fig.patch.set_facecolor(theme["bg"])
     # Axes placed by hand rather than via tight_layout: the point is to hit a
     # known pixel box, which tight_layout would renegotiate.
-    _ax = _fig.add_axes([0.0, 0.0, 1.0, _plot_h / _total_h])
+    _ax = _fig.add_axes([0.0, 0.0, 1.0, 1.0])
     _ax.set_facecolor(theme["bg"])
     # aspect="auto" fills the axes exactly. The image aspect already equals the
     # grid aspect, so nothing is distorted and no letterboxing remains.
@@ -876,16 +877,6 @@ def _(
     _ax.set_yticks([])
     for _s in _ax.spines.values():
         _s.set_visible(False)
-    _fig.text(
-        0.5,
-        1.0 - (_title_h / 2) / _total_h,
-        image_label,
-        ha="center",
-        va="center",
-        fontsize=9,
-        color=theme["fg"],
-    )
-
     if sel_row is not None:
         _ph = img_disp.shape[0] / grid_rows
         _pw = img_disp.shape[1] / grid_cols
@@ -963,8 +954,11 @@ def _(PATCH_CHART_W, alt, grid_cols, grid_rows, img_disp, mo, np, pd):
 
     patch_chart = mo.ui.altair_chart(
         alt.layer(_colours, _hit).properties(
-            width=PATCH_CHART_W, height=_h, title="Click a patch"
-        ),
+            width=PATCH_CHART_W, height=_h
+        )
+        # Vega-Lite draws a view border by default (config.view.stroke = #ddd).
+        # The locator panel has its spines hidden, so drop it here to match.
+        .configure_view(stroke=None),
         chart_selection="point",
     )
     return (patch_chart,)
@@ -1065,13 +1059,23 @@ def _(dark_ui, plt):
 
 
 @app.cell
-def _(locator_fig, mo, patch_chart):
+def _(captured_label, locator_fig, mo, patch_chart):
     # One at a time rather than stacked: both are wide, and tabbing keeps
     # whichever is showing within an eyeline of the gallery below. Element
     # values survive while a tab is hidden, so the patch selection still drives
     # the maps even when the preview tab is open.
+    # Captions live here as markdown rather than inside each panel, so both use
+    # the same font and both tabs are one text line plus identically sized
+    # content.
     mo.ui.tabs(
-        {"Image preview": locator_fig, "Select a patch": patch_chart},
+        {
+            "Image preview": mo.vstack(
+                [mo.md(f"`{captured_label}`"), locator_fig], gap=0.4
+            ),
+            "Select a patch": mo.vstack(
+                [mo.md("Click a patch"), patch_chart], gap=0.4
+            ),
+        },
         value="Select a patch",
     )
     return
