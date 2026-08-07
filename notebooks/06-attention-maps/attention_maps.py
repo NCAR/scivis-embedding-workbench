@@ -28,7 +28,9 @@ def _(mo):
 @app.cell
 def _():
     import io
+    import math
     import os
+    import re
     import sys
     from pathlib import Path
 
@@ -62,12 +64,14 @@ def _():
         build_rect_transform,
         io,
         lancedb,
+        math,
         mo,
         np,
         os,
         pc,
         pd,
         plt,
+        re,
         resolve_model_data_config,
         torch,
     )
@@ -269,26 +273,40 @@ def _(
 
 @app.cell
 def _(Path, mo, os):
-    # Browses the filesystem of the machine running marimo, so on Casper this
-    # reaches glade paths directly rather than uploading from the laptop.
+    _exts = [".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"]
+
+    # Two inputs because they read different filesystems. Upload goes through the
+    # OS file dialog on whichever machine the browser is on, so it has typing and
+    # search; it cannot see server-side paths. The browser reads the filesystem
+    # of the marimo process, which is what reaches /glade on Casper, but means
+    # scrolling. Upload takes precedence when both are set.
+    upload_ui = mo.ui.file(
+        filetypes=_exts, multiple=False, kind="area", label="Upload an image"
+    )
     file_ui = mo.ui.file_browser(
         initial_path=os.environ.get("SCIVIS_IMAGE_DIR", str(Path.home())),
-        filetypes=[".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"],
+        filetypes=_exts,
         multiple=False,
-        label="Choose an image",
+        label="…or browse the machine running marimo",
     )
+
     file_panel = mo.vstack(
         [
             mo.md(
-                "Any image readable by the marimo process — useful for one-off "
-                "frames that are not in a table yet. It goes through the same "
-                "rectangular resize as the database path, so the token geometry "
-                "matches."
+                "A one-off frame that is not in a table yet. Either way it goes "
+                "through the same rectangular resize as the database path, so the "
+                "token geometry matches."
+            ),
+            upload_ui,
+            mo.md(
+                "*Upload reads from **your** machine (max 100 MB); the browser "
+                "below reads from the machine running marimo — use it for "
+                "`/glade` paths on Casper.*"
             ),
             file_ui,
         ]
     )
-    return file_panel, file_ui
+    return file_panel, file_ui, upload_ui
 
 
 @app.cell
@@ -310,14 +328,26 @@ def _(
     pc,
     source_tabs,
     src_tbl,
+    upload_ui,
 ):
     if source_tabs.value == "Local file":
-        mo.stop(not file_ui.value, mo.md("*Choose an image file.*"))
-        _path = Path(file_ui.value[0].path)
-        source_image = Image.open(_path).convert("RGB")
-        image_label = _path.name
-        image_id = str(_path)
-        blob_kb = _path.stat().st_size / 1e3
+        mo.stop(
+            not upload_ui.value and not file_ui.value,
+            mo.md("*Upload an image, or browse to one.*"),
+        )
+        if upload_ui.value:
+            # Uploaded bytes, from the machine the browser is running on.
+            _blob = upload_ui.contents()
+            source_image = Image.open(io.BytesIO(_blob)).convert("RGB")
+            image_label = upload_ui.name()
+            image_id = f"upload:{image_label}"
+            blob_kb = len(_blob) / 1e3
+        else:
+            _path = Path(file_ui.value[0].path)
+            source_image = Image.open(_path).convert("RGB")
+            image_label = _path.name
+            image_id = str(_path)
+            blob_kb = _path.stat().st_size / 1e3
         frame_meta = []
     else:
         mo.stop(
@@ -393,51 +423,145 @@ def _(mo):
         value="vit_base_patch16_dinov3",
         label="Model",
     )
-    # Defaults match IMAGE_H / IMAGE_W in 02-generate-embeddings (ERA5 is 7:2).
-    image_h_ui = mo.ui.number(value=256, start=16, stop=1024, step=16, label="Image H")
-    image_w_ui = mo.ui.number(value=896, start=16, stop=2048, step=16, label="Image W")
+    size_mode_ui = mo.ui.radio(
+        options=["from image", "pipeline", "manual"],
+        value="from image",
+        label="Input size",
+        inline=True,
+    )
     device_ui = mo.ui.dropdown(
         options=["auto", "cuda", "mps", "cpu"], value="auto", label="Device"
     )
-    run_btn = mo.ui.run_button(label="Run forward pass")
-
-    mo.vstack(
-        [
-            mo.hstack([model_ui, device_ui], justify="start", gap=1),
-            mo.hstack([image_h_ui, image_w_ui, run_btn], justify="start", gap=1),
-        ]
+    # Deriving size from the image makes it easy to ask for a cache that will not
+    # fit: a 1200x1200 frame is 5.6k tokens, which is ~9 GB at float16. This is
+    # the ceiling the run refuses to cross, rather than discovering it by OOM.
+    max_cache_ui = mo.ui.number(
+        value=4000, start=100, stop=64000, step=500, label="Max cache (MB)"
     )
-    return device_ui, image_h_ui, image_w_ui, model_ui, run_btn
+    run_btn = mo.ui.run_button(label="Run forward pass")
+    return device_ui, max_cache_ui, model_ui, run_btn, size_mode_ui
 
 
 @app.cell
-def _(image_h_ui, image_w_ui, mo, model_ui):
-    patch_size = 16
-    mo.stop(
-        int(image_h_ui.value) % patch_size or int(image_w_ui.value) % patch_size,
-        mo.callout(
-            mo.md(f"`IMAGE_H` and `IMAGE_W` must both be multiples of {patch_size}."),
-            kind="danger",
-        ),
-    )
+def _(mo, patch_size, source_image):
+    # Only consulted in "manual". Seeded from the selected frame's own size,
+    # snapped down to the patch grid, so the boxes start at something valid for
+    # this image rather than at ERA5's 256x896. Defined in their own cell so
+    # that re-seeding on a new frame does not also reset the model and device
+    # dropdowns.
+    def _snap(v):
+        return max(patch_size, (int(v) // patch_size) * patch_size)
 
-    _rows = int(image_h_ui.value) // patch_size
-    _cols = int(image_w_ui.value) // patch_size
+    _h, _w = _snap(source_image.height), _snap(source_image.width)
+
+    # The ceiling has to clear the seeded value, otherwise mo.ui.number raises
+    # on construction for any frame larger than the cap and takes every
+    # downstream cell with it. Derived from the image for the same reason the
+    # value is.
+    image_h_ui = mo.ui.number(
+        value=_h, start=patch_size, stop=max(2048, _h), step=patch_size, label="H"
+    )
+    image_w_ui = mo.ui.number(
+        value=_w, start=patch_size, stop=max(4096, _w), step=patch_size, label="W"
+    )
+    return image_h_ui, image_w_ui
+
+
+@app.cell
+def _(
+    device_ui,
+    image_h_ui,
+    image_w_ui,
+    max_cache_ui,
+    mo,
+    model_ui,
+    run_btn,
+    size_mode_ui,
+):
+    # Laid out in its own cell so the H/W boxes can be shown only when they are
+    # actually read. Reading size_mode_ui.value in the cell that defines it would
+    # recreate the element on every change and reset the selection.
+    _size_row = [size_mode_ui]
+    if size_mode_ui.value == "manual":
+        _size_row += [image_h_ui, image_w_ui]
+
+    mo.vstack(
+        [
+            mo.hstack(
+                [model_ui, device_ui, max_cache_ui, run_btn], justify="start", gap=1
+            ),
+            mo.hstack(_size_row, justify="start", gap=1),
+        ]
+    )
+    return
+
+
+@app.cell
+def _(model_ui, re):
+    # Read the stride off the model name rather than assuming 16, so a patch14
+    # entry in the dropdown would not silently mis-slice the token grid. The
+    # value is re-checked against the real model once it is built.
+    _m = re.search(r"patch(\d+)", model_ui.value)
+    patch_size = int(_m.group(1)) if _m else 16
+    return (patch_size,)
+
+
+@app.cell
+def _(image_h_ui, image_w_ui, patch_size, size_mode_ui, source_image):
+    # Deriving from the image avoids the silent distortion of forcing an
+    # arbitrary picture into the pipeline's 7:2 frame; "pipeline" keeps the
+    # geometry the stored embeddings were built on, which is what makes maps
+    # comparable across experiments.
+    def _snap(v):
+        return max(patch_size, (int(v) // patch_size) * patch_size)
+
+    if size_mode_ui.value == "from image":
+        image_h = _snap(source_image.height)
+        image_w = _snap(source_image.width)
+    elif size_mode_ui.value == "pipeline":
+        image_h, image_w = 256, 896
+    else:
+        image_h = _snap(image_h_ui.value)
+        image_w = _snap(image_w_ui.value)
+    return image_h, image_w
+
+
+@app.cell
+def _(image_h, image_w, mo, model_ui, patch_size, size_mode_ui, source_image):
+    _rows = image_h // patch_size
+    _cols = image_w // patch_size
     _n_tok = _rows * _cols + 5
     _size = model_ui.value.split("_")[1]
     _heads = {"small": 6, "base": 12, "large": 16}[_size]
     _layers = {"small": 12, "base": 12, "large": 24}[_size]
-    est_mb = _layers * _heads * _n_tok * _n_tok * 2 / 1e6
+    _dim = {"small": 384, "base": 768, "large": 1024}[_size]
+    # Attention is quadratic in tokens; descriptors (4 facets) are linear, so
+    # attention is always the term that decides whether this fits.
+    _attn_mb = _layers * _heads * _n_tok * _n_tok * 2 / 1e6
+    _desc_mb = _layers * 4 * _n_tok * _dim * 2 / 1e6
+    est_mb = _attn_mb + _desc_mb
+
+    _native = f"{source_image.width}x{source_image.height}"
+    _used = f"{image_w}x{image_h}"
+    _resized = "" if _used == _native else f" (source is {_native})"
+    _warn = (
+        ""
+        if size_mode_ui.value == "from image"
+        else "  \nNot the image's own size, so it is being resized without "
+        "preserving aspect ratio."
+    )
 
     mo.callout(
         mo.md(
-            f"Grid **{_rows} x {_cols}** = {_rows * _cols} patch tokens (+5 prefix). "
-            f"Attention cache approx **{est_mb:.0f} MB** at float16 — it grows with "
-            f"the *square* of token count, so widen `IMAGE_W` with that in mind."
+            f"Feeding **{_used}** px{_resized} at patch {patch_size} → grid "
+            f"**{_rows} x {_cols}** = {_rows * _cols} patch tokens (+5 prefix). "
+            f"Cache approx **{est_mb:,.0f} MB** at float16 "
+            f"({_attn_mb:,.0f} attention + {_desc_mb:,.0f} descriptors) — "
+            f"attention grows with the *square* of token count." + _warn
         ),
         kind="info" if est_mb < 1500 else "warn",
     )
-    return (patch_size,)
+    return
 
 
 @app.cell
@@ -445,8 +569,11 @@ def _(
     build_model,
     build_rect_transform,
     device_ui,
-    image_h_ui,
-    image_w_ui,
+    image_h,
+    image_id,
+    image_label,
+    image_w,
+    max_cache_ui,
     mo,
     model_ui,
     np,
@@ -456,7 +583,43 @@ def _(
     source_image,
     torch,
 ):
-    mo.stop(not run_btn.value, mo.md("*Press **Run forward pass** to begin.*"))
+    # run_button resets to False once the cells referencing it have run, so any
+    # later change of frame lands here and the maps below go blank until the pass
+    # is re-run. Name the pending frame so that is obvious rather than looking
+    # like the views simply failed to update.
+    mo.stop(
+        not run_btn.value,
+        mo.callout(
+            mo.md(
+                f"Press **Run forward pass** to capture `{image_label}`.\n\n"
+                "Everything below is computed only for the frame the pass ran on."
+            ),
+            kind="neutral",
+        ),
+    )
+
+    _n_tok = (image_h // patch_size) * (image_w // patch_size) + 5
+    _size = model_ui.value.split("_")[1]
+    _layers = {"small": 12, "base": 12, "large": 24}[_size]
+    _dim = {"small": 384, "base": 768, "large": 1024}[_size]
+    _est_mb = (
+        _layers * {"small": 6, "base": 12, "large": 16}[_size] * _n_tok * _n_tok * 2
+        + _layers * 4 * _n_tok * _dim * 2
+    ) / 1e6
+    mo.stop(
+        _est_mb > float(max_cache_ui.value),
+        mo.callout(
+            mo.md(
+                f"**{_est_mb:,.0f} MB** would be cached for a "
+                f"{image_w}x{image_h} input ({_n_tok:,} tokens), over the "
+                f"{float(max_cache_ui.value):,.0f} MB ceiling.\n\nAttention is "
+                "quadratic in token count. Either switch **Input size** to "
+                "`pipeline`/`manual` and pick something smaller, or raise "
+                "**Max cache** if you know it fits."
+            ),
+            kind="danger",
+        ),
+    )
 
     if device_ui.value != "auto":
         _dev = device_ui.value
@@ -471,12 +634,23 @@ def _(
     _tfm = build_rect_transform(
         _cfg["mean"],
         _cfg["std"],
-        int(image_h_ui.value),
-        int(image_w_ui.value),
+        image_h,
+        image_w,
         _cfg.get("interpolation", "bicubic"),
     )
     _x = _tfm(source_image).unsqueeze(0)
     _model = build_model(model_ui.value).to(_dev).eval()
+
+    # patch_size was read off the model name; confirm it against the real model
+    # before it is used to slice the token grid.
+    _ps = getattr(getattr(_model, "patch_embed", None), "patch_size", None)
+    if isinstance(_ps, (tuple, list)):
+        _ps = _ps[0]
+    if _ps is not None and int(_ps) != patch_size:
+        raise ValueError(
+            f"Model reports patch size {int(_ps)}, but {patch_size} was inferred "
+            f"from the name `{model_ui.value}`."
+        )
 
     # Undo the normalisation to recover exactly the pixels the model saw, so the
     # patch grid drawn below lines up with tokens rather than with the source file.
@@ -490,6 +664,50 @@ def _(
     # materially wrong for patch rows and severely wrong for register rows.
     _buf = []
     _handles = []
+
+    # Descriptors for the PCA section, captured in this same pass. Heads are
+    # concatenated back into one 768-d vector per token, matching how the
+    # dense-descriptor paper builds them — so there is no head axis here.
+    #
+    # q/k are taken BEFORE RoPE: the paper's model had no rotary embedding, so
+    # its "keys" are the unrotated content projection, and post-RoPE keys would
+    # be dominated by position. This is the same qkv reconstruction that is
+    # WRONG for attention (it drops RoPE) but correct for descriptors — do not
+    # conflate the two.
+    _desc = {"token": [], "q": [], "k": [], "v": []}
+
+    _tok_raw = []
+
+    def _keep(store):
+        # Block outputs are kept in fp32 and normalised after the pass: the final
+        # LayerNorm has not been applied at this point, and it is not a scalar
+        # rescale, so skipping it would NOT give the pipeline's patch tokens.
+        del store
+
+        def _hook(_m, _inp, _out):
+            _tok_raw.append(_out[0].detach().float().cpu())
+
+        return _hook
+
+    def _keep_qkv(module):
+        @torch.no_grad()
+        def _hook(_m, _inp, _out):
+            _t = _inp[0]
+            _b, _n, _c = _t.shape
+            _h = module.num_heads
+            _qkv = (
+                module.qkv(_t)
+                .reshape(_b, _n, 3, _h, _c // _h)
+                .permute(2, 0, 3, 1, 4)
+            )
+            _q, _k, _v = module.q_norm(_qkv[0]), module.k_norm(_qkv[1]), _qkv[2]
+            for _name, _tensor in (("q", _q), ("k", _k), ("v", _v)):
+                # (B, heads, N, head_dim) -> (N, heads*head_dim)
+                _flat = _tensor[0].permute(1, 0, 2).reshape(_n, _c)
+                _desc[_name].append(_flat.to(torch.float16).cpu().numpy())
+
+        return _hook
+
     for _blk in _model.blocks:
         _blk.attn.fused_attn = False
         _handles.append(
@@ -501,6 +719,9 @@ def _(
                 )
             )
         )
+        _handles.append(_blk.register_forward_hook(_keep(_desc["token"])))
+        _handles.append(_blk.attn.register_forward_hook(_keep_qkv(_blk.attn)))
+
     try:
         with torch.no_grad():
             _model.forward_features(_x.to(_dev))
@@ -508,11 +729,25 @@ def _(
         for _h in _handles:
             _h.remove()
 
+    # Apply the model's final norm to every block output. Without it the
+    # last-layer token facet is pre-norm and does NOT match what the pipeline
+    # stores: measured cosine against forward_features output was only 0.79
+    # after L2 normalisation. Applying it to every layer also keeps layers
+    # mutually comparable, which is what timm's get_intermediate_layers(norm=True)
+    # does.
+    with torch.no_grad():
+        _desc["token"] = [
+            _model.norm(_t.to(_dev)).to(torch.float16).cpu().numpy()
+            for _t in _tok_raw
+        ]
+
+    # {facet: (layer, token, dim)}
+    descriptors = {_kk: np.stack(_vv) for _kk, _vv in _desc.items()}
     attn = np.stack(_buf)  # (layer, head, token, token)
     n_prefix = _model.num_prefix_tokens
     num_layers, num_heads, n_tokens, _ = attn.shape
-    grid_rows = int(image_h_ui.value) // patch_size
-    grid_cols = int(image_w_ui.value) // patch_size
+    grid_rows = image_h // patch_size
+    grid_cols = image_w // patch_size
     device = _dev
 
     if grid_rows * grid_cols != n_tokens - n_prefix:
@@ -520,8 +755,13 @@ def _(
             f"Grid {grid_rows}x{grid_cols} does not match {n_tokens - n_prefix} "
             f"patch tokens (n_tokens={n_tokens}, n_prefix={n_prefix})"
         )
+    captured_label = image_label
+    captured_id = image_id
     return (
         attn,
+        captured_id,
+        captured_label,
+        descriptors,
         device,
         grid_cols,
         grid_rows,
@@ -535,6 +775,8 @@ def _(
 @app.cell
 def _(
     attn,
+    captured_id,
+    captured_label,
     device,
     grid_cols,
     grid_rows,
@@ -546,6 +788,7 @@ def _(
 ):
     mo.callout(
         mo.md(
+            f"Captured from **{captured_label}** — `{captured_id}`  \n"
             f"`{model_ui.value}` on **{device}** — {num_layers} layers x "
             f"{num_heads} heads, {attn.shape[2]} tokens "
             f"({n_prefix} prefix + {grid_rows * grid_cols} patches), "
@@ -794,6 +1037,7 @@ def _(
     n_prefix,
     np,
     num_heads,
+    captured_label,
     num_layers,
     pct_ui,
     plt,
@@ -896,7 +1140,7 @@ def _(
         _cb.outline.set_edgecolor(theme["muted"])
 
     _fig.suptitle(
-        f"Attention from {source_label} to all patches",
+        f"Attention from {source_label} to all patches — {captured_label}",
         fontsize=13,
         color=theme["fg"],
     )
@@ -930,6 +1174,336 @@ def _(mo):
     **On the colour scale.** Several heads behave as attention sinks, so the raw
     maximum is close to `1.0` while the median is around `1e-4`. Scaling to the
     max renders everything else flat; the default clips at a percentile instead.
+    """)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ## 5. PCA of patch descriptors
+
+    Attention answers *where a token looks*. This answers *how the resulting
+    features organise spatially*, following
+    [Deep ViT Features as Dense Visual Descriptors](https://arxiv.org/abs/2112.05814)
+    (Amir, Gandelsman, Bagon, Dekel), whose central claim is that the choice of
+    **facet** matters — so all four are shown together rather than one at a time.
+
+    Per row: PCA over that facet's patch descriptors, PC1 thresholded into a
+    foreground, then a **second PCA re-fit on the survivors** mapped to RGB.
+
+    `CLS` and the registers are excluded — no grid position, and they would
+    dominate PC1 as high-norm outliers. Fits are **per frame**, so colours mean
+    nothing across dates. Heads are concatenated into one vector per token by
+    default, as the paper's extractor does; **Head** isolates a single head of
+    q/k/v instead — a contiguous column slice, so it costs nothing. Block
+    outputs have no head decomposition, so the tokens row always shows all
+    heads and is labelled as such.
+
+    This section is independent of the source-token selection above: attention
+    takes one token as a query, PCA is a property of the whole set.
+    """)
+    return
+
+
+@app.cell
+def _(mo, num_heads, num_layers):
+    # Layers are discrete blocks, not a continuum — a dropdown says that, a
+    # slider implies interpolation between them.
+    layer_ui = mo.ui.dropdown(
+        options={str(_i): _i for _i in range(1, num_layers + 1)},
+        value=str(num_layers),
+        label="Layer",
+    )
+    # q/k/v are (heads, N, head_dim) internally and are cached head-major, so a
+    # single head is a contiguous column slice — no recompute. The paper always
+    # concatenates, so "all" is the faithful default and a single head is
+    # exploratory. Tokens are a block output with no head decomposition.
+    head_ui = mo.ui.dropdown(
+        options={
+            "all (concatenated)": -1,
+            **{str(_i + 1): _i for _i in range(num_heads)},
+        },
+        value="all (concatenated)",
+        label="Head",
+    )
+    n_comp_ui = mo.ui.number(
+        value=50, start=4, stop=200, step=1, label="Components (scree)"
+    )
+    invert_ui = mo.ui.switch(value=False, label="Invert foreground")
+    rgb_pcs_ui = mo.ui.radio(
+        options=["2,3,4", "1,2,3"], value="2,3,4", label="RGB components", inline=True
+    )
+    # Named for what it scales, not for the statistic it uses: "percentile"
+    # previously read as if it were related to the keep-% thresholds, which it
+    # is not. This only sets how the RGB channels are stretched.
+    clip_ui = mo.ui.radio(
+        options=["robust 2-98%", "min-max"],
+        value="robust 2-98%",
+        label="RGB scaling",
+        inline=True,
+    )
+    mo.hstack(
+        [layer_ui, head_ui, n_comp_ui, invert_ui, rgb_pcs_ui, clip_ui],
+        justify="start",
+        gap=2,
+    )
+    return clip_ui, head_ui, invert_ui, layer_ui, n_comp_ui, rgb_pcs_ui
+
+
+@app.cell
+def _(np):
+    # Display order; keys first is the paper's default facet.
+    FACETS = [("tokens", "token"), ("keys", "k"), ("queries", "q"), ("values", "v")]
+
+    def exact_pca(X, k):
+        """Deterministic PCA by full SVD of the centred matrix.
+
+        Not run_pca_best: its MPS path is torch.pca_lowrank, a randomized
+        algorithm with no seed, so two calls on identical input returned scores
+        differing by up to 0.4 — every re-render recoloured every row. At
+        896x768 the exact SVD costs ~100 ms, so approximating buys nothing.
+        """
+        _Xc = X - X.mean(axis=0, keepdims=True)
+        _U, _S, _ = np.linalg.svd(_Xc, full_matrices=False)
+        _var = _S**2
+        _k = int(min(k, _U.shape[1]))
+        _scores = _U[:, :_k] * _S[:_k]
+        # Signs are arbitrary; pin each component so its largest-magnitude
+        # score is positive, so colours stay put across layers and re-renders.
+        _idx = np.argmax(np.abs(_scores), axis=0)
+        _sign = np.sign(_scores[_idx, np.arange(_scores.shape[1])])
+        _sign[_sign == 0] = 1.0
+        return (_var / _var.sum())[:_k], (_scores * _sign).astype(np.float32)
+
+    return FACETS, exact_pca
+
+
+@app.cell
+def _(
+    FACETS,
+    descriptors,
+    exact_pca,
+    head_ui,
+    layer_ui,
+    n_comp_ui,
+    n_prefix,
+    np,
+    num_heads,
+):
+    # Stage 1, for every facet. Depends only on layer, head and component count,
+    # so moving a threshold slider below does NOT redo this work.
+    stage1 = {}
+    for _label, _key in FACETS:
+        _raw = descriptors[_key][int(layer_ui.value) - 1][n_prefix:].astype(np.float32)
+        _head = int(head_ui.value)
+        _sub = ""
+        if _head >= 0 and _key != "token":
+            _hd = _raw.shape[1] // num_heads
+            _raw = _raw[:, _head * _hd : (_head + 1) * _hd]
+            _sub = f"head {_head + 1}"
+        elif _head >= 0:
+            # Block outputs are not split by head; say so rather than silently
+            # showing something not comparable with the other rows.
+            _sub = "all heads"
+        _X = _raw / np.clip(np.linalg.norm(_raw, axis=1, keepdims=True), 1e-12, None)
+        _n = int(min(n_comp_ui.value, _X.shape[0], _X.shape[1]))
+        _evr, _sc = exact_pca(_X, _n)
+        stage1[_label] = {
+            "X": _X,
+            "evr": np.asarray(_evr, dtype=np.float64) * 100.0,
+            "scores": _sc,
+            "sub": _sub,
+        }
+    return (stage1,)
+
+
+@app.cell
+def _(FACETS, math, mo, np, stage1):
+    # One threshold per facet, in that facet's own PC1 units. Bounds are taken
+    # from each facet's actual PC1 range and rounded to the step so the readout
+    # stays short — a raw score prints ~17 digits.
+    def _slider_for(label):
+        _pc1 = stage1[label]["scores"][:, 0]
+        _lo_raw, _hi_raw = float(_pc1.min()), float(_pc1.max())
+        _step = max(round((_hi_raw - _lo_raw) / 100.0, 4), 1e-4)
+        _lo = math.floor(_lo_raw / _step) * _step
+        _hi = math.ceil(_hi_raw / _step) * _step
+        _mid = round(float(np.median(_pc1)) / _step) * _step
+        return mo.ui.slider(
+            start=round(_lo, 4),
+            stop=round(_hi, 4),
+            step=_step,
+            value=round(min(max(_mid, _lo), _hi), 4),
+            label=f"{label} PC1 >",
+            show_value=True,
+        )
+
+    # Derived from the data, so these reset when the layer changes — the price
+    # of showing real PC1 values instead of percentages.
+    # Displayed next to each facet's own plot rather than as one row up here.
+    thresh_ui = mo.ui.dictionary({_label: _slider_for(_label) for _label, _ in FACETS})
+    return (thresh_ui,)
+
+
+@app.cell
+def _(
+    FACETS,
+    captured_label,
+    clip_ui,
+    grid_cols,
+    grid_rows,
+    invert_ui,
+    thresh_ui,
+    layer_ui,
+    np,
+    plt,
+    exact_pca,
+    head_ui,
+    mo,
+    num_heads,
+    rgb_pcs_ui,
+    stage1,
+    theme,
+):
+    _cols_sel = (1, 2, 3) if rgb_pcs_ui.value == "2,3,4" else (0, 1, 2)
+    _need = max(_cols_sel) + 1
+    _fig_w = 15.0
+
+    _head_note = (
+        f"head {int(head_ui.value) + 1} of {num_heads}"
+        if int(head_ui.value) >= 0
+        else "heads concatenated"
+    )
+    _blocks = [
+        mo.md(
+            f"**{captured_label}** · layer {int(layer_ui.value)} · {_head_note}"
+        )
+    ]
+
+    for _label, _ in FACETS:
+        _X = stage1[_label]["X"]
+        _pc1 = stage1[_label]["scores"][:, 0]
+        _thr = float(thresh_ui.value[_label])
+        _mask = _pc1 <= _thr if invert_ui.value else _pc1 >= _thr
+
+        # One figure per facet so its slider can sit directly above it; a single
+        # combined figure cannot have UI elements interleaved between its rows.
+        _fig, _axes = plt.subplots(
+            1, 2, figsize=(_fig_w, (_fig_w / 2) * grid_rows / grid_cols + 0.55)
+        )
+        _fig.patch.set_facecolor(theme["bg"])
+
+        # Greyscale: PC1 is a single scalar field being split by a threshold, so
+        # a monochrome ramp reads as "more/less" without inventing hue
+        # structure, and keeps it visually distinct from the RGB panel.
+        _axes[0].imshow(
+            _pc1.reshape(grid_rows, grid_cols), cmap="gray", interpolation="nearest"
+        )
+        _sub = stage1[_label]["sub"]
+        _axes[0].set_title(
+            f"{_label}{' · ' + _sub if _sub else ''} — PC1",
+            color=theme["fg"],
+            fontsize=10,
+        )
+
+        _rgb = np.zeros((grid_rows * grid_cols, 3), dtype=np.float32)
+        _note = ""
+        if int(_mask.sum()) >= max(8, _need):
+            _n2 = int(min(max(_need, 4), int(_mask.sum()), _X.shape[1]))
+            _e2, _s2 = exact_pca(_X[_mask], _n2)
+            _comp = _s2[:, list(_cols_sel)]
+            if clip_ui.value == "min-max":
+                _lo, _hi = _comp.min(axis=0), _comp.max(axis=0)
+            else:
+                _lo = np.percentile(_comp, 2, axis=0)
+                _hi = np.percentile(_comp, 98, axis=0)
+            _rgb[_mask] = np.clip(
+                (_comp - _lo) / np.clip(_hi - _lo, 1e-12, None), 0, 1
+            )
+        else:
+            _note = "  (too few patches to re-fit)"
+
+        _axes[1].imshow(_rgb.reshape(grid_rows, grid_cols, 3), interpolation="nearest")
+        _axes[1].set_title(
+            f"PCs {rgb_pcs_ui.value} re-fit on "
+            f"{int(_mask.sum())} patches{_note}",
+            color=theme["fg"] if not _note else "#ff9f0a",
+            fontsize=10,
+        )
+
+        for _a in _axes:
+            _a.set_facecolor(theme["bg"])
+            _a.set_xticks([])
+            _a.set_yticks([])
+            for _sp in _a.spines.values():
+                _sp.set_visible(False)
+        _fig.tight_layout()
+
+        _blocks.append(mo.vstack([thresh_ui[_label], _fig], gap=0))
+
+    mo.vstack(_blocks, gap=1)
+    return
+
+
+@app.cell
+def _(FACETS, captured_label, layer_ui, np, plt, stage1, theme):
+    _fig, _ax = plt.subplots(figsize=(11, 3.0))
+    _fig.patch.set_facecolor(theme["bg"])
+    _ax.set_facecolor(theme["bg"])
+    for _label, _ in FACETS:
+        _evr = stage1[_label]["evr"]
+        _ax.plot(np.arange(1, len(_evr) + 1), np.cumsum(_evr), lw=2, label=_label)
+    _ax.set_xlabel("Principal component", color=theme["fg"], fontsize=9)
+    _ax.set_ylabel("Cumulative variance (%)", color=theme["fg"], fontsize=9)
+    _ax.set_ylim(0, 105)
+    _ax.tick_params(colors=theme["fg"], labelsize=8)
+    for _s in _ax.spines.values():
+        _s.set_color(theme["muted"])
+    _leg = _ax.legend(fontsize=8, facecolor=theme["bg"], edgecolor=theme["muted"])
+    for _t in _leg.get_texts():
+        _t.set_color(theme["fg"])
+    _ax.set_title(
+        f"{captured_label} · how fast each facet concentrates variance "
+        f"(layer {int(layer_ui.value)})",
+        color=theme["fg"],
+        fontsize=10,
+    )
+    _fig.tight_layout()
+    _fig
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    **Reading this.** The paper's setting is object-centric photographs, where
+    PC1 separates an object from its background. An ERA5 composite has no
+    background — every patch is atmosphere — so the PC1 split reads as a
+    saliency-style partition, not a segmentation. Treat it as "which patches are
+    unlike the bulk", not "which patches are the object".
+
+Each row has its own threshold, in that facet's **own PC1 units** — the
+    ranges genuinely differ between facets, so the same number does not mean the
+    same thing in two rows. Compare using the **patches kept** count printed
+    under each RGB panel, not the slider positions. Because the bounds come from
+    the data, these sliders reset when you change the layer.
+
+    The threshold and **RGB scaling** are unrelated. The first decides *which*
+    patches survive into the re-fit; the second only decides how the resulting
+    three components are stretched into colour. `min-max` is what the paper's
+    `pca.py` does; `robust 2-98%` clips the extreme patches that otherwise
+    flatten ERA5 frames.
+
+    The RGB is re-fit on whatever survives, so it changes as you move a slider —
+    expected, not instability. Colours are arbitrary up to rotation, so they
+    carry no meaning across frames or between rows.
+
+    Only **tokens at the last layer** correspond to the stored
+    `patch_embeddings`. Every other facet and layer is exploratory and is not
+    what retrieval uses. That correspondence requires the model's final
+    `LayerNorm`, which is applied here to every block output — without it the
+    last-layer tokens sit at cosine 0.79 to the stored vectors, not 1.0.
     """)
     return
 
