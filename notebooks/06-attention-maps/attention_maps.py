@@ -800,6 +800,14 @@ def _(
 
 
 @app.cell
+def _():
+    # Shared by the picker chart and the locator figure so both tabs render at
+    # the same width and switching between them cannot shift the layout.
+    PATCH_CHART_W = 980
+    return (PATCH_CHART_W,)
+
+
+@app.cell
 def _(mo):
     mo.md(r"""
     ## 3. Select a token and read its attention
@@ -828,27 +836,55 @@ def _(cmap_ui, dark_ui, mo, pct_ui, scale_ui, source_ui, summary_ui, vmax_ui):
 
 @app.cell
 def _(
+    PATCH_CHART_W,
     grid_cols,
     grid_rows,
     image_label,
     img_disp,
+    io,
+    mo,
     plt,
     sel_col,
     sel_row,
     theme,
 ):
-    # Full-resolution locator for the selected patch. It lives above the picker so
-    # it never sits between the patch grid and the maps that grid drives.
-    _aspect = img_disp.shape[0] / img_disp.shape[1]
-    _fig, _ax = plt.subplots(figsize=(9, max(1.4, 9 * _aspect)))
+    # Full-resolution locator for the selected patch. Returned rather than shown
+    # here so it can be tabbed against the picker just above the gallery.
+    #
+    # Built to the picker's exact geometry — same width, same image aspect, same
+    # title strip — so switching tabs does not resize the block and shove the
+    # gallery up and down. PATCH_CHART_W is shared with the chart itself.
+    # The chart renders at its declared width plus ~10px of chrome; a matplotlib
+    # figure comes back as an <img> that stretches to the container instead. So
+    # build the PNG at the chart's *rendered* size and pin it with mo.image,
+    # rather than letting the two find different widths.
+    _render_w = PATCH_CHART_W + 10
+    _plot_h = max(60, int(PATCH_CHART_W * grid_rows / grid_cols))
+    _title_h = 27
+    _total_h = _plot_h + _title_h
+
+    _fig = plt.figure(figsize=(_render_w / 100, _total_h / 100), dpi=100)
     _fig.patch.set_facecolor(theme["bg"])
+    # Axes placed by hand rather than via tight_layout: the point is to hit a
+    # known pixel box, which tight_layout would renegotiate.
+    _ax = _fig.add_axes([0.0, 0.0, 1.0, _plot_h / _total_h])
     _ax.set_facecolor(theme["bg"])
-    _ax.imshow(img_disp)
+    # aspect="auto" fills the axes exactly. The image aspect already equals the
+    # grid aspect, so nothing is distorted and no letterboxing remains.
+    _ax.imshow(img_disp, aspect="auto")
     _ax.set_xticks([])
     _ax.set_yticks([])
-    _ax.set_title(image_label, fontsize=9, color=theme["fg"])
     for _s in _ax.spines.values():
-        _s.set_color(theme["muted"])
+        _s.set_visible(False)
+    _fig.text(
+        0.5,
+        1.0 - (_title_h / 2) / _total_h,
+        image_label,
+        ha="center",
+        va="center",
+        fontsize=9,
+        color=theme["fg"],
+    )
 
     if sel_row is not None:
         _ph = img_disp.shape[0] / grid_rows
@@ -863,13 +899,15 @@ def _(
                 linewidth=2,
             )
         )
-    _fig.tight_layout()
-    _fig
-    return
+    _buf = io.BytesIO()
+    _fig.savefig(_buf, format="png", dpi=100, facecolor=theme["bg"])
+    plt.close(_fig)
+    locator_fig = mo.image(_buf.getvalue(), width=_render_w)
+    return (locator_fig,)
 
 
 @app.cell
-def _(alt, grid_cols, grid_rows, img_disp, mo, np, pd):
+def _(PATCH_CHART_W, alt, grid_cols, grid_rows, img_disp, mo, np, pd):
     # The clickable selector is the image at token resolution: one rect per patch,
     # filled with that patch's mean colour. A click is therefore an exact token
     # pick, with no pixel-to-index arithmetic to get wrong.
@@ -890,8 +928,7 @@ def _(alt, grid_cols, grid_rows, img_disp, mo, np, pd):
         ]
     )
 
-    _w = 980
-    _h = max(60, int(_w * grid_rows / grid_cols))
+    _h = max(60, int(PATCH_CHART_W * grid_rows / grid_cols))
 
     # marimo dims unselected marks by rewriting the opacity channel on the
     # frontend: encoding.opacity becomes {condition: selected -> o, value: o/5}.
@@ -926,11 +963,10 @@ def _(alt, grid_cols, grid_rows, img_disp, mo, np, pd):
 
     patch_chart = mo.ui.altair_chart(
         alt.layer(_colours, _hit).properties(
-            width=_w, height=_h, title="Click a patch"
+            width=PATCH_CHART_W, height=_h, title="Click a patch"
         ),
         chart_selection="point",
     )
-    patch_chart
     return (patch_chart,)
 
 
@@ -1029,15 +1065,28 @@ def _(dark_ui, plt):
 
 
 @app.cell
+def _(locator_fig, mo, patch_chart):
+    # One at a time rather than stacked: both are wide, and tabbing keeps
+    # whichever is showing within an eyeline of the gallery below. Element
+    # values survive while a tab is hidden, so the patch selection still drives
+    # the maps even when the preview tab is open.
+    mo.ui.tabs(
+        {"Image preview": locator_fig, "Select a patch": patch_chart},
+        value="Select a patch",
+    )
+    return
+
+
+@app.cell
 def _(
     attn,
+    captured_label,
     cmap_ui,
     grid_cols,
     grid_rows,
     n_prefix,
     np,
     num_heads,
-    captured_label,
     num_layers,
     pct_ui,
     plt,
@@ -1351,20 +1400,20 @@ def _(
     FACETS,
     captured_label,
     clip_ui,
+    exact_pca,
     grid_cols,
     grid_rows,
-    invert_ui,
-    thresh_ui,
-    layer_ui,
-    np,
-    plt,
-    exact_pca,
     head_ui,
+    invert_ui,
+    layer_ui,
     mo,
+    np,
     num_heads,
+    plt,
     rgb_pcs_ui,
     stage1,
     theme,
+    thresh_ui,
 ):
     _cols_sel = (1, 2, 3) if rgb_pcs_ui.value == "2,3,4" else (0, 1, 2)
     _need = max(_cols_sel) + 1
@@ -1483,7 +1532,7 @@ def _(mo):
     saliency-style partition, not a segmentation. Treat it as "which patches are
     unlike the bulk", not "which patches are the object".
 
-Each row has its own threshold, in that facet's **own PC1 units** — the
+    Each row has its own threshold, in that facet's **own PC1 units** — the
     ranges genuinely differ between facets, so the same number does not mean the
     same thing in two rows. Compare using the **patches kept** count printed
     under each RGB panel, not the slider positions. Because the bounds come from
