@@ -1,4 +1,6 @@
 # SciVis Embeddings Workbench
+Developed by Nihanth W. Cherukuru, Matt Rehme, Kirsten J. Mayer, David John Gagne, John Schreck, John Clyne, and Charlie Becker. and the Technology Exploration Group at NSF NCAR.  
+🔬 [Read the research paper on arXiv](https://arxiv.org/html/2605.00972v1)
 
 [![Tests](https://github.com/NCAR/scivis-embedding-workbench/actions/workflows/tests.yml/badge.svg)](https://github.com/NCAR/scivis-embedding-workbench/actions/workflows/tests.yml)
 [![Python 3.13](https://img.shields.io/badge/python-3.13-blue.svg)](https://www.python.org/downloads/)
